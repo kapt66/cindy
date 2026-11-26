@@ -63,13 +63,15 @@ import {
 } from './psbAuth.js';
 import { resolvePsbEndpoint } from './psbEndpoint.js';
 import {
-  broadcastPsbStreamEvent,
   broadcastPsbWorkspaceChanged,
   broadcastPsbWorkspaceVcsNotice,
 } from './push.js';
 // 「工作区会话启动 / 占用成功」= 固定信息（名称 / 模板 / 机器）的落盘点：PSB 以后读不到
 // （断网 / 设备掉线 / 工作区被删）时，管理页仍能显示当初是哪个工作区（2026-11-26 真机事故）。
 import { recordPsbSessionWorkspace, recordPsbWorkspaceSeen } from './adminRecentRuntime.js';
+// 账号边界 / teardown 时出账待释放工作区：旧账号的锁只能用旧身份归还，新身份重试是越权
+// （见 `maker-host/psb-workspace-session-release.ts` 文件头「账本」）。
+import { clearPendingWorkspaceReleases } from '../maker-host/psb-workspace-session-release.js';
 import { createPsbStreamViewer } from './streamViewer.js';
 import {
   createWorkspaceVcsNoticeCache,
@@ -95,7 +97,6 @@ export interface PsbRemoteServiceDeps {
   fetch(input: string, init: RequestInit): Promise<Response>;
   createHttpAgent(url: string): Promise<unknown>;
   logger: PsbServiceLogger;
-  emitStreamEvent(event: PsbStreamEvent): void;
   emitWorkspaceChanged(event: PsbWorkspaceChangedEvent): void;
   /** 工作区被版本控制检查拒绝时广播 notice（`notice:null` = 已解除；CINDY-RW-10）。 */
   emitWorkspaceVcsNotice(event: {
@@ -260,7 +261,7 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     operation: WorkspaceVcsOperation,
   ): void {
     if (!raw) return;
-    const notice = sanitizeWorkspaceVcsNotice(workspaceId, raw);
+    const notice = sanitizeWorkspaceVcsNotice(workspaceId, raw, operation);
     if (!notice || !notice.dirty) return;
     if (!vcsNotices.remember(workspaceId, { ...notice, advisory: true }, operation)) return;
     deps.logger.info('psb workspace vcs advisory received', {
@@ -283,7 +284,7 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     operation: WorkspaceVcsOperation,
   ): void {
     if (!(error instanceof PsbClientError) || !error.failure.vcs) return;
-    const notice = sanitizeWorkspaceVcsNotice(workspaceId, error.failure.vcs);
+    const notice = sanitizeWorkspaceVcsNotice(workspaceId, error.failure.vcs, operation);
     if (!notice) {
       deps.logger.warn('psb workspace vcs notice failed validation; not cached', {
         workspaceId,
@@ -352,8 +353,9 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     fetchStatus: (sessionId) => api.getStreamStatus(sessionId),
     createHttpAgent: (url) => deps.createHttpAgent(url),
     emit: (event) => {
-      deps.emitStreamEvent(event);
-      // 订阅者出错不能影响其它订阅者与渲染层推送：逐个隔离。
+      // 串流事件只经本进程内的订阅者（管理页 `adminService` 把绑定会话的事件转成
+      // `ADMIN_CHANNELS.STREAM_EVENT`，帧的定向投递在 `push.ts`）；会话级推送通道已删除。
+      // 订阅者出错不能影响其它订阅者：逐个隔离。
       for (const listener of streamListeners) {
         try {
           listener(event);
@@ -577,7 +579,6 @@ function createDefaultDeps(): PsbRemoteServiceDeps {
     fetch: outboundFetch,
     createHttpAgent: createOutboundHttpAgent,
     logger: createLogger('psb-remote'),
-    emitStreamEvent: broadcastPsbStreamEvent,
     emitWorkspaceChanged: broadcastPsbWorkspaceChanged,
     emitWorkspaceVcsNotice: broadcastPsbWorkspaceVcsNotice,
   };
@@ -595,9 +596,14 @@ export function getPsbRemoteService(): PsbRemoteService {
  * 释放单例（退出/账号边界/单测）。
  *
  * 幂等：没有已建实例时是 no-op；释放后下一次 `getPsbRemoteService()` 会重新装配。
+ *
+ * 同时**清空待释放账本**：账本条目带 dataOwner 印记，旧账号的占用只能用旧身份归还；
+ * 切号 / 退出登录后留在账本里只会被新身份越权重试（或永远 pending）。下一次登录后的
+ * 新会话结束会重新收集属于新身份的义务。
  */
 export function disposePsbRemoteService(): void {
   const current = serviceSingleton;
   serviceSingleton = null;
   current?.dispose();
+  clearPendingWorkspaceReleases();
 }

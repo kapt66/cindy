@@ -92,6 +92,12 @@ export interface ListAgentSkillsOptions {
    * native runtime/filesystem and must never fall back to the local machine.
    */
   remoteHostId?: string;
+  /**
+   * 远端宿主拥有工作目录（`psb:` 远程工作区）：`workingDir` 只是本机的**虚拟路径**，
+   * 那台机器上不存在。项目级 Skill 发现因此不能用它拼远端目录 —— 只列 agent 全局 Skill。
+   * 由宿主按 transport 能力判定后设置；agent 不认识 transport 前缀。
+   */
+  remoteHostOwnsCwd?: boolean;
   forceReload?: boolean;
   /** Host-owned Pi boundary; renderer input must never set this directly. */
   includeManagedPiPackages?: boolean;

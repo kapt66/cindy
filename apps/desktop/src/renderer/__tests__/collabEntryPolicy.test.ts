@@ -188,7 +188,7 @@ describe('drift 守卫:两个入口共用同一份判定', () => {
     // docs/product-rules/psb-remote-workspace-sessions.md 的能力边界）：PSB 显式 false，
     // 其后仍必须是「Meka 专用 helper / 通用 policy」二选一 —— 不能把 Meka helper 当成
     // 所有草稿的默认资格，否则 Cindy 普通对话草稿会被 Meka 判据吞掉（历史回归）。
-    expect(src).toContain('const showCollabToggle = isPsbDraft');
+    expect(src).toContain('const showCollabToggle = isPsbChannelSelected');
     expect(src).toContain(': isMekaDraft');
     expect(src).toContain('? canShowMekaCollabToggleForDraft({');
     expect(src).toContain(': collabEntry.eligible;');

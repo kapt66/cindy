@@ -119,8 +119,16 @@ describe('buildPsbTunnelUrl：mode 必填、bundleVersion 声明与就绪帧 opt
     },
   );
 
-  it('session id 逐段编码：id 里的 / 与空格不会改变路径形状', () => {
-    const url = new URL(buildPsbTunnelUrl('sess 1/2', 'pi'));
-    expect(url.pathname).toBe(`${basePath}/sess%201%2F2/agent-tunnel`);
+  it('协议违约的 session id（含 / \\ % 空白）直接拒绝：不让编码分隔符进路径', () => {
+    // 2026-11-27 复审 P2：URL 路径校验拒绝 `%2F` / `%5C`（服务端解码后是 `../`，能绕出 Cindy
+    // 命名空间）。旧实现把 `sess 1/2` 编成 `sess%201%2F2` 当成合法路径；真实 PSB 会话 id 是
+    // UUID / 短标识，含这些字符只可能是注入 / 拼接错误 —— 在拼 URL 前拒绝，而不是放行编码分隔符。
+    for (const sessionId of ['sess 1/2', 'sess%2F1', 'sess\\1', 'sess?x=1', ' ']) {
+      expect(() => buildPsbTunnelUrl(sessionId, 'pi'), sessionId).toThrow(/PSB path rejected/);
+    }
+    // 合法 id（UUID / 短标识）照常构造。
+    expect(new URL(buildPsbTunnelUrl('sess-1_2.a', 'pi')).pathname).toBe(
+      `${basePath}/sess-1_2.a/agent-tunnel`,
+    );
   });
 });

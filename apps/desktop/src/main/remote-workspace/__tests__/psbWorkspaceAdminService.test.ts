@@ -22,8 +22,14 @@
  *   ② 订阅返回 404/405/`UNSUPPORTED`（旧服务端）→ 回退创建会话且 `purpose==='internal'`；
  *   ③ 订阅返回 409 `NO_RUNNING_SESSION` → 抛可行动错误且不建会话；④ 记录里的桌面会话
  *   `stream/status` 404 → 丢掉绑定重新订阅；⑤ 读完状态/进入页面不能出现订阅或建会话调用。
+ * - 2026-11-26 独立审查（FIX-B）补的用例：多窗口 `localSessionId` 分桶（含「窗口 watchdog 重读
+ *   不产生错标推送」）、写闸门 `checkedAt` / 15s 信任窗与 `NOT_FOUND` 吸收、占位身份专用
+ *   `unknown-workspace` + `WORKSPACE_ID_UNKNOWN`、目录启发式命中不持久化（占用成功才落快照）、
+ *   本机记录无 `version` / 快照只比固定字段 / `savedAt`-`confirmedAt` 分开 / 按时间取最新 /
+ *   坏行不伪造 1970、回退内部会话失败回滚与 TTL 收尸、start-stop 串行与代次、ensure 不阻塞 +
+ *   能力位缓存 + 失败原因补 detail、`context` 读会话行抛错的容错。
  * - tier：unit（进程内内存 fake，无网络 / 无 Electron / 无真实文件）。
- * - 实测耗时：单独运行 2.0s（其中 42 条用例 142ms；其余为 vitest 启动与模块加载）。
+ * - 实测耗时：单独运行 3.2s（其中 74 条用例 282ms；其余为 vitest 启动与模块加载）。
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -42,12 +48,12 @@ import {
   PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE,
   psbAdminStreamStatusFromPsb,
   type PsbWorkspaceAdminContext,
+  type PsbWorkspaceAdminContextChangedEvent,
 } from '../../../shared/psb-workspace-admin';
 import { psbIpcCodeForFailure } from '../../../shared/psb-remote-workspace';
 import {
   PSB_ADMIN_RECENT_DESKTOP_SESSION_LIMIT,
   PSB_ADMIN_RECENT_SESSION_LIMIT,
-  PSB_ADMIN_RECENT_STATE_VERSION,
   PSB_ADMIN_WORKSPACE_SNAPSHOT_LIMIT,
   createPsbAdminRecentWorkspaceStore,
   normalizePsbAdminRecentState,
@@ -109,13 +115,13 @@ function sessionRow(overrides: Partial<PsbRemoteSession> = {}): PsbRemoteSession
 
 function streamStatus(overrides: Partial<PsbSessionStreamStatus> = {}): PsbSessionStreamStatus {
   return {
-    capable: true,
+    capability: true,
     active: false,
     width: 2560,
     height: 1440,
     fps: 60,
-    codec: 'h264',
-    lastError: null,
+    encoder: 'h264',
+    lastErrorZh: null,
     desktopSession: 'running',
     reasonCode: null,
     ...overrides,
@@ -128,7 +134,7 @@ function subscription(sessionId: string): PsbWorkspaceStreamSubscription {
 
 function notFound(): PsbClientError {
   return new PsbClientError(
-    { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.error.notFound', message: '会话不存在' },
+    { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.admin.staleMissingTitle', message: '会话不存在' },
     404,
   );
 }
@@ -176,7 +182,7 @@ function subscribeUnavailable(
   switch (kind) {
     case 'route-404':
       return new PsbClientError(
-        { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.error.notFound', message: '接口不存在' },
+        { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.admin.staleMissingTitle', message: '接口不存在' },
         404,
       );
     case 'method-405':
@@ -204,23 +210,35 @@ interface RemoteBehavior {
   sessionStatus: (sessionId: string) => Promise<PsbSessionStatusResult>;
   streamStatus: (sessionId: string) => Promise<PsbSessionStreamStatus>;
   startStream: (sessionId: string) => Promise<PsbSessionStreamStatus>;
+  /**
+   * 停止观看（生产 = 观看端 `stop`，会**同步**补发 `closed(client-stopped)`）。
+   * 单测用它模拟「内部收尸补发的 closed」是否被误转发（2026-11-27 复审 P1）。
+   */
+  stopStream?: (sessionId: string) => Promise<void> | void;
   /** 输入转发（默认成功；抛错用来模拟「WS 已断」）。 */
   sendStreamInput: (sessionId: string, event: Record<string, unknown>) => Promise<void>;
   /** 工作区级串流订阅（默认成功，返回 `desktop-<n>`；抛错用来模拟旧 PSB / 409）。 */
   subscribeWorkspaceStream: (workspaceId: string) => Promise<PsbWorkspaceStreamSubscription>;
   /** 建会话（缺省 = 成功的内部会话；只在过渡回退路径会被调用）。 */
   createSession?: (input: PsbCreateSessionRequest) => Promise<PsbCreateSessionResult>;
+  /** 结束 PSB 会话（过渡回退内部会话收尸；缺省成功并记录调用）。 */
+  stopSession?: (sessionId: string) => Promise<void>;
   /**
    * 写操作前的占用闸门（生产 = `PsbRemoteService.ensureWorkspaceLocked`）。
-   * 缺省成功；抛错用来模拟「被别人占用 / 离线 / 未就绪」。
+   * 缺省成功；抛错用来模拟「被别人占用 / 离线 / 未就绪 / 已删除」。
    */
   ensureWorkspaceLocked: (workspaceId: string) => Promise<void>;
   /**
    * 订阅前尽力拉起桌面访问（生产 = `PsbRemoteService.ensureWorkspaceAccess`）。
    * 缺省 = 「Cindy 入口未开放」（PSB 白名单还没放行 `/api/remote/**`）；单测用它断言
-   * 「ensure 在订阅之前调用」与「失败不阻断订阅」。
+   * 「ensure 在订阅之前发起」与「失败不阻断订阅」。
    */
   ensureWorkspaceAccess?: (workspaceId: string) => Promise<PsbWorkspaceAccessEnsureOutcome>;
+  /**
+   * 某个本地任务行对应的 PSB 会话身份（缺省 = `localRemoteHostId`）。
+   * 多窗口测试用它让不同窗口的任务指向不同工作区。
+   */
+  localRemoteHostIdForSession?: (localSessionId: string) => string | null;
   localRemoteHostId: string | null;
 }
 
@@ -229,6 +247,8 @@ interface Harness {
   readonly deps: PsbWorkspaceAdminServiceDeps;
   readonly behavior: RemoteBehavior;
   readonly contextEvents: (PsbWorkspaceAdminContext | null)[];
+  /** 完整推送载荷（含 `localSessionId`；多窗口分桶断言用）。 */
+  readonly contextChangedEvents: PsbWorkspaceAdminContextChangedEvent[];
   readonly streamEvents: PsbStreamEvent[];
   /** 过渡回退创建的会话请求（断言 `purpose:'internal'` 与标题）。 */
   readonly createSessionCalls: PsbCreateSessionRequest[];
@@ -236,6 +256,8 @@ interface Harness {
   readonly subscribeCalls: string[];
   readonly startStreamCalls: string[];
   readonly stopStreamCalls: string[];
+  /** 被结束的 PSB 会话（过渡回退内部会话收尸）。 */
+  readonly stoppedSessionCalls: string[];
   /** 转发给观看端的输入（会话 id + 事件；断言「解析到哪条会话」）。 */
   readonly inputCalls: Array<{ sessionId: string; event: Record<string, unknown> }>;
   /** 占用闸门的调用顺序（工作区 id；断言「启动串流前先确保锁定」）。 */
@@ -244,6 +266,8 @@ interface Harness {
   readonly ensureAccessCalls: string[];
   /** warn 日志（断言过渡回退被记录；正常路径不应有回退类 warn）。 */
   readonly warnings: Array<{ message: string; fields?: Record<string, unknown> }>;
+  /** info 日志（断言启发式匹配记了 `inferred`）。 */
+  readonly infos: Array<{ message: string; fields?: Record<string, unknown> }>;
   readonly storeWrites: () => number;
   /** 模拟账号边界：换成一个新的 PSB 服务实例。 */
   swapRemote(behavior: Partial<RemoteBehavior>): void;
@@ -256,6 +280,8 @@ interface HarnessOptions {
   recent?: Partial<PsbAdminRecentWorkspaceFile>;
   /** 模拟旧装配 / 旧 fake：端口上**没有** `ensureWorkspaceAccess`（可选方法）。 */
   withoutAccessEnsure?: boolean;
+  /** 可注入时钟（TTL / 时间戳断言）；缺省真实时间。 */
+  now?: () => number;
 }
 
 /** 一次运行里记录下来的 PSB 动作（断言「有没有建会话」「订阅了几次」）。 */
@@ -264,6 +290,7 @@ interface RemoteCalls {
   subscribed: string[];
   started: string[];
   stopped: string[];
+  stoppedSessions: string[];
   inputs: Array<{ sessionId: string; event: Record<string, unknown> }>;
   lockChecks: string[];
   ensureAccess: string[];
@@ -292,6 +319,10 @@ function createRemote(
       });
       return { session, workspace: workspaceRow() };
     },
+    stopSession: async (sessionId) => {
+      calls.stoppedSessions.push(sessionId);
+      if (behavior.stopSession) await behavior.stopSession(sessionId);
+    },
     getStreamStatus: (sessionId) => behavior.streamStatus(sessionId),
     startStream: async (sessionId) => {
       calls.started.push(sessionId);
@@ -299,6 +330,7 @@ function createRemote(
     },
     stopStream: async (sessionId) => {
       calls.stopped.push(sessionId);
+      await behavior.stopStream?.(sessionId);
     },
     sendStreamInput: async (sessionId, event) => {
       calls.inputs.push({ sessionId, event });
@@ -327,20 +359,22 @@ function createRemote(
 
 function createHarness(options: HarnessOptions = {}): Harness {
   const contextEvents: (PsbWorkspaceAdminContext | null)[] = [];
+  const contextChangedEvents: PsbWorkspaceAdminContextChangedEvent[] = [];
   const streamEvents: PsbStreamEvent[] = [];
   const warnings: Array<{ message: string; fields?: Record<string, unknown> }> = [];
+  const infos: Array<{ message: string; fields?: Record<string, unknown> }> = [];
   const calls: RemoteCalls = {
     created: [],
     subscribed: [],
     started: [],
     stopped: [],
+    stoppedSessions: [],
     inputs: [],
     lockChecks: [],
     ensureAccess: [],
   };
   const listeners = new Set<(event: PsbStreamEvent) => void>();
   const recent: PsbAdminRecentWorkspaceFile = {
-    version: PSB_ADMIN_RECENT_STATE_VERSION,
     lastWorkspaceId: null,
     sessions: [],
     desktopSessions: [],
@@ -359,7 +393,6 @@ function createHarness(options: HarnessOptions = {}): Harness {
     read: () => recent,
     write: (next) => {
       writes += 1;
-      recent.version = next.version;
       recent.lastWorkspaceId = next.lastWorkspaceId;
       recent.sessions = [...next.sessions];
       recent.desktopSessions = [...next.desktopSessions];
@@ -397,9 +430,13 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const deps: PsbWorkspaceAdminServiceDeps = {
     resolveRemote: () => activeRemote,
-    readLocalSessionRemoteHostId: async () => behavior.localRemoteHostId,
+    readLocalSessionRemoteHostId: async (localSessionId) =>
+      behavior.localRemoteHostIdForSession
+        ? behavior.localRemoteHostIdForSession(localSessionId)
+        : behavior.localRemoteHostId,
     store: createPsbAdminRecentWorkspaceStore(io),
     emitContextChanged: (event) => {
+      contextChangedEvents.push(event);
       contextEvents.push(event.context);
     },
     emitStreamEvent: (event) => {
@@ -407,12 +444,15 @@ function createHarness(options: HarnessOptions = {}): Harness {
     },
     log: {
       debug: () => {},
-      info: () => {},
+      info: (message, fields) => {
+        infos.push({ message, fields });
+      },
       warn: (message, fields) => {
         warnings.push({ message, fields });
       },
     },
     createRequestId: () => `req-${calls.created.length + 1}`,
+    ...(options.now ? { now: options.now } : {}),
   };
 
   return {
@@ -420,15 +460,18 @@ function createHarness(options: HarnessOptions = {}): Harness {
     deps,
     behavior,
     contextEvents,
+    contextChangedEvents,
     streamEvents,
     createSessionCalls: calls.created,
     subscribeCalls: calls.subscribed,
     startStreamCalls: calls.started,
     stopStreamCalls: calls.stopped,
+    stoppedSessionCalls: calls.stoppedSessions,
     inputCalls: calls.inputs,
     lockChecks: calls.lockChecks,
     ensureAccessCalls: calls.ensureAccess,
     warnings,
+    infos,
     storeWrites: () => writes,
     swapRemote(next) {
       Object.assign(behavior, next);
@@ -589,8 +632,9 @@ describe('管理页：当前工作区解析', () => {
 
   it('记录里的工作区已不可见（被删）→ 页面仍显示固定信息（stale/missing），只清易变记录', async () => {
     const harness = createHarness({ recent: { lastWorkspaceId: 'ws-deleted' } });
-    // 先建立观看端绑定（模拟用户之前启动过这个工作区的观看）并留下固定信息快照。
+    // 页面先实时读一次（固定信息落盘），再建立观看端绑定（模拟用户之前启动过这个工作区的观看）。
     harness.behavior.listWorkspaces = async () => [workspaceRow({ id: 'ws-deleted' })];
+    await harness.service.context({ localSessionId: null });
     const started = await harness.service.streamStart('ws-deleted');
     expect(harness.deps.store.desktopSessionIdForWorkspace('ws-deleted')).toBe(
       started.viewerSessionId,
@@ -646,9 +690,12 @@ describe('管理页：当前工作区解析', () => {
       templateTitle: 'Saga2',
       clientName: '打包机',
       directoryName: 'saga2_project-2',
-      state: 'ready',
     });
     expect(typeof snapshot?.savedAt).toBe('string');
+    expect(typeof snapshot?.confirmedAt).toBe('string');
+    // 快照只存固定字段：在线 / 工作区状态是易变信息，不落盘（2026-11-26 审查）。
+    expect(snapshot).not.toHaveProperty('clientOnline');
+    expect(snapshot).not.toHaveProperty('state');
 
     // PSB 不可达：不再依赖任何内存状态（模拟应用重启后的第一次读取）。
     harness.behavior.listWorkspaces = async () => {
@@ -712,7 +759,8 @@ describe('管理页：当前工作区解析', () => {
       directoryName: 'saga2_project-9',
       stale: true,
       availability: 'unavailable',
-      staleReason: 'session-unreadable',
+      // 占位身份（连工作区 id 都没有）用专门原因，不复用「PSB 读不到」。
+      staleReason: 'unknown-workspace',
       workspaceIdKnown: false,
       source: 'session',
       templateTitle: null,
@@ -726,7 +774,7 @@ describe('管理页：当前工作区解析', () => {
     expect(harness.lockChecks).toHaveLength(0);
   });
 
-  it('历史会话（会话详情 404、无快照/映射）→ 用目录名匹配实时列表，匹配到即按 live 渲染', async () => {
+  it('历史会话（会话详情 404、无快照/映射）→ 用目录名匹配实时列表，匹配到即按 live 渲染（不持久化）', async () => {
     const harness = createHarness({
       behavior: {
         localRemoteHostId: 'psb:psb-legacy',
@@ -759,9 +807,18 @@ describe('管理页：当前工作区解析', () => {
       occupancy: { occupied: true, byMe: true, personName: '我' },
       source: 'session',
     });
-    // 匹配成功顺带补记映射与固定信息快照：下次重启读不到列表也能兜底。
-    expect(harness.deps.store.workspaceIdForSession('psb-legacy')).toBe('ws-matched');
-    expect(harness.deps.store.workspaceSnapshot('ws-matched')?.title).toBe('saga2_project');
+    // 2026-11-26 审查：目录 / title 匹配是**启发式**，猜对了可以展示，猜错了不能持久化
+    // （否则这个任务以后永远指向别人的工作区）。结果只留内存并记 `inferred` 日志。
+    expect(harness.deps.store.workspaceIdForSession('psb-legacy')).toBeNull();
+    expect(harness.deps.store.workspaceSnapshot('ws-matched')).toBeNull();
+    expect(harness.deps.store.read().lastWorkspaceId).toBeNull();
+    expect(
+      harness.infos.some(
+        (entry) =>
+          entry.fields?.['inferred'] === true &&
+          entry.fields?.['workspaceId'] === 'ws-matched',
+      ),
+    ).toBe(true);
     // 读路径仍不订阅 / 不占用。
     expect(harness.lockChecks).toHaveLength(0);
     expect(harness.subscribeCalls).toHaveLength(0);
@@ -857,7 +914,8 @@ describe('管理页：当前工作区解析', () => {
       title: 'saga2_project-9',
       stale: true,
       availability: 'unavailable',
-      staleReason: 'list-failed',
+      // 占位身份：没有 PSB 给出的 workspace id，专门原因（不是 list-failed 家族）。
+      staleReason: 'unknown-workspace',
       workspaceIdKnown: false,
     });
     expect(context?.lastErrorZh).toBe('连不上 PSB');
@@ -877,7 +935,12 @@ describe('管理页：当前工作区解析', () => {
       .catch((cause: unknown) => cause);
 
     expect(error).toBeInstanceOf(PsbClientError);
-    expect((error as PsbClientError).failure.code).toBe('PSB_UNREACHABLE');
+    expect((error as PsbClientError).failure).toMatchObject({
+      code: 'WORKSPACE_UNREACHABLE',
+      messageKey: 'remoteWorkspace.admin.staleUnavailableAction',
+      // 失败 detail 只放 PSB 原文，main 不再写中文兜底句。
+      message: '连不上 PSB',
+    });
     // 不再先打占用闸门 / 订阅：用户马上拿到「连不上」的可行动原因。
     expect(harness.lockChecks).toHaveLength(0);
     expect(harness.subscribeCalls).toHaveLength(0);
@@ -889,9 +952,11 @@ describe('管理页：当前工作区解析', () => {
 describe('管理页：CONTEXT_CHANGED 推送', () => {
   it('同值不推送；占用发生变化时推一次（载荷与 invoke 结果同形）', async () => {
     const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    // 推送只对**有任务线索**的桶生效（2026-11-27 审查 s2 P1：兜底桶不广播，见下一条用例）。
+    const localSessionId = 'local-task-1';
 
     // 第一次 invoke 只建立基线，不推送。
-    await harness.service.context({ localSessionId: null });
+    await harness.service.context({ localSessionId });
     expect(harness.contextEvents).toHaveLength(0);
     // 第一次实时读取会落一次固定信息快照（新增写入点）；此后同值读取 0 次写，不随轮询放大。
     const writesAfterFirstRead = harness.storeWrites();
@@ -905,7 +970,7 @@ describe('管理页：CONTEXT_CHANGED 推送', () => {
     expect(harness.deps.store.read().desktopSessions).toEqual([]);
 
     // 读到同一份事实：不推送、不重复落盘。
-    await harness.service.context({ localSessionId: null });
+    await harness.service.context({ localSessionId });
     expect(harness.contextEvents).toHaveLength(0);
     expect(harness.storeWrites()).toBe(writesAfterFirstRead);
 
@@ -921,9 +986,10 @@ describe('管理页：CONTEXT_CHANGED 推送', () => {
         },
       }),
     ];
-    const { context } = await harness.service.context({ localSessionId: null });
+    const { context } = await harness.service.context({ localSessionId });
 
     expect(harness.contextEvents).toEqual([context]);
+    expect(harness.contextChangedEvents[0]?.localSessionId).toBe(localSessionId);
     expect(harness.contextEvents[0]?.occupancy).toEqual({
       occupied: true,
       byMe: false,
@@ -931,6 +997,26 @@ describe('管理页：CONTEXT_CHANGED 推送', () => {
     });
     // 读路径不写放大：三次读取 0 次落盘。
     expect(harness.storeWrites()).toBe(writesAfterFirstRead);
+  });
+
+  // 2026-11-27 审查 s2 P1（NULL 桶覆盖有任务窗口）：没有任务线索的上下文不广播。
+  // 最小失败输入：兜底桶在事实变化后 emit → 所有窗口（含有任务窗口）收到一份「没有任务」的
+  // 上下文并覆盖自己的页面状态。这里断言兜底桶无论基线是否建立都不产生推送。
+  it('无任务线索的兜底桶只建基线、不广播（不覆盖有任务的窗口）', async () => {
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+
+    await harness.service.context({ localSessionId: null });
+    harness.contextChangedEvents.length = 0;
+
+    // 事实变了：兜底桶重读也不推送（只回 invoke 结果）。
+    harness.behavior.listWorkspaces = async () => [
+      workspaceRow({
+        occupancy: { occupied: true, byMe: false, personId: '9', personName: '小王', occupiedAt: 2 },
+      }),
+    ];
+    const result = await harness.service.context({ localSessionId: null });
+    expect(result.context?.occupancy).toMatchObject({ byMe: false, personName: '小王' });
+    expect(harness.contextChangedEvents).toHaveLength(0);
   });
 });
 
@@ -946,7 +1032,7 @@ describe('管理页：启动串流走工作区级订阅', () => {
     expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
     expect(harness.startStreamCalls).toEqual(['desktop-1']);
     expect(result.viewerSessionId).toBe('desktop-1');
-    expect(result.status).toMatchObject({ capable: true, desktopSession: 'running' });
+    expect(result.status).toMatchObject({ capability: true, desktopSession: 'running' });
     // 关键红线：没有任何 Agent 会话被创建。
     expect(harness.createSessionCalls).toHaveLength(0);
     // 绑定持久化：重启后靠它只读地读状态。
@@ -989,14 +1075,16 @@ describe('管理页：启动串流走工作区级订阅', () => {
     expect(harness.startStreamCalls).toHaveLength(0);
   });
 
-  it('重复「启动」复用同一条桌面访问会话（只订阅一次，不重建会话）', async () => {
+  it('重复「启动」复用同一条桌面访问会话（只订阅一次、也不重连观看端）', async () => {
     const harness = createHarness();
 
     const first = await harness.service.streamStart(WORKSPACE_ID);
     const second = await harness.service.streamStart(WORKSPACE_ID);
 
     expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
-    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1']);
+    // 2026-11-27 复审 P1：已有健康观看连接时**复用**（不再 `startStream` 重连）。重连会原子
+    // 替换旧连接并补发 closed(superseded)，多窗口时等于把第一个窗口的观看判成终止。
+    expect(harness.startStreamCalls).toEqual(['desktop-1']);
     expect(second.viewerSessionId).toBe(first.viewerSessionId);
     expect(harness.createSessionCalls).toHaveLength(0);
   });
@@ -1121,6 +1209,147 @@ describe('管理页：启动串流走工作区级订阅', () => {
   });
 });
 
+/* ========== 串流连接复用与内部收尸（多窗口误杀 / owner 泄漏，2026-11-27 复审 P1） ========== */
+
+/**
+ * 多窗口共用同一条进程内观看端：`streamStart` 不能因为「第二个窗口点启动」就重连。
+ * 旧行为的现场表现：B 启动 → `streamViewer.start` 原子替换 A 的连接并补发
+ * `closed(superseded)` → A 被判终止回 idle，之后 A 再不会发 `adminStreamStop` → owner 计数
+ * 永不归零 → B 停止时流不停。这里的可观察结果是：只调一次 PSB 的 `startStream`、返回同一条
+ * 观看端会话；连接真断（`closed` / `error`）之后才允许重新起。
+ */
+describe('管理页：多窗口复用同一条串流连接', () => {
+  it('两个窗口先后启动同一工作区 → 只起一次观看端、复用同一条绑定（不重连、不产生 superseded）', async () => {
+    const harness = createHarness();
+
+    const first = await harness.service.streamStart(WORKSPACE_ID, { localSessionId: 'local-a' });
+    const second = await harness.service.streamStart(WORKSPACE_ID, { localSessionId: 'local-b' });
+
+    expect(harness.startStreamCalls).toEqual(['desktop-1']);
+    expect(harness.stopStreamCalls).toHaveLength(0);
+    expect(first.viewerSessionId).toBe('desktop-1');
+    expect(second.viewerSessionId).toBe('desktop-1');
+    // 第二个窗口拿到的是当前状态（不是 PSB 又推的一份），启动接口的形状不变。
+    expect(second.status.capability).toBe(true);
+  });
+
+  it('连接被远端关闭（未就绪）之后不再复用：下一次启动真的重新起观看端', async () => {
+    const harness = createHarness();
+    await harness.service.streamStart(WORKSPACE_ID);
+
+    harness.emitStreamEvent({
+      type: 'closed',
+      sessionId: 'desktop-1',
+      reason: 'not-ready',
+      detail: { reasonCode: null, desktopSession: null, messageZh: null },
+    });
+    await harness.service.streamStart(WORKSPACE_ID);
+
+    // 绑定（桌面访问会话）还在，所以不重新订阅；但观看连接要重新起。
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
+    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1']);
+  });
+
+  it('连接错误断开之后不再复用：下一次启动真的重新起观看端', async () => {
+    const harness = createHarness();
+    await harness.service.streamStart(WORKSPACE_ID);
+
+    harness.emitStreamEvent({
+      type: 'error',
+      sessionId: 'desktop-1',
+      failure: {
+        code: 'PSB_STREAM_UNREACHABLE',
+        messageKey: 'remoteWorkspace.error.unreachable',
+        message: 'read ECONNRESET',
+      },
+    });
+    await harness.service.streamStart(WORKSPACE_ID);
+
+    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1']);
+  });
+
+  it('用户停止之后不再复用：下一次启动重新起观看端（停止 = 本端没有连接）', async () => {
+    const harness = createHarness();
+    await harness.service.streamStart(WORKSPACE_ID);
+    await harness.service.streamStop(WORKSPACE_ID);
+    await harness.service.streamStart(WORKSPACE_ID);
+
+    expect(harness.stopStreamCalls).toEqual(['desktop-1']);
+    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1']);
+  });
+
+  it('stale 恢复路径内部收尸补发的 closed(client-stopped) 不转发给渲染层（不误伤其它窗口）', async () => {
+    // 生产形态：观看端 `stop` 会同步补发 closed(client-stopped)。stale 恢复路径自己会 stop 旧
+    // 连接再重建绑定 —— 那条 closed 不是用户动作，转发出去会让别的窗口显示「串流被关闭」。
+    let firstStart = true;
+    const harness = createHarness({
+      behavior: {
+        startStream: async (sessionId) => {
+          if (firstStart) {
+            firstStart = false;
+            return streamStatus();
+          }
+          if (sessionId === 'desktop-1') throw notFound();
+          return streamStatus();
+        },
+        stopStream: (sessionId) => {
+          harness.emitStreamEvent({
+            type: 'closed',
+            sessionId,
+            reason: 'client-stopped',
+            detail: { reasonCode: null, desktopSession: null, messageZh: null },
+          });
+        },
+      },
+    });
+    await harness.service.streamStart(WORKSPACE_ID);
+    // 连接出错（渲染层已经收到这条）→ 下次启动必须重新起，此时 PSB 说绑定会话已失效。
+    harness.emitStreamEvent({
+      type: 'error',
+      sessionId: 'desktop-1',
+      failure: {
+        code: 'PSB_STREAM_UNREACHABLE',
+        messageKey: 'remoteWorkspace.error.unreachable',
+        message: 'read ECONNRESET',
+      },
+    });
+    expect(harness.streamEvents.some((event) => event.type === 'error')).toBe(true);
+    harness.streamEvents.length = 0;
+
+    const result = await harness.service.streamStart(WORKSPACE_ID);
+
+    expect(harness.stopStreamCalls).toEqual(['desktop-1']);
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
+    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1', 'desktop-2']);
+    expect(result.viewerSessionId).toBe('desktop-2');
+    // 内部收尸的 closed 一条都不转发（转发只发生在用户显式停止的路径，见下一条用例）。
+    expect(harness.streamEvents.filter((event) => event.type === 'closed')).toHaveLength(0);
+  });
+
+  it('用户显式停止补发的 closed(client-stopped) 照常转发（内部收尸的抑制不误伤正常路径）', async () => {
+    const harness = createHarness({
+      behavior: {
+        stopStream: (sessionId) => {
+          harness.emitStreamEvent({
+            type: 'closed',
+            sessionId,
+            reason: 'client-stopped',
+            detail: { reasonCode: null, desktopSession: null, messageZh: null },
+          });
+        },
+      },
+    });
+    await harness.service.streamStart(WORKSPACE_ID);
+    harness.streamEvents.length = 0;
+
+    await harness.service.streamStop(WORKSPACE_ID);
+
+    expect(harness.streamEvents).toEqual([
+      expect.objectContaining({ type: 'closed', sessionId: 'desktop-1', reason: 'client-stopped' }),
+    ]);
+  });
+});
+
 /* ============= 订阅前「尽力拉起桌面访问」（可选增强，Cindy 入口未放行） ============= */
 
 describe('管理页：订阅前尽力拉起桌面访问', () => {
@@ -1176,10 +1405,112 @@ describe('管理页：订阅前尽力拉起桌面访问', () => {
 
     expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
     expect(result.viewerSessionId).toBe('desktop-1');
-    // 这属于「增强接口坏了」，要留痕，但只 warn 不失败。
-    expect(
-      harness.warnings.some((entry) => entry.message.includes('workspace access ensure threw')),
-    ).toBe(true);
+    // 这属于「增强接口坏了」，要留痕，但只 warn 不失败（后台预热，异常在微任务里被兜住）。
+    await vi.waitFor(() => {
+      expect(
+        harness.warnings.some((entry) => entry.message.includes('workspace access ensure threw')),
+      ).toBe(true);
+    });
+  });
+
+  it('拉起访问不再阻塞启动必经路径：ensure 一直不返回，启动照常完成', async () => {
+    // 用可变 holder 而不是 `let release = null`：后者在 promise executor 里赋值时 TS 无法
+    // 收窄到「可调用」，会在 `release?.()` 报 not callable。
+    const releaseEnsure: { fn: (() => void) | null } = { fn: null };
+    const harness = createHarness({
+      behavior: {
+        // 真实形态下它有 ~3s 轮询预算；这里模拟「慢到永远不返回」，启动不能被它拖住。
+        ensureWorkspaceAccess: () =>
+          new Promise<PsbWorkspaceAccessEnsureOutcome>((resolve) => {
+            releaseEnsure.fn = () =>
+              resolve({ ok: true, state: 'running', startedByThisCall: true });
+          }),
+      },
+    });
+
+    const result = await harness.service.streamStart(WORKSPACE_ID);
+
+    expect(result.viewerSessionId).toBe('desktop-1');
+    // ensure 是**先发起**的（后台预热），但订阅与起观看端都不等它。
+    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
+    expect(harness.startStreamCalls).toEqual(['desktop-1']);
+    releaseEnsure.fn?.();
+    await vi.waitFor(() => {
+      expect(harness.infos.some((entry) => entry.message.includes('access is running'))).toBe(
+        true,
+      );
+    });
+  });
+
+  it('入口未开放的能力位在本进程内缓存：再次订阅不再白打一次 ensure', async () => {
+    const harness = createHarness();
+    await harness.service.streamStart(WORKSPACE_ID);
+    // 等后台预热把 `cindy-entry-not-open` 写进能力位。
+    await vi.waitFor(() => {
+      expect(
+        harness.infos.some(
+          (entry) =>
+            entry.message.includes('access ensure did not succeed') &&
+            entry.fields?.['reason'] === 'cindy-entry-not-open',
+        ),
+      ).toBe(true);
+    });
+    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
+
+    // 绑定失效（桌面访问被重建）→ 下次启动要重新订阅，但入口未开放的能力位已经知道结果。
+    harness.behavior.streamStatus = async (sessionId) => {
+      if (sessionId === 'desktop-1') throw notFound();
+      return streamStatus();
+    };
+    await harness.service.streamStatus(WORKSPACE_ID);
+    expect(harness.deps.store.desktopSessionIdForWorkspace(WORKSPACE_ID)).toBeNull();
+
+    const restarted = await harness.service.streamStart(WORKSPACE_ID);
+    expect(restarted.viewerSessionId).toBe('desktop-2');
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
+    // 能力位 closed 且未过期：不再发起第二次 ensure。
+    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
+  });
+
+  it('拉起访问失败且订阅本身没有可读原因 → 启动失败带上 ensure 的 PSB 原文（码不变）', async () => {
+    const harness = createHarness({
+      behavior: {
+        ensureWorkspaceAccess: async () => ({
+          ok: false,
+          reason: 'failed',
+          failure: {
+            code: 'PSB_UNREACHABLE',
+            messageKey: 'remoteWorkspace.error.unreachable',
+            message: '入口未开放：403',
+          },
+        }),
+        subscribeWorkspaceStream: async () => {
+          // PSB 上游没给可读 message 的情况：main 不能只留一条空失败。
+          throw new PsbClientError(
+            {
+              code: 'PSB_STREAM_NO_RUNNING_SESSION',
+              messageKey: 'remoteWorkspace.admin.streamAccessNone',
+              message: null,
+              streamAccessState: 'none',
+            },
+            409,
+          );
+        },
+      },
+    });
+
+    const error = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    // 主失败的码 / 可行动语义不变，只补 PSB 原文做 detail。
+    expect(error.failure.code).toBe('PSB_STREAM_NO_RUNNING_SESSION');
+    expect(error.failure.streamAccessState).toBe('none');
+    expect(error.failure.message).toBe('入口未开放：403');
+    expect(error.status).toBe(409);
+    // 拉起访问失败不会自行触发旧 PSB 的建会话回退。
+    expect(harness.createSessionCalls).toHaveLength(0);
   });
 
   it('旧装配（端口上没有 ensureWorkspaceAccess）照常启动', async () => {
@@ -1367,9 +1698,14 @@ describe('管理页：键鼠输入转发', () => {
 
 describe('管理页：串流事件', () => {
   it('只转发观看端绑定会话的事件，并据事件里的桌面会话状态推送上下文', async () => {
-    const harness = createHarness();
-    const started = await harness.service.streamStart(WORKSPACE_ID);
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    // 页面先读一次上下文（真实入口：点击「启动」前页面已有本窗口的推送桶）。
+    // 推送只对**有任务线索**的桶生效（2026-11-27 审查 s2 P1），这里带本地任务 id。
+    const localSessionId = 'local-task-viewer';
+    await harness.service.context({ localSessionId });
+    const started = await harness.service.streamStart(WORKSPACE_ID, { localSessionId });
     harness.contextEvents.length = 0;
+    harness.contextChangedEvents.length = 0;
     harness.streamEvents.length = 0;
 
     // 别的会话（用户任务 / 其它观看端）的事件不属于管理页通道。
@@ -1454,25 +1790,25 @@ describe('管理页：串流事件', () => {
     });
   });
 
-  it('串流状态到管理页状态的映射把 PSB 拼写归一并把未知字段留 null', () => {
-    // PSB 现行字段是 `capability` / `encoder` / `lastErrorZh`（契约草稿是 `capable` / `codec` /
-    // `lastError`）：解析层已归一，这里钉住「映射不改语义、缺字段是未知」。
+  it('串流状态映射只做可选字段归一，不改写 PSB 契约字段名', () => {
+    // 2026-11-26 shared 收敛：`PsbSessionStreamStatus` 字段名 = PSB 线上拼写
+    // （`capability` / `encoder` / `lastErrorZh`），旧的 `capable` / `codec` / `lastError`
+    // 是未发布的契约草稿拼写，已删除双读兼容。映射层只把缺省的可选字段归一成 `null`。
     const parsed = {
-      capable: true,
+      capability: true,
       active: true,
       width: 1920,
       height: 1080,
       fps: 30,
-      codec: 'h264',
-      lastError: '没有正在运行的桌面会话',
-      desktopSession: null,
-      reasonCode: null,
+      encoder: 'h264',
+      lastErrorZh: '没有正在运行的桌面会话',
+      // 旧服务端 / 非串流入口不给这两个加性字段。
     } as PsbSessionStreamStatus;
 
     const mapped = psbAdminStreamStatusFromPsb(parsed);
 
     expect(mapped).toMatchObject({
-      capable: true,
+      capability: true,
       active: true,
       encoder: 'h264',
       lastErrorZh: '没有正在运行的桌面会话',
@@ -1513,7 +1849,7 @@ describe('管理页：工作区级状态读数', () => {
 
     const result = await harness.service.streamStatus(WORKSPACE_ID);
 
-    expect(result.status).toMatchObject({ capable: true, active: true, desktopSession: 'running' });
+    expect(result.status).toMatchObject({ capability: true, active: true, desktopSession: 'running' });
     expect(result.viewerSessionId).toBe('desktop-existing');
     expect(harness.subscribeCalls).toHaveLength(0);
     expect(harness.createSessionCalls).toHaveLength(0);
@@ -1647,20 +1983,23 @@ describe('管理页：工作区级状态读数', () => {
         },
       },
     });
-    const { context } = await harness.service.context({ localSessionId: null });
+    // 推送只对**有任务线索**的桶生效（2026-11-27 审查 s2 P1）。
+    const localSessionId = 'local-task-status';
+    const { context } = await harness.service.context({ localSessionId });
     expect(context?.viewerSessionId).toBeNull();
     harness.contextEvents.length = 0;
 
     // PSB 恢复：读数复用记录里的绑定（不订阅），viewerSessionId 从 null 变为有值。
     harness.behavior.streamStatus = async () =>
       streamStatus({ active: true, desktopSession: 'running' });
-    const result = await harness.service.streamStatus(WORKSPACE_ID);
+    const result = await harness.service.streamStatus(WORKSPACE_ID, { localSessionId });
     expect(result.viewerSessionId).toBe('desktop-existing');
     expect(harness.subscribeCalls).toHaveLength(0);
 
     await vi.waitFor(() => {
       expect(harness.contextEvents.at(-1)?.viewerSessionId).toBe('desktop-existing');
     });
+    expect(harness.contextChangedEvents.at(-1)?.localSessionId).toBe(localSessionId);
   });
 });
 
@@ -1668,17 +2007,21 @@ describe('管理页：工作区级状态读数', () => {
 
 describe('最近使用记录', () => {
   const EMPTY_STATE = {
-    version: PSB_ADMIN_RECENT_STATE_VERSION,
     lastWorkspaceId: null,
     sessions: [],
     desktopSessions: [],
     workspaceSnapshots: [],
   } as const;
 
-  it('坏数据收敛成空记录，会话/绑定映射去重并与上限对齐；旧 viewers 键被忽略', () => {
+  it('坏数据收敛成空记录，会话/绑定映射去重并与上限对齐；旧 viewers / version 键被忽略', () => {
     expect(normalizePsbAdminRecentState(null)).toEqual(EMPTY_STATE);
     expect(
-      normalizePsbAdminRecentState({ lastWorkspaceId: '  ', sessions: 'x', desktopSessions: {} }),
+      normalizePsbAdminRecentState({
+        version: 1,
+        lastWorkspaceId: '  ',
+        sessions: 'x',
+        desktopSessions: {},
+      }),
     ).toEqual(EMPTY_STATE);
 
     const overflow = Array.from({ length: PSB_ADMIN_RECENT_SESSION_LIMIT + 8 }, (_, index) => ({
@@ -1723,10 +2066,46 @@ describe('最近使用记录', () => {
     );
   });
 
-  it('写是幂等的：同值不落盘；工作区不可见时清掉易变记录但保留固定信息快照', () => {
+  it('落盘文件没有 version 字段（writePatch 会删默认值，改为加性演进）', () => {
+    const stored: PsbAdminRecentWorkspaceFile[] = [];
+    const file: PsbAdminRecentWorkspaceFile = {
+      lastWorkspaceId: null,
+      sessions: [],
+      desktopSessions: [],
+      workspaceSnapshots: [],
+    };
+    const store = createPsbAdminRecentWorkspaceStore({
+      read: () => file,
+      write: (next) => {
+        stored.push(next);
+        file.lastWorkspaceId = next.lastWorkspaceId;
+        file.sessions = [...next.sessions];
+        file.desktopSessions = [...next.desktopSessions];
+        file.workspaceSnapshots = [...(next.workspaceSnapshots ?? [])];
+      },
+    });
+
+    store.rememberWorkspace('ws-1');
+    store.rememberWorkspaceSnapshot({
+      workspaceId: 'ws-1',
+      title: 'saga2_project',
+      clientName: '打包机',
+      savedAt: '2026-11-26T00:00:00.000Z',
+    });
+
+    expect(stored).not.toHaveLength(0);
+    for (const payload of stored) {
+      expect(payload).not.toHaveProperty('version');
+    }
+    // 旧文件带 version 也能读（归一化忽略它）。
+    expect(normalizePsbAdminRecentState({ version: 7, lastWorkspaceId: 'ws-1' }).lastWorkspaceId).toBe(
+      'ws-1',
+    );
+  });
+
+  it('写是幂等的：同值不落盘；固定字段相同的快照 0 次写（易变状态不再参与比较）', () => {
     let writes = 0;
     const file: PsbAdminRecentWorkspaceFile = {
-      version: PSB_ADMIN_RECENT_STATE_VERSION,
       lastWorkspaceId: null,
       sessions: [],
       desktopSessions: [],
@@ -1736,7 +2115,6 @@ describe('最近使用记录', () => {
       read: () => file,
       write: (next) => {
         writes += 1;
-        file.version = next.version;
         file.lastWorkspaceId = next.lastWorkspaceId;
         file.sessions = [...next.sessions];
         file.desktopSessions = [...next.desktopSessions];
@@ -1754,22 +2132,18 @@ describe('最近使用记录', () => {
     expect(store.workspaceIdForSession('psb-1')).toBe('ws-1');
     expect(store.desktopSessionIdForWorkspace('ws-1')).toBe('desktop-1');
 
-    // 固定信息快照：值不变 0 次写（`savedAt` 保留第一次确认时间），变了才写。
+    // 固定信息快照：值不变 0 次写，`savedAt` 保留第一次落盘时间。
     const snapshotInput = {
       workspaceId: 'ws-1',
       title: 'saga2_project',
       templateTitle: 'Saga2',
       clientName: '打包机',
-      clientOnline: true,
       directoryName: 'saga2_project-2',
-      state: 'ready',
       savedAt: '2026-11-26T00:00:00.000Z',
     };
     expect(store.rememberWorkspaceSnapshot(snapshotInput)).toBe(true);
     expect(writes).toBe(4);
-    expect(
-      store.rememberWorkspaceSnapshot({ ...snapshotInput, savedAt: '2026-11-27T00:00:00.000Z' }),
-    ).toBe(false);
+    expect(store.rememberWorkspaceSnapshot({ ...snapshotInput })).toBe(false);
     expect(writes).toBe(4);
     expect(store.workspaceSnapshot('ws-1')).toMatchObject({
       title: 'saga2_project',
@@ -1777,10 +2151,30 @@ describe('最近使用记录', () => {
       clientName: '打包机',
       directoryName: 'saga2_project-2',
       savedAt: '2026-11-26T00:00:00.000Z',
+      confirmedAt: '2026-11-26T00:00:00.000Z',
     });
-    // 目录名可以反查同一个工作区（历史会话兜底用）。
-    expect(store.workspaceSnapshotByDirectoryName('saga2_project-2')?.workspaceId).toBe('ws-1');
-    expect(store.latestWorkspaceSnapshot()?.workspaceId).toBe('ws-1');
+
+    // 旧文件行里可能残留 clientOnline / state（易变状态）：读取时归一丢弃，且不参与等值比较。
+    const withVolatile = normalizePsbAdminRecentState({
+      workspaceSnapshots: [
+        {
+          ...store.workspaceSnapshot('ws-1'),
+          clientOnline: true,
+          state: 'ready',
+        },
+      ],
+    });
+    expect(withVolatile.workspaceSnapshots[0]).not.toHaveProperty('clientOnline');
+    expect(withVolatile.workspaceSnapshots[0]).not.toHaveProperty('state');
+    const storeWithVolatile = createPsbAdminRecentWorkspaceStore({
+      read: () => ({ ...file, workspaceSnapshots: withVolatile.workspaceSnapshots }),
+      write: (next) => {
+        writes += 1;
+        file.workspaceSnapshots = [...(next.workspaceSnapshots ?? [])];
+      },
+    });
+    expect(storeWithVolatile.rememberWorkspaceSnapshot(snapshotInput)).toBe(false);
+    expect(writes).toBe(4);
 
     // 换一条绑定：幂等写（同值不再写），旧值被替换。
     store.rememberDesktopSession('ws-1', 'desktop-2');
@@ -1792,30 +2186,92 @@ describe('最近使用记录', () => {
     expect(store.desktopSessionIdForWorkspace('ws-1')).toBeNull();
     store.forgetDesktopSession('ws-1');
     expect(writes).toBe(6);
+  });
 
-    // 工作区确认不可见：只清易变记录，`lastWorkspaceId` 与固定信息快照保留（页面继续显示）。
-    store.forgetWorkspaceVolatile('ws-1');
-    expect(writes).toBe(7);
-    expect(store.workspaceIdForSession('psb-1')).toBeNull();
-    expect(store.read().lastWorkspaceId).toBe('ws-1');
-    expect(store.workspaceSnapshot('ws-1')?.title).toBe('saga2_project');
-    store.forgetWorkspaceVolatile('ws-1');
-    expect(writes).toBe(7);
-
-    store.forgetWorkspace('ws-1');
-    expect(writes).toBe(8);
-    expect(store.read()).toMatchObject({
+  it('快照的 savedAt / confirmedAt 分开：重写保留首次落盘时间、推进确认时间', () => {
+    let writes = 0;
+    const file: PsbAdminRecentWorkspaceFile = {
       lastWorkspaceId: null,
       sessions: [],
       desktopSessions: [],
+      workspaceSnapshots: [],
+    };
+    const store = createPsbAdminRecentWorkspaceStore({
+      read: () => file,
+      write: (next) => {
+        writes += 1;
+        file.workspaceSnapshots = [...(next.workspaceSnapshots ?? [])];
+      },
     });
-    // `forgetWorkspace`（账号边界 / 显式清理）同样不删固定信息快照。
-    expect(store.workspaceSnapshot('ws-1')?.title).toBe('saga2_project');
-    expect(store.workspaceIdForSession('psb-1')).toBeNull();
+
+    expect(
+      store.rememberWorkspaceSnapshot({
+        workspaceId: 'ws-1',
+        title: '旧名称',
+        clientName: '打包机',
+        savedAt: '2026-11-26T00:00:00.000Z',
+        confirmedAt: '2026-11-26T00:00:00.000Z',
+      }),
+    ).toBe(true);
+    // 固定字段变化（目录名第一次拿到）：重写，但 `savedAt` 仍是第一次的时间。
+    expect(
+      store.rememberWorkspaceSnapshot({
+        workspaceId: 'ws-1',
+        title: '旧名称',
+        clientName: '打包机',
+        directoryName: 'saga2_project-2',
+        confirmedAt: '2026-11-27T00:00:00.000Z',
+      }),
+    ).toBe(true);
+    expect(writes).toBe(2);
+    expect(store.workspaceSnapshot('ws-1')).toMatchObject({
+      savedAt: '2026-11-26T00:00:00.000Z',
+      confirmedAt: '2026-11-27T00:00:00.000Z',
+    });
   });
 
-  it('固定信息快照的损坏容错与容量上限：坏行只丢该行，超出上限淘汰最旧', () => {
-    // 损坏 JSON 的常见形态：根不是对象 / 快照数组不是数组 / 单行字段类型不对。
+  it('latestWorkspaceSnapshot 按 confirmedAt 取最新，不依赖文件里的数组顺序', () => {
+    const snapshot = (workspaceId: string, confirmedAt: string): Record<string, unknown> => ({
+      workspaceId,
+      title: workspaceId,
+      clientName: 'machine',
+      savedAt: confirmedAt,
+      confirmedAt,
+    });
+    // 文件顺序刻意与时间相反（手改 / 旧版本写坏）。
+    const normalized = normalizePsbAdminRecentState({
+      workspaceSnapshots: [
+        snapshot('ws-old', '2026-11-20T00:00:00.000Z'),
+        snapshot('ws-new', '2026-11-27T00:00:00.000Z'),
+        snapshot('ws-mid', '2026-11-24T00:00:00.000Z'),
+      ],
+    });
+    expect(normalized.workspaceSnapshots.map((entry) => entry.workspaceId)).toEqual([
+      'ws-new',
+      'ws-mid',
+      'ws-old',
+    ]);
+    const store = createPsbAdminRecentWorkspaceStore({
+      read: () => normalized,
+      write: () => undefined,
+    });
+    expect(store.latestWorkspaceSnapshot()?.workspaceId).toBe('ws-new');
+
+    // 同一 workspaceId 的重复行：保留 confirmedAt 最新的那条，而不是文件里先出现的那条。
+    const deduped = normalizePsbAdminRecentState({
+      workspaceSnapshots: [
+        snapshot('ws-1', '2026-11-20T00:00:00.000Z'),
+        { ...snapshot('ws-1', '2026-11-27T00:00:00.000Z'), title: 'newer' },
+      ],
+    });
+    expect(deduped.workspaceSnapshots).toHaveLength(1);
+    expect(deduped.workspaceSnapshots[0]).toMatchObject({
+      title: 'newer',
+      confirmedAt: '2026-11-27T00:00:00.000Z',
+    });
+  });
+
+  it('坏行时间不伪造 1970：两个时间都不可解析的行丢弃，只有一个时用另一个补齐', () => {
     expect(normalizePsbAdminRecentState({ workspaceSnapshots: 'x' }).workspaceSnapshots).toEqual([]);
     expect(
       normalizePsbAdminRecentState({
@@ -1825,40 +2281,498 @@ describe('最近使用记录', () => {
           { workspaceId: 'ws-1' },
           { workspaceId: '', title: 't', clientName: 'c' },
           { workspaceId: 'ws-1', title: '  ', clientName: '' },
-          { workspaceId: 'ws-1', title: 'saga2_project', clientName: '打包机', savedAt: 42 },
-          { workspaceId: 'ws-1', title: 'dup', clientName: 'dup' },
+          // 两个时间都坏（旧实现会填成 1970-01-01 并抢到「最近确认」）：丢弃。
+          { workspaceId: 'bad', title: 'bad', clientName: 'c', savedAt: 42 },
+          { workspaceId: 'bad', title: 'bad', clientName: 'c', savedAt: 'not-a-date' },
+          // 只有 confirmedAt：savedAt 用它补齐。
+          {
+            workspaceId: 'ws-confirmed',
+            title: 'saga2_project',
+            clientName: '打包机',
+            confirmedAt: '2026-11-26T02:00:00.000Z',
+          },
+          // 只有 savedAt：confirmedAt 用它补齐。
+          {
+            workspaceId: 'ws-saved',
+            title: 'saved',
+            clientName: 'c',
+            savedAt: '2026-11-26T01:00:00.000Z',
+          },
+          // 倒挂（savedAt 晚于 confirmedAt）：归一成 savedAt <= confirmedAt。
+          {
+            workspaceId: 'ws-inverted',
+            title: 'inverted',
+            clientName: 'c',
+            savedAt: '2026-11-27T00:00:00.000Z',
+            confirmedAt: '2026-11-24T00:00:00.000Z',
+          },
         ],
       }).workspaceSnapshots,
     ).toEqual([
+      // 倒挂的时间戳归一成「savedAt = 较早、confirmedAt = 较晚」，按 confirmedAt 排在最前。
       {
-        workspaceId: 'ws-1',
+        workspaceId: 'ws-inverted',
+        title: 'inverted',
+        templateTitle: null,
+        clientName: 'c',
+        directoryName: null,
+        savedAt: '2026-11-24T00:00:00.000Z',
+        confirmedAt: '2026-11-27T00:00:00.000Z',
+      },
+      {
+        workspaceId: 'ws-confirmed',
         title: 'saga2_project',
         templateTitle: null,
         clientName: '打包机',
-        clientOnline: null,
         directoryName: null,
-        state: null,
-        savedAt: new Date(0).toISOString(),
+        savedAt: '2026-11-26T02:00:00.000Z',
+        confirmedAt: '2026-11-26T02:00:00.000Z',
+      },
+      {
+        workspaceId: 'ws-saved',
+        title: 'saved',
+        templateTitle: null,
+        clientName: 'c',
+        directoryName: null,
+        savedAt: '2026-11-26T01:00:00.000Z',
+        confirmedAt: '2026-11-26T01:00:00.000Z',
       },
     ]);
+  });
 
-    // 容量上限：超出上限截断（最近确认的在最前）。
-    const overflow = Array.from(
-      { length: PSB_ADMIN_WORKSPACE_SNAPSHOT_LIMIT + 5 },
-      (_, index) => ({
-        workspaceId: `ws-${index}`,
-        title: `ws-${index}`,
-        templateTitle: null,
-        clientName: 'machine',
-        clientOnline: null,
-        directoryName: null,
-        state: null,
-        savedAt: '2026-11-26T00:00:00.000Z',
-      }),
-    );
+  it('固定信息快照的容量上限：超出上限淘汰 confirmedAt 最旧的那条', () => {
+    const overflow = Array.from({ length: PSB_ADMIN_WORKSPACE_SNAPSHOT_LIMIT + 5 }, (_, index) => ({
+      workspaceId: `ws-${index}`,
+      title: `ws-${index}`,
+      templateTitle: null,
+      clientName: 'machine',
+      directoryName: null,
+      savedAt: '2026-11-26T00:00:00.000Z',
+      // 第 0 条最新，越往后越旧。
+      confirmedAt: new Date(
+        Date.parse('2026-11-26T00:00:00.000Z') - index * 60_000,
+      ).toISOString(),
+    }));
     const normalized = normalizePsbAdminRecentState({ workspaceSnapshots: overflow });
     expect(normalized.workspaceSnapshots).toHaveLength(PSB_ADMIN_WORKSPACE_SNAPSHOT_LIMIT);
     expect(normalized.workspaceSnapshots[0].workspaceId).toBe('ws-0');
+    // 最旧的 5 条被淘汰。
+    expect(normalized.workspaceSnapshots.some((entry) => entry.workspaceId === 'ws-20')).toBe(
+      false,
+    );
+  });
+});
+
+/* ==================== 多窗口：localSessionId 分桶（2026-11-26 独立审查） ==================== */
+
+describe('管理页：多窗口上下文分桶', () => {
+  const ROW_A = () => workspaceRow({ id: 'ws-a', title: '项目A', directoryName: 'dir-a' });
+  const ROW_B = () =>
+    workspaceRow({
+      id: 'ws-b',
+      title: '项目B',
+      directoryName: 'dir-b',
+      occupancy: { occupied: true, byMe: false, personId: '9', personName: '小王', occupiedAt: 2 },
+    });
+
+  function multiWindowHarness(): Harness {
+    return createHarness({
+      behavior: {
+        listWorkspaces: async () => [ROW_A(), ROW_B()],
+        // `remoteHostId = psb:a` 会在 main 侧被解析成 PSB 会话 id `a`。
+        sessionStatus: async (sessionId) => ({
+          session: sessionRow({ id: sessionId }),
+          workspace: sessionId === 'a' ? ROW_A() : ROW_B(),
+        }),
+        localRemoteHostIdForSession: (localSessionId) =>
+          localSessionId === 'local-a' ? 'psb:a' : 'psb:b',
+      },
+    });
+  }
+
+  it('两个窗口各自读自己的任务：推送基线互不覆盖、窗口 watchdog 重读不产生错标推送', async () => {
+    const harness = multiWindowHarness();
+
+    const a1 = await harness.service.context({ localSessionId: 'local-a' });
+    const b1 = await harness.service.context({ localSessionId: 'local-b' });
+    expect(a1.context?.workspaceId).toBe('ws-a');
+    expect(b1.context?.workspaceId).toBe('ws-b');
+    // 两个窗口第一次读都只建立各自基线，不推送。
+    expect(harness.contextChangedEvents).toHaveLength(0);
+
+    // 窗口 A 的 30s watchdog 再读同一任务：值没变，不推送。
+    // 旧实现此时会拿**全局最近**的 localSessionId（B）发出错标推送，A/B 都会丢弃。
+    await harness.service.context({ localSessionId: 'local-a' });
+    expect(harness.contextChangedEvents).toHaveLength(0);
+
+    // B 的工作区占用变了：只推 B 的桶，`localSessionId` 精确是 B。
+    const ROW_B_MINE = {
+      ...ROW_B(),
+      occupancy: { occupied: true, byMe: true, personId: '7', personName: '我', occupiedAt: 3 },
+    };
+    harness.behavior.sessionStatus = async (sessionId) => ({
+      session: sessionRow({ id: sessionId }),
+      workspace: sessionId === 'a' ? ROW_A() : ROW_B_MINE,
+    });
+    await harness.service.context({ localSessionId: 'local-b' });
+    expect(harness.contextChangedEvents).toHaveLength(1);
+    expect(harness.contextChangedEvents[0].localSessionId).toBe('local-b');
+    expect(harness.contextChangedEvents[0].context?.workspaceId).toBe('ws-b');
+    expect(harness.contextChangedEvents[0].context?.occupancy.byMe).toBe(true);
+
+    // A 的桶不受影响：再读 A 仍然不推送（没有把 B 的事件错标给 A）。
+    await harness.service.context({ localSessionId: 'local-a' });
+    expect(harness.contextChangedEvents).toHaveLength(1);
+  });
+
+  it('串流动作只刷新相关桶：发起窗口拿到自己的 id，另一个窗口不被刷成别人的工作区', async () => {
+    const harness = multiWindowHarness();
+    await harness.service.context({ localSessionId: 'local-a' });
+    await harness.service.context({ localSessionId: 'local-b' });
+    harness.contextChangedEvents.length = 0;
+
+    const started = await harness.service.streamStart('ws-a', { localSessionId: 'local-a' });
+    expect(started.viewerSessionId).toBe('desktop-1');
+
+    await vi.waitFor(() => {
+      expect(harness.contextChangedEvents.length).toBeGreaterThan(0);
+    });
+    // 拉起观看端让 A 的上下文多了 viewerSessionId：事件只属于 A。
+    for (const event of harness.contextChangedEvents) {
+      expect(event.localSessionId).toBe('local-a');
+      expect(event.context?.workspaceId).toBe('ws-a');
+    }
+    // B 的桶没有被刷新（列 B 的上下文仍来自它自己的读取）。
+    expect(harness.contextChangedEvents.some((event) => event.localSessionId === 'local-b')).toBe(
+      false,
+    );
+  });
+});
+
+/* ==================== stale 闸门的新鲜度（checkedAt） ==================== */
+
+describe('管理页：写操作闸门的新鲜度', () => {
+  it('过旧的可写状态会重新解析：PSB 恢复后「启动」不再被旧失败永久拦住', async () => {
+    let now = Date.parse('2026-11-26T00:00:00.000Z');
+    const harness = createHarness({
+      now: () => now,
+      recent: { lastWorkspaceId: WORKSPACE_ID },
+    });
+    await harness.service.context({ localSessionId: null });
+
+    harness.behavior.listWorkspaces = async () => {
+      throw unreachable();
+    };
+    const stale = await harness.service.context({ localSessionId: null });
+    expect(stale.context?.stale).toBe(true);
+
+    // 结论还新鲜：直接给可行动失败（不再为每次点击打一次 20s 超时）。
+    const blocked = await harness.service.streamStart(WORKSPACE_ID).catch((cause: unknown) => cause);
+    expect((blocked as PsbClientError).failure.code).toBe('WORKSPACE_UNREACHABLE');
+    expect(harness.lockChecks).toHaveLength(0);
+
+    now += 1_000;
+    const stillBlocked = await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause);
+    expect((stillBlocked as PsbClientError).failure.code).toBe('WORKSPACE_UNREACHABLE');
+    expect(harness.lockChecks).toHaveLength(0);
+
+    // 超过信任窗口：重新解析，PSB 已恢复 → 正常启动。
+    harness.behavior.listWorkspaces = async () => [workspaceRow()];
+    now += 60_000;
+    const started = await harness.service.streamStart(WORKSPACE_ID);
+    expect(started.viewerSessionId).toBe('desktop-1');
+    expect(harness.lockChecks).toEqual([WORKSPACE_ID]);
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
+  });
+
+  it('写路径遇到 NOT_FOUND 后不标 live：第二次启动直接给「工作区已不可见」且不再打 PSB', async () => {
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    await harness.service.context({ localSessionId: null });
+
+    harness.behavior.ensureWorkspaceLocked = async () => {
+      throw notFound();
+    };
+    const first = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+    expect(first.failure.code).toBe('NOT_FOUND');
+    expect(harness.lockChecks).toHaveLength(1);
+
+    const second = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+    // 闸门吸收失败：不再打占用闸门 / 订阅；失败码与 messageKey 给「工作区已不可见」，
+    // 原文只放 PSB 的话（不写中文兜底）。
+    expect(second.failure).toMatchObject({
+      code: 'WORKSPACE_MISSING',
+      messageKey: 'remoteWorkspace.admin.staleMissingAction',
+      message: '会话不存在',
+    });
+    expect(harness.lockChecks).toHaveLength(1);
+    expect(harness.subscribeCalls).toHaveLength(0);
+  });
+
+  // 2026-11-27 审查 s2 P1（startStreamWithRecovery 归因）：观看会话（`startStream(<sessionId>)`）
+  // 的 404 是**会话级**的，不能被吸收成「工作区不可见」—— 否则下一次点「启动」会被错误的
+  // stale 闸门永久拦住，而工作区其实好好的。最小失败输入：会话起的 notFound 被 absorb 后，
+  // 第二次启动直接 WORKSPACE_MISSING 且不再打 PSB。
+  it('观看会话级 NOT_FOUND 不吸收成工作区不可见：第二次启动仍打 PSB，归因保持会话级', async () => {
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    await harness.service.context({ localSessionId: null });
+
+    harness.behavior.startStream = async () => {
+      throw notFound();
+    };
+    const first = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+    expect(first.failure.code).toBe('NOT_FOUND');
+    expect(harness.lockChecks).toHaveLength(1);
+
+    const second = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+    // 工作区仍被当成可写：重新走占用闸门 + 订阅，而不是直接给 stale 的 WORKSPACE_MISSING。
+    expect(second.failure.code).toBe('NOT_FOUND');
+    expect(harness.lockChecks).toHaveLength(2);
+    expect(harness.subscribeCalls.length).toBeGreaterThan(0);
+  });
+
+  it('占位身份用专门 staleReason 与专门失败码（不是 notFound / unreachable）', async () => {
+    const harness = createHarness({
+      behavior: {
+        localRemoteHostId: 'psb:psb-legacy',
+        sessionStatus: async () => {
+          throw notFound();
+        },
+      },
+    });
+    harness.deps.readLocalSessionHint = async () => ({
+      remoteHostId: 'psb:psb-legacy',
+      title: '修一下检出脚本',
+      workingDir: '/psb-remote/saga2_project-9',
+    });
+
+    const { context } = await harness.service.context({ localSessionId: 'local-legacy' });
+    expect(context).toMatchObject({
+      staleReason: 'unknown-workspace',
+      workspaceIdKnown: false,
+    });
+
+    const error = (await harness.service
+      .streamStart('psb:psb-legacy')
+      .catch((cause: unknown) => cause)) as PsbClientError;
+    expect(error.failure).toMatchObject({
+      code: 'WORKSPACE_ID_UNKNOWN',
+      messageKey: 'remoteWorkspace.admin.staleUnknownWorkspaceAction',
+      message: null,
+    });
+    expect(harness.lockChecks).toHaveLength(0);
+    expect(harness.subscribeCalls).toHaveLength(0);
+  });
+});
+
+/* ==================== 启发式匹配的持久化边界 ==================== */
+
+describe('管理页：启发式匹配只在内存', () => {
+  function heuristicHarness(): Harness {
+    const harness = createHarness({
+      behavior: {
+        localRemoteHostId: 'psb:psb-legacy',
+        sessionStatus: async () => {
+          throw notFound();
+        },
+        listWorkspaces: async () => [
+          workspaceRow({ id: 'ws-matched', title: 'saga2_project', directoryName: 'saga2_project-9' }),
+        ],
+      },
+    });
+    harness.deps.readLocalSessionHint = async () => ({
+      remoteHostId: 'psb:psb-legacy',
+      title: '修一下检出脚本',
+      workingDir: '/psb-remote/saga2_project-9',
+    });
+    return harness;
+  }
+
+  it('目录启发式命中不写会话映射 / 快照；占用成功确认后才落固定信息快照', async () => {
+    const harness = heuristicHarness();
+    const { context } = await harness.service.context({ localSessionId: 'local-legacy' });
+    expect(context?.workspaceId).toBe('ws-matched');
+    expect(harness.deps.store.workspaceIdForSession('psb-legacy')).toBeNull();
+    expect(harness.deps.store.workspaceSnapshot('ws-matched')).toBeNull();
+
+    // 用户点「启动」并在 PSB 上锁定成功：这一刻 PSB 已确认工作区存在，快照可以落盘。
+    await harness.service.streamStart('ws-matched');
+    expect(harness.deps.store.workspaceSnapshot('ws-matched')?.title).toBe('saga2_project');
+    // 但会话 → 工作区映射仍不写：那是**身份**，启发式没有资格决定它。
+    expect(harness.deps.store.workspaceIdForSession('psb-legacy')).toBeNull();
+  });
+});
+
+/* ==================== 过渡回退内部会话的收尸 ==================== */
+
+describe('管理页：过渡回退内部会话收尸', () => {
+  it('回退会话起观看端失败 → best-effort stopSession 回滚，且不留绑定记录', async () => {
+    const harness = createHarness({
+      behavior: {
+        subscribeWorkspaceStream: async () => {
+          throw subscribeUnavailable('unsupported');
+        },
+        startStream: async () => {
+          throw unreachable();
+        },
+      },
+    });
+
+    const error = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('PSB_UNREACHABLE');
+    expect(harness.createSessionCalls).toHaveLength(1);
+    // 内部会话被结束（best-effort），本机绑定记录不保留（下一次启动重新订阅，不残留死 id）。
+    expect(harness.stoppedSessionCalls).toEqual(['internal-1']);
+    expect(harness.deps.store.desktopSessionIdForWorkspace(WORKSPACE_ID)).toBeNull();
+  });
+
+  it('PSB 说回退会话已结束 → 丢绑定并结束内部会话', async () => {
+    const harness = createHarness({
+      behavior: {
+        subscribeWorkspaceStream: async () => {
+          throw subscribeUnavailable('unsupported');
+        },
+      },
+    });
+    const started = await harness.service.streamStart(WORKSPACE_ID);
+    expect(started.viewerSessionId).toBe('internal-1');
+
+    harness.emitStreamEvent({
+      type: 'closed',
+      sessionId: 'internal-1',
+      reason: 'session-ended',
+      detail: { reasonCode: null, desktopSession: null, messageZh: '会话已结束' },
+    });
+
+    expect(harness.deps.store.desktopSessionIdForWorkspace(WORKSPACE_ID)).toBeNull();
+    await vi.waitFor(() => {
+      expect(harness.stoppedSessionCalls).toEqual(['internal-1']);
+    });
+  });
+
+  it('新订阅成功后按 TTL 清理仍被引用的旧回退会话（另一工作区正常订阅触发）', async () => {
+    let now = Date.parse('2026-11-26T00:00:00.000Z');
+    const harness = createHarness({
+      now: () => now,
+      behavior: {
+        subscribeWorkspaceStream: async (workspaceId) => {
+          if (workspaceId === WORKSPACE_ID) throw subscribeUnavailable('route-404');
+          return subscription('desktop-other');
+        },
+      },
+    });
+    const fallback = await harness.service.streamStart(WORKSPACE_ID);
+    expect(fallback.viewerSessionId).toBe('internal-1');
+
+    // 另一个工作区（旧 PSB 上不存在该问题）用工作区级订阅成功；此时旧回退会话已存活超过 TTL。
+    now += 31 * 60_000;
+    harness.behavior.listWorkspaces = async () => [
+      workspaceRow(),
+      workspaceRow({ id: 'ws-other', title: 'other', directoryName: 'dir-other' }),
+    ];
+    const other = await harness.service.streamStart('ws-other');
+    expect(other.viewerSessionId).toBe('desktop-other');
+
+    await vi.waitFor(() => {
+      expect(harness.stoppedSessionCalls).toEqual(['internal-1']);
+    });
+    // 正在用的观看端不会被误停。
+    expect(harness.stopStreamCalls).not.toContain('desktop-other');
+  });
+});
+
+/* ==================== 启动 / 停止的串行与代次 ==================== */
+
+describe('管理页：启动与停止的互斥', () => {
+  it('启动落定前收到停止 → 自动停掉刚起的串流，排队的 stop 不重复停', async () => {
+    const pendingStart: { resolve: ((status: PsbSessionStreamStatus) => void) | null } = {
+      resolve: null,
+    };
+    const harness = createHarness({
+      behavior: {
+        startStream: () =>
+          new Promise<PsbSessionStreamStatus>((resolve) => {
+            pendingStart.resolve = resolve;
+          }),
+      },
+    });
+
+    const startPromise = harness.service.streamStart(WORKSPACE_ID);
+    await vi.waitFor(() => {
+      expect(harness.startStreamCalls).toEqual(['desktop-1']);
+    });
+    const stopPromise = harness.service.streamStop(WORKSPACE_ID);
+    pendingStart.resolve?.(streamStatus());
+    const [started] = await Promise.all([startPromise, stopPromise]);
+
+    // 启动返回「未在播」，并且刚起的串流真的被停掉（不把用户已经点过停止的观看留在远端）。
+    expect(started.viewerSessionId).toBe('desktop-1');
+    expect(started.status.active).toBe(false);
+    expect(harness.stopStreamCalls).toEqual(['desktop-1']);
+
+    // 之后再启动：复用同一条绑定，正常起观看端。
+    harness.behavior.startStream = async () => streamStatus({ active: true });
+    const again = await harness.service.streamStart(WORKSPACE_ID);
+    expect(again.status.active).toBe(true);
+    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
+    expect(harness.startStreamCalls).toEqual(['desktop-1', 'desktop-1']);
+  });
+});
+
+/* ==================== 失败码 / 文案口径 ==================== */
+
+describe('管理页：失败码与文案口径（main 不自写中文）', () => {
+  it('stale / 不可达失败只给码 + messageKey + PSB 原文，不出现自写中文兜底句', async () => {
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    await harness.service.context({ localSessionId: null });
+    harness.behavior.listWorkspaces = async () => {
+      throw unreachable();
+    };
+    await harness.service.context({ localSessionId: null });
+
+    const error = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure).toMatchObject({
+      code: 'WORKSPACE_UNREACHABLE',
+      messageKey: 'remoteWorkspace.admin.staleUnavailableAction',
+      message: '连不上 PSB',
+    });
+    // 旧实现会在这里自写「暂时连不上…请检查网络后重试。」；现在文案只来自 i18n。
+    expect(error.failure.message).not.toContain('请检查网络后重试');
+    expect(error.failure.message).not.toContain('无法继续操作');
+  });
+});
+
+/* ==================== context 读取失败不崩 ==================== */
+
+describe('管理页：context 的初始错误容错', () => {
+  it('读会话行线索抛错时不向上抛：退化为最近使用的工作区并留 warn', async () => {
+    const harness = createHarness({ recent: { lastWorkspaceId: WORKSPACE_ID } });
+    harness.deps.readLocalSessionHint = async () => {
+      throw new Error('localDb is down');
+    };
+    harness.deps.readLocalSessionRemoteHostId = async () => {
+      throw new Error('localDb is down');
+    };
+
+    const result = await harness.service.context({ localSessionId: 'local-1' });
+
+    expect(result.context?.workspaceId).toBe(WORKSPACE_ID);
+    expect(harness.warnings.length).toBeGreaterThan(0);
   });
 });
 

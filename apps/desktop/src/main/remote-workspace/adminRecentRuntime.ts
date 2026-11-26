@@ -14,8 +14,18 @@
  * 它，不互相依赖，也不会各自 `createOverrideSettingsFile` 出两个实例 —— 两个实例各自缓存整份
  * JSON、覆盖式写入，会互相丢更新。
  *
- * 走既有 `createOverrideSettingsFile`：原子替换 + 跨进程锁 + 大小上限，不新增 DB 列 / migration；
+ * 走既有 `createOverrideSettingsFile`：读走进程内缓存（按文件 identity 失效）、写走
+ * `writePatch` = 合并 + 临时文件 `rename` 原子替换 + 大小上限。**没有跨进程锁**
+ * （`writePatchAtomic` 才取 `withCrossProcessLock`）：本文件的写入方都在本进程内、共用下面的
+ * 单例，同一 userData 目录被多个进程同时写不在支持范围内；真要跨进程写再换 atomic 变体。
  * 读失败与写失败都只记 warn（丢了只是页面退回旧行为，不影响任务与 PSB）。
+ *
+ * ## 为什么没有 `version`
+ *
+ * `writePatch` 会删掉与默认值相等的键，而 `version` 恒等于默认值，所以它**永远落不了盘**
+ * （2026-11-26 审查）。这份文件改成**加性演进**：新字段可选、读取时缺省按旧行为归一；
+ * 语义变更换新键（`viewers` → `desktopSessions`）；旧文件里的 `version` 读取时忽略。
+ * 详见 `adminRecentStore.ts` 文件头。
  */
 
 import type { PsbRemoteWorkspace } from '../../shared/psb-remote-workspace.js';
@@ -23,7 +33,6 @@ import { createLogger } from '../logger.js';
 import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
 import { userDataPath } from '../userDataPath.js';
 import {
-  PSB_ADMIN_RECENT_STATE_VERSION,
   createPsbAdminRecentWorkspaceStore,
   normalizePsbAdminRecentState,
   type PsbAdminRecentWorkspaceFile,
@@ -36,10 +45,9 @@ export const PSB_ADMIN_RECENT_WORKSPACE_FILE = 'psb-remote-workspace-admin.json'
 
 const log = createLogger('psb-remote-admin');
 
-/** 生产读写的端口（走 override settings 文件：原子替换、跨进程锁、有大小上限）。 */
+/** 生产读写的端口（走 override settings 文件：原子替换、大小上限；**不取跨进程锁**，见文件头）。 */
 function createRecentWorkspaceIo(): PsbAdminRecentWorkspaceIo {
   const defaults: PsbAdminRecentWorkspaceFile = {
-    version: PSB_ADMIN_RECENT_STATE_VERSION,
     lastWorkspaceId: null,
     sessions: [],
     // JSON 键 2026-11-26 由 `viewers` 改为 `desktopSessions`：值从「内部观看端 Agent 会话」
@@ -54,7 +62,6 @@ function createRecentWorkspaceIo(): PsbAdminRecentWorkspaceIo {
     normalize: (raw) => {
       const state = normalizePsbAdminRecentState(raw);
       return {
-        version: state.version,
         lastWorkspaceId: state.lastWorkspaceId,
         sessions: [...state.sessions],
         desktopSessions: [...state.desktopSessions],
@@ -107,14 +114,16 @@ export function getPsbAdminRecentWorkspaceStore(): PsbAdminRecentWorkspaceStore 
 /** 工作区固定信息的观测值（`PsbRemoteWorkspace` 的子集；便于只传需要的字段）。 */
 export type PsbWorkspaceObservation = Pick<
   PsbRemoteWorkspace,
-  'id' | 'title' | 'templateTitle' | 'clientName' | 'clientOnline' | 'directoryName' | 'state'
+  'id' | 'title' | 'templateTitle' | 'clientName' | 'directoryName'
 >;
 
 /**
  * 记一次「本机看到了这个工作区的固定信息」（PSB 实时行读成功的所有写入点共用）。
  *
- * 幂等：固定字段不变时 0 次写（`savedAt` 保留最早确认的时间）。同时把「最近使用」推进到
- * 这个工作区，保证重启后没有任务打开时页面也能用快照兜底。
+ * 幂等：固定字段不变时 0 次写（`savedAt` 保留最早落盘的时间，`confirmedAt` 只在真正写盘时
+ * 推进）。同时把「最近使用」推进到这个工作区，保证重启后没有任务打开时页面也能用快照兜底。
+ *
+ * 只收固定字段：在线 / 工作区状态是易变的，不落盘（见 `adminRecentStore` 文件头）。
  */
 export function recordPsbWorkspaceSeen(workspace: PsbWorkspaceObservation): void {
   try {
@@ -124,9 +133,7 @@ export function recordPsbWorkspaceSeen(workspace: PsbWorkspaceObservation): void
       title: workspace.title,
       templateTitle: workspace.templateTitle,
       clientName: workspace.clientName,
-      clientOnline: workspace.clientOnline,
       directoryName: workspace.directoryName,
-      state: workspace.state,
     });
     store.rememberWorkspace(workspace.id);
   } catch (error) {
@@ -141,7 +148,8 @@ export function recordPsbWorkspaceSeen(workspace: PsbWorkspaceObservation): void
  * 记一条 `PSB 会话 → 工作区`映射（会话启动那一刻写一次）。
  *
  * 这是「PSB 读不到时用快照兜底」的关键一环：重启后本机会话行只有 `psb:<sessionId>`，
- * 靠这条映射才能找到会话当初跑在哪个工作区的快照（否则只能退化成会话标题 / 目录名）。
+ * 靠这条映射才能找到会话当初跑在哪个工作区的快照（否则只能退化成会话目录名）。
+ * **只有这条权威映射落盘**；按目录名 / 标题的启发式匹配留在 `adminService` 内存里。
  */
 export function recordPsbSessionWorkspace(psbSessionId: string, workspaceId: string): void {
   try {
@@ -153,9 +161,4 @@ export function recordPsbSessionWorkspace(psbSessionId: string, workspaceId: str
       error: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-/** 释放单例（测试 / 账号边界）；下一次 `getPsbAdminRecentWorkspaceStore()` 重新装配。 */
-export function disposePsbAdminRecentWorkspaceStore(): void {
-  storeSingleton = null;
 }

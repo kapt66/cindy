@@ -242,6 +242,7 @@ import {
   remoteSessionHostOwnsCwd,
   resolveRemoteCodexCredentialMode,
 } from './remote-session-routing.js';
+import { resolveRemoteCcTunnelStartParams } from './remote-cc-start.js';
 import { openRemoteTunnel } from './remote-tunnel-dispatch.js';
 import { routeInjectedRemoteMcpApprovalsThroughCindy } from './remote-claude-permission-mode.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
@@ -455,7 +456,9 @@ import {
 } from './mcp-tool-approval-policy.js';
 import { mapCodexAppServerModelsToCatalog } from './codex-model-discovery.js';
 import {
+  registerRemoteHostTransport,
   registerRemoteTransport,
+  releaseRemoteHostTransport,
   releaseRemoteTransport,
   setRemoteTransportLogger,
 } from './remoteTransportRegistry.js';
@@ -1656,13 +1659,12 @@ export function getMaker(): Maker {
           // 把它当远端 cwd 下发时，daemon 侧 SDK 会用不存在的目录 spawn `claude`：query 在
           // 首个 turn 之前就终止（本机 SDK 复现 11ms）、daemon 发 `session/closed(reason=error)`
           // → 本地会话被自动关闭，用户只看到 `Session <id> is closed`（2026-11-26 实报）。
-          // 因此 psb 传 `.`（daemon 自己的 cwd == 服务端工作区），与 pi（`buildPiLaunchCommand`
-          // 不写 `cd`）、codex（`$codexBridge` 不带 cwd）同一口径；`mcpr:` 的 workingDir 是
-          // MCPRouter 实例上的真实路径，保持原样。
-          const tunnelStartParams =
-            parsePsbRemoteHostId(remoteHostId) !== null
-              ? { ...(startParams as Record<string, unknown>), cwd: '.' }
-              : startParams;
+          // 判定只问能力表 → `resolveRemoteCcTunnelStartParams`（`remoteSessionHostOwnsCwd`），
+          // 不在调用点再解析一次身份：畸形 `psb:` 也是 psb transport，必须同样改成 `.`。
+          const tunnelStartParams = resolveRemoteCcTunnelStartParams(
+            remoteHostId,
+            startParams as unknown as Record<string, unknown>,
+          );
           const stream = await openRemoteTunnel(remoteHostId, 'cc-mgr');
           const { remoteQuery, dispose, detach } = await openCcManagerSession({
             stream,
@@ -2179,7 +2181,7 @@ export function getMaker(): Maker {
               `[PSB_SESSION_INVALID] Invalid remote workspace Codex target: ${remoteHostId}`,
             );
           }
-          return createMcprCodexTransport({
+          const codexTransport = createMcprCodexTransport({
             instanceId: psbSessionId,
             transportLabel: 'PSB',
             buildHeader: () => buildTunnelRemoteCodexBridgeHeader({
@@ -2197,6 +2199,18 @@ export function getMaker(): Maker {
               void releaseTunnelCodexControlChannel(remoteHostId);
             },
           });
+          // 统一登记（与 cc 同一张表，只是作用域按**隧道身份**）：会话结束 / 应用退出 /
+          // 归档删除都能释放它，诊断里也看得见。Codex transport 的 close 是幂等的，
+          // 关闭时自己注销，释放入口只负责兜底。
+          registerRemoteHostTransport(remoteHostId, async () => {
+            await codexTransport.close('psb transport released');
+          });
+          const unregisterOnClose = codexTransport.onClose(() => {
+            unregisterOnClose();
+            // 终态已到：登记表里这条不再需要（释放路径调 close 时这里只是把条目清掉）。
+            void releaseRemoteHostTransport(remoteHostId, 'transport-closed');
+          });
+          return codexTransport;
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -2522,7 +2536,7 @@ export function getMaker(): Maker {
           // 「host 已 probe」),缺失才自己 resolve(与 SSH 分支同一取舍,避免两次语义分叉)。
           const remoteBinaryPath = providedRemoteBinaryPath
             ?? (await resolveMcprPiBinaryPath(remoteHostId, { openTunnel: openRemoteTunnel }));
-          return createMcprPiTransport({
+          const transport = createMcprPiTransport({
             remoteHostId,
             remoteBinaryPath,
             args,
@@ -2532,6 +2546,23 @@ export function getMaker(): Maker {
             logger: desktopMakerLogger,
             openTunnel: openRemoteTunnel,
           });
+          // 统一登记（按会话，与 cc 同一张表）：Pi 的 `mode=pi` 隧道同样会「会话退休但不经过
+          // agent close」，只有 registry 能在会话结束 / 应用退出时兜底释放（PSB 侧按活动隧道
+          // 统计，泄漏会牵住 stop / commit）。close 是幂等的，正常关闭只是清条目。
+          const originalClose = transport.close.bind(transport);
+          transport.close = async (reason?: string) => {
+            try {
+              await originalClose(reason);
+            } finally {
+              if (sessionId) await releaseRemoteTransport(sessionId, 'pi-transport-closed');
+            }
+          };
+          if (sessionId) {
+            registerRemoteTransport(sessionId, remoteHostId, async () => {
+              await originalClose('remote transport released');
+            });
+          }
+          return transport;
           // hostProxyForwards 有意忽略:隧道形态没有到控制端的反向转发,provider 转发
           // 本身不可达(见 `resolveMcprPiAgentProxyEnv` 的说明)。
         }
@@ -2786,6 +2817,9 @@ export function getMaker(): Maker {
         const result = await _maker.listAgentSkills(agentKind, {
           workingDir,
           remoteHostId,
+          // cwd 归远端宿主（`psb:`）时本机 `workingDir` 是虚拟路径：项目级 Skill 发现必须
+          // 改用宿主工作区（客户端不认识它），不能拿 `/psb-remote/...` 去远端读目录。
+          ...(remoteSessionHostOwnsCwd(remoteHostId) ? { remoteHostOwnsCwd: true } : {}),
           forceReload: agentKind === 'codex' && skillLinksChanged,
         });
         return markCindyOfficialSkills(result.skills, remoteHostId);
@@ -3165,8 +3199,14 @@ export function getMaker(): Maker {
           // A session can leave Maker's active set without reaching the agent's
           // close (finished worker that was archived, event loop that ended,
           // failed abort). Release the remote transport here so the SSH channel /
-          // MCPRouter tunnel cannot outlive the session and block submissions.
+          // MCPRouter / PSB tunnel cannot outlive the session and block submissions.
           await releaseRemoteTransport(sessionId, 'session-close');
+          // `psb:` 的 Codex app-server 连接按**隧道身份**登记（Maker 会话可以在同一 PSB
+          // 会话上重建 runtime，长连接只有一条），同样要在这里兜底释放；别的 transport
+          // 没有这一档条目，调用是 no-op。
+          if (options.remoteHostId && remoteSessionHostOwnsCwd(options.remoteHostId)) {
+            await releaseRemoteHostTransport(options.remoteHostId, 'session-close');
+          }
           const lease = worktreeRuntimeLeases.get(options);
           if (lease) {
             await releaseWorktreeRuntimeLease(lease).catch((error) => {

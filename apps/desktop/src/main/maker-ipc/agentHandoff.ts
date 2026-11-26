@@ -75,7 +75,8 @@ export interface BuildHandoffOptions {
    * 只能换全新原生会话并带上保留下来的历史；context-overflow 表示同一引擎因窗口超限而换干净原生会话；
    * model-window-switch 表示切到更小模型前主动换窗；pi-prompt-timeout 表示原生会话
    * 对 prompt 无响应后用户重试换窗;idle-gap 表示伙伴对话空闲足够久之后的下一条消息
-   * 主动换干净原生会话,免得老话题带偏新话题。
+   * 主动换干净原生会话,免得老话题带偏新话题；remote-session-rebind 表示远端会话
+   * （`psb:` 远程工作区）已终态/不存在、任务在同工作区换了一条全新远端引擎会话。
    */
   reason?:
     | 'agent-switch'
@@ -85,7 +86,8 @@ export interface BuildHandoffOptions {
     | 'model-window-switch'
     | 'pi-prompt-timeout'
     | 'native-session-recovery'
-    | 'idle-gap';
+    | 'idle-gap'
+    | 'remote-session-rebind';
   /** reason = 'idle-gap' 时的空闲时长(ms),写进 framing 让模型知道隔了多久。 */
   idleGapMs?: number;
   /**
@@ -683,6 +685,7 @@ function isRebuildReason(reason: BuildHandoffOptions['reason']): boolean {
     reason === 'model-window-switch' ||
     reason === 'pi-prompt-timeout' ||
     reason === 'native-session-recovery' ||
+    reason === 'remote-session-rebind' ||
     reason === 'idle-gap'
   );
 }
@@ -816,6 +819,10 @@ function assembleHandoffText(
         : opts.reason === 'native-session-recovery'
           ? `The previous native session history could not be safely transferred, so Cindy started a fresh native session in the same task. ` +
             `The original conversation remains available through the history retrieval tools. Use the handoff below to continue; do not repeat completed actions. `
+        : opts.reason === 'remote-session-rebind'
+          ? `The previous remote agent session for this task ended, so Cindy rebuilt it on the same remote workspace and started a fresh native session there. ` +
+            `Below is the valid conversation history carried into the rebuilt session; treat only these records as the prior conversation, ` +
+            `and do not try to recover, cite, or infer messages that are not listed. `
         : opts.reason === 'message-rewind'
           ? `The user rewound or edited a message in this conversation, so Cindy started a fresh native session in the same task. ` +
             `Below is the conversation before that point; user messages without a reply there were stopped by the user before any answer. ` +

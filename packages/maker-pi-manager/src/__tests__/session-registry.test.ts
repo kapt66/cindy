@@ -69,7 +69,7 @@ vi.mock('node:net', () => {
 });
 
 // ── Imports ──────────────────────────────────────────────
-import { PiSessionRegistry, scrubCredentialText } from '../session-registry.js';
+import { PiSessionRegistry, resolvePiEnsureChildCwd, scrubCredentialText } from '../session-registry.js';
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -218,17 +218,23 @@ describe('ensure', () => {
   });
 
   // 1a-bis. PSB 远程工作区 cwd 回归:daemon 被宿主用会话工作区 spawn,但它自己 chdir('/');
-  // pi 子进程必须显式在「daemon 启动 cwd」里 spawn,否则 Agent 自报 cwd=/(真机缺陷)。
-  it('should spawn pi in the daemon launch cwd when defaultChildCwd is set', async () => {
+  // 声明 `cwdPolicy:'host'` 的会话必须显式在「宿主给的 daemon 启动工作区」里 spawn,
+  // 否则 Agent 自报 cwd=/(真机缺陷)。契约解析见 resolvePiEnsureChildCwd。
+  it('spawns pi in the host launch cwd when the ensure contract asks for it', async () => {
     const launchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-launch-cwd-'));
     cleanupFns.push(() => fs.rmSync(launchCwd, { recursive: true, force: true }));
-    const { registry } = await createRegistry({ defaultChildCwd: launchCwd });
+    const { registry } = await createRegistry();
 
     const child = makeChild();
     mockSpawn.mockReturnValueOnce(child);
     mockCreateServer.mockReturnValueOnce(makeServer());
 
-    await registry.ensure('cwd-session', 'exec pi', { K: 'v' }, 'hash-cwd', false);
+    const childCwd = resolvePiEnsureChildCwd({
+      policy: 'host',
+      cwd: undefined,
+      hostLaunchCwd: launchCwd,
+    });
+    await registry.ensure('cwd-session', 'exec pi', { K: 'v' }, 'hash-cwd', false, childCwd);
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'bash',
@@ -238,22 +244,43 @@ describe('ensure', () => {
     child.emit('close', 0, null);
   });
 
-  // 1a-ter. launch cwd 已在 ensure 前被删除 → 不传 cwd(退回继承 daemon 当前 cwd 的旧行为,
-  // 绝不因残留路径让会话起不来)。
-  it('should omit spawn cwd when the daemon launch cwd no longer exists', async () => {
-    const missingCwd = path.join(os.tmpdir(), `pi-launch-cwd-missing-${process.pid}-${Date.now()}`);
-    const { registry } = await createRegistry({ defaultChildCwd: missingCwd });
+  // 1a-ter. `cwdPolicy:'command'`（SSH / MCPR：cmd 自带 cd）→ 不指定 spawn cwd。
+  it('does not pin a spawn cwd when the command owns the cwd', async () => {
+    const launchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-launch-cwd-'));
+    cleanupFns.push(() => fs.rmSync(launchCwd, { recursive: true, force: true }));
+    const { registry } = await createRegistry();
 
     const child = makeChild();
     mockSpawn.mockReturnValueOnce(child);
     mockCreateServer.mockReturnValueOnce(makeServer());
 
-    await registry.ensure('missing-cwd-session', 'exec pi', { K: 'v' }, 'hash-cwd2', false);
+    const childCwd = resolvePiEnsureChildCwd({
+      policy: 'command',
+      cwd: undefined,
+      hostLaunchCwd: launchCwd,
+    });
+    expect(childCwd).toBeUndefined();
+    await registry.ensure('command-cwd-session', 'cd /srv/repo && exec pi', { K: 'v' }, 'hash-cmd', false, childCwd);
 
     const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
-    expect(spawnOptions).toBeDefined();
     expect(spawnOptions).not.toHaveProperty('cwd');
     child.emit('close', 0, null);
+  });
+
+  // 1a-quater. `cwdPolicy:'explicit'` 要求绝对且存在的目录 —— 否则 fail-closed,
+  // 绝不把 pi 静默跑在 `/` 里（工具与相对路径会全错）。
+  it('rejects an explicit cwd that does not exist instead of silently running in the daemon cwd', () => {
+    const missingCwd = path.join(os.tmpdir(), `pi-launch-cwd-missing-${process.pid}-${Date.now()}`);
+    expect(() => resolvePiEnsureChildCwd({
+      policy: 'explicit',
+      cwd: missingCwd,
+      hostLaunchCwd: undefined,
+    })).toThrow(/does not exist/);
+    expect(() => resolvePiEnsureChildCwd({
+      policy: 'explicit',
+      cwd: 'relative/path',
+      hostLaunchCwd: undefined,
+    })).toThrow(/absolute cwd/);
   });
 
   // 1b. 已存在 + 同 envHash + restart=false → isReattach=true（不杀）

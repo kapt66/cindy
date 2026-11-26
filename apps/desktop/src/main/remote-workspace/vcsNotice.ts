@@ -37,15 +37,16 @@
 import type {
   WorkspaceVcsAction,
   WorkspaceVcsActionKind,
+  WorkspaceVcsActionMethod,
   WorkspaceVcsNotice,
   WorkspaceVcsOperation,
 } from '../../shared/psb-workspace-vcs.js';
 import {
   WORKSPACE_VCS_ACTION_BODY_KEYS,
+  WORKSPACE_VCS_ACTION_METHODS,
   WORKSPACE_VCS_WORKSPACES_PATH_PREFIX,
   findWorkspaceVcsAction,
   parseWorkspaceVcsNotice,
-  workspaceVcsActionMethodAllowed,
   workspaceVcsActionNeedsRequest,
 } from '../../shared/psb-workspace-vcs.js';
 
@@ -67,11 +68,61 @@ function hasUnsafeChars(value: string): boolean {
 }
 
 /**
- * `release` / `occupy` 的判定只看路径形状（不解析 query 语义）：
+ * 一个处置动作的**固定目标**（相对 PSB 站点的路径 + 方法）。
+ *
+ * ## 为什么不再采信服务端下发的 method/path
+ *
+ * 旧实现「按服务端给的 method/path 原样执行」，只校验路径是否在同一工作区前缀下——这留下了
+ * 两个洞：①`retry` 允许任意 HTTP 方法；②只拒绝字面 `..`，而 `%2e%2e` 会被 URL 解析器归一化到
+ * 命名空间之外（带 Bearer 的请求就被打到别的路由上）。安全边界不能建立在「服务端给的值会
+ * 守规矩」之上。
+ *
+ * 现在每个 `kind` 只有一个固定的 method + path（由本文件拼、只含 `encodeURIComponent(id)`）；
+ * 服务端下发的形状只用来**确认这是一条能执行的 action**（服务端若给出不同路径/方法，整条丢弃，
+ * 绝不先按它的值发一次再纠正）。白名单之外的 kind 根本不会出现在 cache 里。
+ *
+ * 旧版 409 的 `revert-then-*` 同样固定成 PSB 的既有路由；`retry` 需要知道「重试哪个操作」，
+ * 由产生 notice 的入口（`operation`）决定。
+ */
+export function workspaceVcsActionTarget(
+  workspaceId: string,
+  kind: WorkspaceVcsActionKind,
+  operation: WorkspaceVcsOperation,
+): { readonly method: WorkspaceVcsActionMethod; readonly path: string } | null {
+  const id = workspaceId.trim();
+  if (!id) return null;
+  const base = `${WORKSPACE_VCS_WORKSPACES_PATH_PREFIX}${encodeURIComponent(id)}`;
+  switch (kind) {
+    case 'continue':
+      return null;
+    case 'inspect-vcs':
+      return { method: 'GET', path: `${base}/vcs` };
+    case 'clean-workspace':
+    case 'revert-vcs':
+      return { method: 'POST', path: `${base}/vcs/revert` };
+    case 'revert-then-occupy':
+      return { method: 'POST', path: `${base}/occupy` };
+    case 'revert-then-release':
+      return { method: 'DELETE', path: `${base}/occupy` };
+    case 'retry':
+      // retry 的语义是「重新执行被检查拦下的那个操作」：占用（含 ensure 自动占用）重试占用，
+      // 释放重试释放。方向不能猜——猜错会把用户的「释放」变成「占用」。
+      return operation === 'release'
+        ? { method: 'DELETE', path: `${base}/occupy` }
+        : { method: 'POST', path: `${base}/occupy` };
+  }
+}
+
+/** action 允许的 HTTP 方法（与共享契约同口径；只用于形状校验，执行时用固定目标）。 */
+const REMOTE_ACTION_METHODS: readonly string[] = WORKSPACE_VCS_ACTION_METHODS;
+
+/**
+ * 服务端路径的**形状**校验（纵深防御，不决定执行目标）。
  *
  * - 必须以工作区路径前缀开头；
  * - 第一段解码后必须**等于同一个 workspaceId**（跨工作区一票否决）；
- * - 后面必须还有动作段（`vcs` / `occupy` / `occupy/release` …）；
+ * - 任何一段解码后是 `.` / `..`（含 `%2e%2e`）直接拒绝：URL 归一化会把它们吃掉，
+ *   只查字面 `..` 会漏；
  * - 不允许 `force` 查询参数（更正版没有 force 分支）。
  */
 export function isAllowedWorkspaceVcsActionPath(workspaceId: string, path: string): boolean {
@@ -88,13 +139,17 @@ export function isAllowedWorkspaceVcsActionPath(workspaceId: string, path: strin
   const segments = pathPart.split('/');
   const workspaceSegment = segments[0] ?? '';
   if (!workspaceSegment) return false;
-  let decoded: string;
+  let decodedWorkspace: string;
   try {
-    decoded = decodeURIComponent(workspaceSegment);
+    decodedWorkspace = decodeURIComponent(workspaceSegment);
+    for (const segment of segments) {
+      const decoded = decodeURIComponent(segment);
+      if (decoded === '.' || decoded === '..') return false;
+    }
   } catch {
     return false;
   }
-  if (decoded !== id) return false;
+  if (decodedWorkspace !== id) return false;
   // 动作段不能为空（`/workspaces/<id>` 本身不是可执行动作）。
   if (segments.length < 2 || segments.slice(1).join('/').length === 0) return false;
   const query = queryAt >= 0 ? rest.slice(queryAt + 1) : '';
@@ -146,17 +201,27 @@ export function sanitizeWorkspaceVcsActionBody(
   return body;
 }
 
+/** 取路径的 pathname 部分（去掉 query），用于和服务端给的固定路径比较。 */
+function pathnameOf(path: string): string {
+  const queryAt = path.indexOf('?');
+  return queryAt >= 0 ? path.slice(0, queryAt) : path;
+}
+
 /**
  * 执行前的最后一道校验：kind / method / 同工作区路径 / body 白名单。
+ *
+ * 目标 method/path 一律用 {@link workspaceVcsActionTarget} 的固定值（**不采信服务端**）；
+ * 服务端下发的形状只用于确认「这是一条已知 action」：method 与目标不一致、pathname 与固定
+ * 路径不一致、或路径形状越界（跨工作区 / `..` / encoded dot / `force`）→ 整条丢弃。
  *
  * 返回 `null` 表示这条 action 不能执行（丢弃，不猜）。
  */
 export function sanitizeWorkspaceVcsAction(
   workspaceId: string,
   action: WorkspaceVcsAction | null | undefined,
+  operation: WorkspaceVcsOperation,
 ): WorkspaceVcsAction | null {
   if (!action) return null;
-  if (!workspaceVcsActionMethodAllowed(action.kind, action.method)) return null;
   const descriptionZh =
     typeof action.descriptionZh === 'string' ? action.descriptionZh.trim() : undefined;
   const base = {
@@ -171,14 +236,21 @@ export function sanitizeWorkspaceVcsAction(
       ? base
       : null;
   }
+  const target = workspaceVcsActionTarget(workspaceId, action.kind, operation);
+  if (!target) return null;
   if (!action.method || !action.path) return null;
+  if (!REMOTE_ACTION_METHODS.includes(action.method) || action.method !== target.method) return null;
   if (!isAllowedWorkspaceVcsActionPath(workspaceId, action.path)) return null;
+  // 服务端路径必须就是那条固定路径（query 允许保留：`?project=1` 这类只作范围提示；
+  // 危险参数已在 `isAllowedWorkspaceVcsActionPath` 里拒绝）。
+  if (pathnameOf(action.path) !== target.path) return null;
   const body = sanitizeWorkspaceVcsActionBody(action.body);
   if (body === null) return null;
   return {
     ...base,
-    method: action.method,
-    path: action.path,
+    // 执行目标固定成本地拼的值：即使服务端路径带 query，也只执行这条 canonical 路径。
+    method: target.method,
+    path: target.path,
     ...(body === undefined || Object.keys(body).length === 0 ? {} : { body }),
   };
 }
@@ -187,17 +259,19 @@ export function sanitizeWorkspaceVcsAction(
  * 服务端载荷 → 可缓存 / 可下发的 notice；不合法返回 `null`。
  *
  * `workspaceId` 用于逐条 action 的路径绑定校验：不属于这个工作区的动作直接丢弃（不留按钮）。
+ * `operation` 是产生 notice 的入口（决定 `retry` 的重试方向）。
  */
 export function sanitizeWorkspaceVcsNotice(
   workspaceId: string,
   value: unknown,
+  operation: WorkspaceVcsOperation,
 ): WorkspaceVcsNotice | null {
   const parsed = parseWorkspaceVcsNotice(value);
   if (!parsed) return null;
   const actions: WorkspaceVcsAction[] = [];
   const seen = new Set<WorkspaceVcsActionKind>();
   for (const action of parsed.actions) {
-    const sanitized = sanitizeWorkspaceVcsAction(workspaceId, action);
+    const sanitized = sanitizeWorkspaceVcsAction(workspaceId, action, operation);
     if (!sanitized || seen.has(sanitized.kind)) continue;
     seen.add(sanitized.kind);
     actions.push(sanitized);
@@ -249,7 +323,7 @@ export function createWorkspaceVcsNoticeCache(
     remember(workspaceId, value, operation) {
       const id = workspaceId.trim();
       if (!id) return false;
-      const notice = sanitizeWorkspaceVcsNotice(id, value);
+      const notice = sanitizeWorkspaceVcsNotice(id, value, operation);
       if (!notice) return false;
       entries.delete(id);
       entries.set(id, { notice, operation });
@@ -275,10 +349,12 @@ export function createWorkspaceVcsNoticeCache(
       return entry;
     },
     findAction(workspaceId, kind) {
-      const entry = entries.get(workspaceId.trim());
+      const id = workspaceId.trim();
+      const entry = entries.get(id);
       if (!entry) return null;
       const action = findWorkspaceVcsAction(entry.notice, kind);
-      return sanitizeWorkspaceVcsAction(workspaceId.trim(), action);
+      // 执行前按产生 notice 的入口再收敛一次（`retry` 的方向由 operation 决定）。
+      return sanitizeWorkspaceVcsAction(id, action, entry.operation);
     },
     clear(workspaceId) {
       return entries.delete(workspaceId.trim());

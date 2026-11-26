@@ -10,9 +10,15 @@
  *   但占用 / 解除占用是工作区写操作：点击直接给「工作区已不可见 / 连不上」的可行动提示，
  *   不再先打一次注定失败的 PSB 请求。占用人未知时不猜按钮语义之外的任何状态。
  *   「在网页打开」不拦：那是用户确认工作区是否还在的出口，失败也有专门文案
- *   （`openWebGone`）。
- * - 失败一律走 toast：PSB 失败码 → i18n（`PSB_IPC_FAILURE_MESSAGE_KEYS` 唯一映射），
- *   非 PSB 失败显示 IPC 原文或通用文案；不做静默失败。
+ *   （`staleMissingTitle`）。
+ * - **busy 等事实刷新完再解锁**（r4 P2）：成功路径先 `await onChanged()`（重启一次工作区
+ *   上下文），再弹成功 toast、再解锁按钮 —— 否则刷新还没回来按钮就可点，用户会重复占用 /
+ *   解除占用，且 toast 说的是「刷新前的事实」。
+ * - **VCS 提示与通用错误只显示一个**（r5）：main 在旧版 409 里已经把可执行的 VCS 通知广播
+ *   出来了，再叠一条通用错误 toast 就是同一事实两种说法。失败后先兜底读一次 VCS 通知，
+ *   读到了就只留通知（处置动作在通知里），读不到才 toast。
+ * - 失败一律走 `psbFailureText`（PSB 失败码 → i18n 唯一映射；非 PSB 失败显示 IPC 原文或
+ *   通用文案），不做静默失败。
  * - 视觉：28px 高共享 Button；占用 / 解除占用是带图标与文字的紧凑按钮（可见文字即无障碍
  *   名字），在网页打开是图标方按钮（按 DESIGN §14.6 带 `Tip` 与 aria-label）。
  *
@@ -55,7 +61,7 @@ function actionFailureMessage(
   // `PSB_NOT_FOUND` 是 main 对「工作区/会话不存在或无权限」的稳定失败码；`NOT_FOUND`
   // 是防御性兜底（旧 main / 其它路径），两者都给同一句可行动文案。
   if (kind === 'web' && ipc && (ipc.code === 'PSB_NOT_FOUND' || ipc.code === 'NOT_FOUND')) {
-    return t('remoteWorkspace.admin.openWebGone');
+    return t('remoteWorkspace.admin.staleMissingTitle');
   }
   return psbFailureText(t, error);
 }
@@ -65,8 +71,8 @@ export function RemoteWorkspaceAdminActions({
   onChanged,
 }: {
   readonly context: PsbWorkspaceAdminContext;
-  /** 动作成功后刷新工作区上下文（不自行拼状态）。 */
-  readonly onChanged: () => void;
+  /** 动作成功后刷新工作区上下文（不自行拼状态）。可返回 Promise：动作路径等它完成再解锁。 */
+  readonly onChanged: () => void | Promise<void>;
 }) {
   const { t } = useTranslation();
   const bridge = tryGetPsbWorkspaceAdminBridge();
@@ -91,14 +97,20 @@ export function RemoteWorkspaceAdminActions({
       setBusy(kind);
       try {
         await action({ workspaceId: context.workspaceId });
-        if (successMessage) toast.success(successMessage);
-        onChanged();
-        // 占用 / 解除占用成功：main 已把 advisory（检出脏）缓存并广播；这里兜底读一次，
-        // 补上「推送还没到」的窗口（幂等，读不到通知不会清掉刚到的那个）。
         if (kind === 'occupy' || kind === 'release') {
-          void hydrateWorkspaceVcsNotice(context.workspaceId);
+          // 占用 / 解除占用成功：main 已把 advisory（检出脏）缓存并广播；这里兜底读一次，
+          // 补上「推送还没到」的窗口。读失败不清本地（store 的单调合并）。
+          await hydrateWorkspaceVcsNotice(context.workspaceId);
         }
+        // 先刷新事实，再 toast / 解锁：toast 说的是刷新后的状态，按钮也在事实落定后才可点。
+        await onChanged();
+        if (successMessage) toast.success(successMessage);
       } catch (error) {
+        // VCS 通知已经在解释这次失败并给出处置动作：不要再叠一条通用错误（同一事实两处显示）。
+        if (kind !== 'web') {
+          const notice = await hydrateWorkspaceVcsNotice(context.workspaceId);
+          if (notice) return;
+        }
         toast.error(actionFailureMessage(t, error, kind));
       } finally {
         setBusy(null);
@@ -106,6 +118,11 @@ export function RemoteWorkspaceAdminActions({
     },
     [blockedKey, bridge, busy, canOperate, context.workspaceId, onChanged, t],
   );
+
+  /* 页头按钮统一带 aria-busy：读屏能知道「这次操作还没结束」。 */
+  const busyProps = (kind: 'occupy' | 'release' | 'web') => ({
+    'aria-busy': busy === kind,
+  });
 
   return (
     <div
@@ -121,6 +138,7 @@ export function RemoteWorkspaceAdminActions({
           tone="quiet"
           loading={busy === 'release'}
           disabled={busy !== null && busy !== 'release'}
+          {...busyProps('release')}
           onClick={() =>
             void runAction(
               'release',
@@ -144,6 +162,7 @@ export function RemoteWorkspaceAdminActions({
           tone="quiet"
           loading={busy === 'occupy'}
           disabled={busy !== null && busy !== 'occupy'}
+          {...busyProps('occupy')}
           onClick={() =>
             void runAction(
               'occupy',
@@ -170,6 +189,7 @@ export function RemoteWorkspaceAdminActions({
           aria-label={t('remoteWorkspace.admin.actionOpenWeb')}
           loading={busy === 'web'}
           disabled={busy !== null && busy !== 'web'}
+          {...busyProps('web')}
           onClick={() =>
             void runAction(
               'web',

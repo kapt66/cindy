@@ -64,10 +64,16 @@ import {
 import { requestWorktreeRecycle } from './worktree/managedRecycle';
 import {
   getSessionRowSnapshot,
+  listActiveRemoteSessions,
   patchSessionMetaInDb,
   recycleSessionWorktreeForStatusChange,
 } from './localDb/ipc/sessions';
 import { tryGetDbClient } from './localDb/client/current';
+import { releaseAllRemoteTransports } from './maker-host/remoteTransportRegistry';
+import {
+  releaseActivePsbWorkspacesForQuit,
+  retryPendingWorkspaceReleases,
+} from './maker-host/psb-workspace-session-release';
 import {
   app,
   BrowserWindow,
@@ -2044,6 +2050,37 @@ function rebindChatEmbeddingSettingsWatcher(): void {
 // The quit coordinator finishes with app.exit(), which bypasses will-quit.
 onQuit('chat-embedding-settings-watcher', () => chatEmbeddingSettingsWatcher.dispose());
 onQuit('workdir-probe-host', () => workdirProbeHostClient.dispose(), 'sync');
+// 会话结束释放（用户要求）：退出应用 = 本机所有 PSB 占用都该交还。否则 PSB 侧那把
+// 协作锁还挂着，别人接手同一工作区会被 `PSB_WORKSPACE_OCCUPIED_BY_OTHER` 挡住。
+// 并行发出（每任务两次小请求），预算由退出协调器控制；来不及的只记日志，不阻塞退出。
+//
+// **顺序**（二轮审查 s2 P1）：PSB 锁的归还排在隧道收尾**之前**。反过来的话，一次卡住的
+// 隧道关闭就能把 16s 预算吃掉，最后锁留在远端 —— 而「锁泄漏」才是用户和同事直接撞上的
+// 问题（隧道无论如何都会随进程退出断开）。每一步各自 try/catch，前一步失败不影响后一步。
+onQuit('psb-workspace-session-end-release', async () => {
+  const warn = (step: string, error: unknown) => {
+    dbClientLog.warn('psb workspace release on quit failed', {
+      step,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+  try {
+    // 「退出时同工作区的其它活动任务也在结束」：释放入口按 app-quit 跳过同工作区占用检查。
+    await releaseActivePsbWorkspacesForQuit({ listActiveSessions: listActiveRemoteSessions });
+  } catch (error) {
+    warn('release-active', error);
+  }
+  try {
+    await retryPendingWorkspaceReleases({ ignoreOtherActiveSessions: true });
+  } catch (error) {
+    warn('retry-pending', error);
+  }
+  try {
+    await releaseAllRemoteTransports('app-quit');
+  } catch (error) {
+    warn('release-transports', error);
+  }
+}, 'async');
 
 /**
  * 「聊天嵌入」关闭时的收尾: 总是让 chat 的 enqueue 守卫立即失效; 但只有在没有插件

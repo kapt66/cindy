@@ -38,6 +38,11 @@ const log = createLogger('psb-remote-admin');
  * 懒加载 localDb 的会话行快照模块：本模块在启动期随 `registerPsbRemoteIpc()` 一起被求值，
  * 静态 import DB 客户端会把 `localDb` 整张模块图拉进 PSB 的加载链；真正需要读库只在
  * 管理页打开时发生。
+ *
+ * **失败不缓存**（2026-11-26 审查）：`import()` 的 promise 可能因为打包 / 磁盘 / 加载顺序
+ * 暂时失败；把 rejected promise 永久留在模块变量里，会让「当前任务 → 工作区」解析在本进程
+ * 余下生命周期里全部失效（页面永远退化成「最近使用」）。所以失败时清掉缓存，下一次动作重试
+ * 一次 import。
  */
 type SessionSnapshotModule = typeof import('../localDb/sessionDispatchSnapshot.js');
 let sessionSnapshotModule: Promise<SessionSnapshotModule> | null = null;
@@ -46,8 +51,16 @@ async function readSessionRowSnapshot(
   localSessionId: string,
 ): Promise<Awaited<ReturnType<SessionSnapshotModule['getSessionRowSnapshot']>>> {
   sessionSnapshotModule ??= import('../localDb/sessionDispatchSnapshot.js');
-  const { getSessionRowSnapshot } = await sessionSnapshotModule;
-  return getSessionRowSnapshot(localSessionId);
+  const pending = sessionSnapshotModule;
+  try {
+    const { getSessionRowSnapshot } = await pending;
+    return getSessionRowSnapshot(localSessionId);
+  } catch (error) {
+    // 只清自己这一票：并发调用者共享同一个 rejected promise 时，谁先清都等价；
+    // 若期间已被别的调用替换成新 promise，不要误清新票。
+    if (sessionSnapshotModule === pending) sessionSnapshotModule = null;
+    throw error;
+  }
 }
 
 async function readLocalSessionRemoteHostId(localSessionId: string): Promise<string | null> {
@@ -91,6 +104,8 @@ function createDefaultDeps(): PsbWorkspaceAdminServiceDeps {
     // 只有「工作区级订阅不可用 → 过渡回退到内部 Agent 会话」这一条路径会真正创建会话，
     // 所以幂等键也只为它生成（每次真正发起创建新生成一个）。
     createRequestId: () => randomUUID(),
+    // 单测注入固定时钟；生产用系统时间。
+    now: () => Date.now(),
   };
 }
 

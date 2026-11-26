@@ -136,7 +136,7 @@ it('still blocks input when the workspace is occupied by someone else', async ()
   await act(async () => {});
 
   expect(result.current.inputAllowed).toBe(false);
-  expect(result.current.inputBlockedReasonKey).toBe('remoteWorkspace.input.occupiedByOther');
+  expect(result.current.inputBlockedReasonKey).toBe('remoteWorkspace.error.workspaceOccupied');
 });
 
 it('switches the effective remote identity to the new session and shows a dismissible light notice', () => {

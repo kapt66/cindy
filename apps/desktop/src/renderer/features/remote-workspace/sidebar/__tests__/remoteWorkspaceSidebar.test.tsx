@@ -34,6 +34,7 @@ import { MekaAssistantSection } from '../../../cc-agent/sidebar/sections/MekaAss
 import { RemoteWorkspaceSection } from '../RemoteWorkspaceSection';
 import {
   RemoteWorkspaceOpenButton,
+  RemoteWorkspaceRowDecor,
   RemoteWorkspaceStatusBadges,
 } from '../RemoteWorkspaceRowDecor';
 import {
@@ -184,12 +185,10 @@ function installBridge(workspaces: readonly PsbRemoteWorkspace[]) {
     openWebWorkspace: vi.fn(async ({ workspaceId }: { workspaceId: string }) => {
       OPENED_WORKSPACE_IDS.push(workspaceId);
     }),
-    streamStatus: vi.fn(),
-    streamStart: vi.fn(),
-    streamStop: vi.fn(),
-    streamInput: vi.fn(),
-    onStreamEvent: vi.fn(() => () => undefined),
     onWorkspaceChanged: vi.fn(() => () => undefined),
+    workspaceVcsNotice: vi.fn(async () => ({ workspaceId: 'ws-a', notice: null })),
+    onWorkspaceVcsNotice: vi.fn(() => () => undefined),
+    runWorkspaceVcsAction: vi.fn(),
   };
   (window as unknown as { electronAPI?: unknown }).electronAPI = { psbRemote: bridge };
   return bridge;
@@ -368,6 +367,26 @@ describe('远程工作区会话行装饰', () => {
       />,
     );
     expect(await screen.findByText('remoteWorkspace.badge.online')).not.toBeNull();
+  });
+
+  it('合并装饰组件一次解析后同时渲染外链按钮与状态徽标（行内不重复解析工作区）', async () => {
+    installBridge([fakeWorkspace()]);
+    await refreshRemoteWorkspaces(true);
+    render(
+      <RemoteWorkspaceRowDecor
+        session={{ id: 'psb-1', remoteHostId: 'psb:psb-session-1', workingDir: '/psb-remote/checkout' }}
+        isActive={false}
+      />,
+    );
+
+    // 两个装饰共用同一次工作区解析结果：外链按钮带上解析出的 workspaceId，徽标同时出现。
+    expect(
+      screen.getByRole('button', { name: 'remoteWorkspace.session.openWorkspace' }),
+    ).not.toBeNull();
+    expect(await screen.findByText('remoteWorkspace.badge.online')).not.toBeNull();
+    expect(
+      document.querySelector('[data-remote-workspace-open="ws-a"]'),
+    ).not.toBeNull();
   });
 
   it('行首图标按钮经 Tip 说明并用系统浏览器打开该会话所在工作区', async () => {

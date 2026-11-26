@@ -15,18 +15,27 @@
  *
  * ## 读口
  *
- * 状态一律从**工作区列表**读（`listWorkspaces`）。**不要**打 `GET /workspaces/:id`：那条路由
- * 在 Cindy JWT 白名单里不放行，恒 403（2026-11-26 真机，见 `psbClient.readWorkspaceWebUrl`）。
- * 调用方已经手上有新鲜工作区行时（例如发送前刚读的 PSB 会话行自带工作区快照），用 `snapshot`
- * 传进来即可少一次列表请求。
+ * 状态一律从工作区行判断。**不要**打 `GET /workspaces/:id`：那条路由在 Cindy JWT 白名单里不放行，
+ * 恒 403（2026-11-26 真机，见 `psbClient.readWorkspaceWebUrl`）。
+ *
+ * 真实请求数（不要按「一次」估）：
+ *
+ * - `ensure()` 不命中缓存 → **1 次列表 HTTP**（`GET /api/cindy/remote/workspaces`）；
+ * - `ensureForSession()` 不命中缓存 → **2 次 HTTP**：PSB 没有「读单个工作区」路由，读会话行
+ *   （`GET …/sessions/:id`）拿到 `workspaceId` 之后必须再读一次列表才能拿到占用/在线/usable
+ *   ——会话行只带工作区 id，不带工作区快照（`psbClient.getSession` 的实现里写明了这一点）；
+ * - 命中乐观有效期 → **0 次**。
+ *
+ * 调用方已经手上有新鲜工作区行时（例如管理页刚读的列表），用 `snapshot` 传进来即可把
+ * 上面两次请求都省掉。
  *
  * ## 缓存与新鲜度（为什么不会每条消息多打一次 HTTP）
  *
  * 只有**成功锁定**会被记住（`PSB_WORKSPACE_LOCK_TTL_MS`，默认 1.5s）；失败一律不缓存。
- * 发送路径先查「本会话的工作区是否在 TTL 内仍由我锁定」，命中就零网络请求；不命中才读一次
- * PSB 会话行（自带工作区快照）并判断。取舍是：**最多 1.5s 的乐观窗口**——期间若占用被别人拿走，
- * PSB 服务端的闸门才是最终裁判，我们不会替它放行写操作；反过来，把 TTL 降到 0 等于每条消息
- * 多一次 PSB 请求，在连续对话里是明显的退化。
+ * 发送路径先查「本会话的工作区是否在 TTL 内仍由我锁定」，命中就零网络请求；不命中则读一次
+ * PSB 会话行 + 一次工作区列表（共 2 次 HTTP，原因见「读口」）再判断。取舍是：**最多 1.5s 的
+ * 乐观窗口**——期间若占用被别人拿走，PSB 服务端的闸门才是最终裁判，我们不会替它放行写操作；
+ * 反过来，把 TTL 降到 0 等于每条消息多两次 PSB 请求，在连续对话里是明显的退化。
  */
 
 import { createIpcError } from '../../shared/ipc-errors.js';
@@ -35,6 +44,7 @@ import type {
   PsbRemoteWorkspace,
   PsbSessionStatusResult,
 } from '../../shared/psb-remote-workspace.js';
+import { psbWorkspaceWritable } from '../../shared/psb-remote-workspace.js';
 import { PsbClientError } from './psbClient.js';
 import type { PsbWorkspaceOperationOutcome } from './psbClient.js';
 
@@ -43,7 +53,7 @@ export const PSB_WORKSPACE_LOCK_TTL_MS = 1_500;
 
 export type PsbWorkspaceLockSnapshot = Pick<
   PsbRemoteWorkspace,
-  'id' | 'state' | 'clientOnline' | 'occupancy'
+  'id' | 'state' | 'clientOnline' | 'occupancy' | 'usable' | 'unusableReason'
 >;
 
 export type PsbWorkspaceLockResult =
@@ -66,13 +76,16 @@ export interface PsbWorkspaceLockLogger {
 }
 
 export interface PsbWorkspaceLockPorts {
-  /** 工作区列表（读口只认列表，见文件头）。 */
+  /** 工作区列表（读口只认列表，见文件头「读口」的请求数说明）。 */
   listWorkspaces(): Promise<PsbRemoteWorkspace[]>;
   /** 占用工作区（PSB 侧幂等：已由自己占用时原样返回）。0.1.180 起响应可能带建议性 VCS 通知。 */
   occupyWorkspace(workspaceId: string): Promise<PsbWorkspaceOperationOutcome>;
   /**
-   * 读一条 PSB 会话（`ensureForSession` 用）。会话行自带工作区快照，发送前据此判断占用，
-   * 省掉一次工作区列表请求。缺省时 `ensureForSession` 抛错（装配漏了就是这个 bug）。
+   * 读一条 PSB 会话（`ensureForSession` 用）。
+   *
+   * 注意**成本是 2 次 HTTP**：会话行只带 `workspaceId`，占用/在线/usable 必须再从工作区列表取
+   * （生产实现 = `psbClient.getSession`，它内部先读会话行、再读列表）。乐观有效期内不会调用它。
+   * 缺省时 `ensureForSession` 抛错（装配漏了就是这个 bug）。
    */
   readSession?(psbSessionId: string): Promise<PsbSessionStatusResult>;
   logger?: PsbWorkspaceLockLogger;
@@ -167,25 +180,40 @@ export function createPsbWorkspaceLock(
     if (!workspace) {
       return { ok: false, reason: 'workspace-unavailable', missing: true, state: null };
     }
-    if (!workspace.clientOnline) return { ok: false, reason: 'offline' };
-    if (workspace.state !== 'ready') {
+    // 「能不能写」的唯一判据（`shared/psb-remote-workspace.ts` 的 `psbWorkspaceWritable`）：
+    // 与渲染层禁用态、发送前重建共用同一套 usable / 在线 / 状态 / 占用口径。这里传
+    // `requireAgentRuntime:false`：占用闸门是**工作区级写**入口（建会话 / 启串流 / 发送共用），
+    // 「这台机器没装某个 Harness」不应该把与它无关的写操作（例如启动串流）一起锁死；
+    // 需要 Agent 运行时的调用方（发送前重建）会在自己的入口按严格口径再判一次。
+    const writability = psbWorkspaceWritable(workspace, { requireAgentRuntime: false });
+    if (!writability.ok) {
+      switch (writability.reason) {
+        case 'occupied-by-other':
+          return {
+            ok: false,
+            reason: 'occupied-by-other',
+            personName: writability.personName,
+          };
+        case 'client-offline':
+          return { ok: false, reason: 'offline' };
+        case 'agent-unsupported':
+          // `requireAgentRuntime:false` 不会走到这里；保留分支让新增原因时 typecheck 提醒。
+          break;
+        case 'workspace-not-ready':
+        case null:
+          break;
+      }
       return {
         ok: false,
         reason: 'workspace-unavailable',
         missing: false,
-        state: workspace.state,
+        state: writability.state,
       };
     }
     if (workspace.occupancy.occupied) {
-      if (workspace.occupancy.byMe) {
-        rememberLocked(workspaceId);
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        reason: 'occupied-by-other',
-        personName: workspace.occupancy.personName.trim(),
-      };
+      // writable.ok 已排除「被他人占用」；这里只剩「已由自己占用」的可写行。
+      rememberLocked(workspaceId);
+      return { ok: true };
     }
 
     // 未占用 → 自动占用（PSB 幂等；并发下最坏是别人先占到，下面按返回行重新判定）。
@@ -255,7 +283,7 @@ export function createPsbWorkspaceLock(
           'the PSB workspace lock is missing its session reader (wiring bug)',
         );
       }
-      // 读一次会话行：它自带工作区快照，既定位工作区，又给出**足够新**的占用事实。
+      // 读一次 PSB 会话（+ 一次工作区列表，见端口注释）：它给出**足够新**的占用事实与工作区。
       const status = await readSession(sessionId);
       rememberSessionWorkspace(sessionId, status.workspace.id);
       return decideFrom(status.workspace, status.workspace.id);
@@ -300,13 +328,15 @@ export function psbWorkspaceLockFailureError(
         return result.missing
           ? {
               code: 'NOT_FOUND',
-              messageKey: 'remoteWorkspace.error.notFound',
+              messageKey: 'remoteWorkspace.admin.staleMissingTitle',
               message: null,
             }
           : {
               code: 'WORKSPACE_NOT_READY',
               messageKey: 'remoteWorkspace.input.workspaceNotReady',
-              message: result.state,
+              // PSB 的 state 值（planned/provisioning/…）是内部枚举：文案由 messageKey 决定，
+              // main 不再把内部状态值当用户可读原文下发（诊断看日志）。
+              message: null,
             };
     }
   })();

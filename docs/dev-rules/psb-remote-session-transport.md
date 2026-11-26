@@ -76,14 +76,19 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
 
 - **URL**：`wss://<PSB 站点根>/api/cindy/remote/sessions/<sessionId>/agent-tunnel?mode=…[&bundleVersion=…]&readyFrame=1`
   （路径常量在共享契约的 `PSB_CINDY_WS.agentTunnel`，不在两处各拼一次）。
-- **就绪帧必须 opt-in（`readyFrame=1`，PSB 0.1.160+）**：`agent-tunnel.ready` 文本帧默认**不发**
-  （服务端日志 `readyFrame=false` 就是不声明）；不声明时每条长连接隧道固定等满 5s 兜底、exec
-  隧道等 1.2s，远程任务启动 / 文件操作会累计多等十几到几十秒（2026-11-26 独立审查阻断项）。
-  服务端只认字面量 `1`；`buildPsbTunnelUrl` 固定携带它，`openPsbTunnel` 的超时兜底**保留**用于老
-  服务端，两者互不替代。`psbTunnelWiring.test.ts` 对四种 mode 都钉住该参数且不影响
-  `mode` / `bundleVersion`。
+- **就绪帧必须 opt-in（`readyFrame=1`；PSB 0.1.159+ 引入 `agent-tunnel.ready` 文本帧，
+  0.1.160+ 起 opt-in、默认不发）**：不声明时服务端日志 `readyFrame=false`，也就永远收不到 ready。
+  服务端只认字面量 `1`；`buildPsbTunnelUrl` 固定携带它，`psbTunnelWiring.test.ts` 对四种 mode
+  都钉住该参数且不影响 `mode` / `bundleVersion`。
+  **等待按进程级能力探测，不再每条连接固定等满**：第一次等到 ready → `supported`；第一次超时
+  （非 exec 5s / exec 1.2s）→ `unsupported`，后续连接在 `open` 时立即交句柄（老服务端的兜底
+  行为本来就是直接发）。探测结果在同一站点进程内复用；就绪前的 binary 帧有界排队、句柄交接后
+  按序回放，不丢首帧（2026-11-26 复审，见 §15.5）。
 - **鉴权**：`Authorization: Bearer <Cindy Connection JWT>`（MCPR 那条是 cookie session，这是唯一
-  实质差别）。token 取不到时隧道直接失败，不带空凭据尝试。
+  实质差别）。token 取不到时隧道直接失败，不带空凭据尝试；失败统一经 `psbAuthFailure` 归因
+  （未登录 `signed-out` / 非企业组织 `need-org` → `PSB_AUTH_REQUIRED` + 身份原因键；签发通道
+  不可达 → 网络类码），**取 token 失败不失效** token 缓存——失效只发生在 PSB 明确 401/403 之后
+  （见 §15.5）。
 - **mode**：`cc-mgr` / `codex-appserver` / `pi` / `exec`，语义与 MCPRouter `agent-tunnel` 逐字相同；
   Agent 类型到 mode 的映射与「只有消费 cc-mgr 产物的两种 mode 才声明 `bundleVersion`」由共享
   纯函数（`psbTunnelModeForAgent` / `psbTunnelNeedsBundleVersion`）决定。**四种 mode 都必须显式写**：
@@ -145,8 +150,17 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
 
 - **命名空间**：`/api/cindy/remote/**`（Cindy 专用前缀，不是浏览器用的 `/api/remote/**`），路径
   常量在共享契约的 `PSB_CINDY_ROUTES`。
+- **出网 URL 只有一份归一化判据（`resolvePsbUrl`）**：`psbEndpoint.ts` 对 HTTP 与两条 WS 统一
+  校验「origin 相同 + 归一化后 pathname 逐字节不变 + 以 `/api/cindy/remote/` 开头」；`..` /
+  `%2e%2e` / 反斜杠 / `//` 等会被 URL 解析器改写的形态全部拒绝。唯一显式放行 `/api/remote/**`
+  的调用是「尽力拉起桌面访问」的 `POST …/access/start`（须显式 `allowPsbWebNamespace:true`），
+  不能靠字符串前缀二次判断（见 §15.1）。
 - **外壳**：成功读 `{ data: … }`，失败读 PSB 既有的 `{ error: { code, message, details? } }`；
-  DTO 由共享解析函数**防崩收口**（缺字段收敛成安全默认、连 id 都没有的行丢弃），严格校验在 PSB。
+  DTO 由共享解析函数**防崩收口**（连 id 都没有的行丢弃；未知枚举值一律 `null`，**不**回落
+  `claude-code` / `failed` 这类「安全默认」——把未知当已知会让错误隧道或假终态发生；展示字段按
+  `PSB_TEXT_LIMITS` 截断、标识字段超限整行丢弃，截断会改身份），严格校验在 PSB。
+  **列表键缺失 / 不是数组是协议错**：`readArray` 返回 `null`，由 `call` 统一抛 `PSB_PROTOCOL`
+  （旧实现静默变 `[]`，界面显示「没有工作区」而真实原因是契约违约，见 §15.8）。
 - **凭据纪律**：Bearer 只进请求头——不进 URL、不进日志、不进 IPC 返回值；日志里最多出现
   「audience 已解析」这类不含凭据的字段。
 - **401 只重签一次**：`AUTH_INVALID` / `AUTH_EXPIRED` / `AUTH_REQUIRED` 才失效内存缓存并重新签发
@@ -154,7 +168,8 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
   IDENTITY_NOT_LINKED` 不是「token 坏了」，**不重签**。
 - **网络失败与业务失败分开**：连不上/超时记 `PSB_UNREACHABLE`（用户查网络），PSB 返回的
   `{error:{code}}` 保留原码并映射成文案键（用户看工作区）。混成一个码会让「为什么不能开会话」
-  永远只有一句「操作失败」。单次请求预算 20s，超时按网络失败处理。
+  永远只有一句「操作失败」。单次请求预算 20s，超时按网络失败处理；「尽力拉起桌面访问」的轮询
+  另受**总 deadline** 约束（默认 `totalMs=5000`，每次请求超时压到剩余预算内，最坏 5s，见 §15.7）。
 - **409 必须可行动**：`WORKSPACE_OCCUPIED_BY_OTHER`（带占用人名，用于文案插值）、`CLIENT_OFFLINE`、
   工作区非 `ready`、会话终态分别给不同的文案键与下一步建议；归属 404 与真不可达不混用。
 - **失败形状统一**：渲染层只收 `PsbRemoteFailure { code, messageKey, message }`，**不在渲染层判
@@ -171,25 +186,34 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
 
 ## 4. IPC 面
 
-远程工作区的 IPC 面很宽（列表 / 占用 / 建会话 / 串流 / 发送前重建 / 管理页），必须收口，否则同一条
-判据会散在三处且各自漂移。**当前合计 22 个 invoke + 5 条推送**，唯一来源是共享契约的两组常量；
-`psbRemoteIpcWiring.guard.test.ts` 用「方法 ↔ 通道」映射表锁住常量、preload、bridge 与 main handler
-四处一一对应，新增 / 改名四处同改、不允许硬编码字符串。
+远程工作区的 IPC 面很宽（列表 / 占用 / 建会话 / 管理页 / 版本控制 / 会话结束释放），必须收口，否则同一条判据会
+散在三处且各自漂移。**当前合计 23 个 invoke + 6 条推送**，唯一来源是共享契约的
+两组常量；`psbRemoteIpcWiring.guard.test.ts` 用「方法 ↔ 通道」映射表锁住常量、preload、bridge 与
+main handler 四处一一对应，新增 / 改名四处同改、不允许硬编码字符串。
 
-- **会话级通道**：`PSB_REMOTE_CHANNELS`，**19 条 = 16 invoke + 3 推送**。
+- **会话级通道**：`PSB_REMOTE_CHANNELS`，**21 条 = 17 invoke + 4 推送**。
   invoke：`status` / `list-workspaces` / `list-clients` / `list-templates` / `create-workspace` /
   `occupy-workspace` / `release-workspace` / `create-session` / `refresh-workspaces` /
-  `session-status` / `stop-session` / `open-web-workspace` / `stream-status` / `stream-start` /
-  `stream-stop` / `stream-input`（会话级键鼠，用户任务会话）。
-  推送：`stream-event` / `workspace-changed` / `sessions-rebound`（发送前透明重建成功后发一次，
-  见 §6.1 / §9.4）。
+  `session-status` / `stop-session` / `open-web-workspace` / `workspace-vcs-notice:get`
+  （兜底读当前工作区的版本控制通知）/ `workspace-vcs-action`（执行一个版本控制处置动作，
+  渲染层只传 kind，见 §13.5）/ `release-session-workspace`（会话结束 → main 归还它占用的
+  PSB 工作区）/ `pending-releases:get` / `pending-releases:retry`（读 / 显式重试 main 的
+  待释放账本，见 §16.4）。
+  推送：`workspace-changed` / `workspace-vcs-notice`（占用 / 释放时的版本控制通知，见 §13.5）/
+  `sessions-rebound`（发送前透明重建成功后发一次，见 §6.1 / §9.4）/ `pending-releases-changed`
+  （main 待释放账本变了：失败入账 / 重试成功出账 / 退出前重试，见 §16.4）。
+  会话级 `STREAM_STATUS` / `STREAM_START` / `STREAM_STOP` / `STREAM_INPUT`（4 个 invoke）与
+  `STREAM_EVENT`（1 个 push）**已删除**：渲染层零消费，串流一律走工作区级管理页通道（r10 死面清理）。
 - **工作区级管理页通道**：`PSB_ADMIN_CHANNELS`，**8 条 = 6 invoke + 2 推送**。
   invoke：`admin-context` / `admin-stream-start` / `admin-stream-stop` / `admin-stream-status` /
   `admin-stream-input`（工作区级键鼠）/ `admin-stream-capture`（全屏捕获态）；
   推送：`admin-context-changed` / `admin-stream-event`（`sessionId` = 观看端绑定会话：正常是
   桌面访问会话 id，旧 PSB 过渡回退是内部 Agent 会话 id，见 §11）。
-  语义与生命周期见 §11。两组常量刻意分开、值不重叠：会话级推送与管理页推送混用会让同一帧被两处
-  解码，guard 会拦下重名。
+  语义与生命周期见 §11。**多窗口按工作区引用计数**：`start` +1、`stop` / 窗口销毁 -1，只有归零
+  才真的 `streamStop`；`frame` / `cursor` 只发给登记过 owner 的窗口，`status` / `error` 仍广播；
+  本端主动关闭的 `closed(client-stopped)` / `closed(superseded)` 也只发给该 `viewerSessionId`
+  的 owner（没有 owner 就丢弃，见 §15.3）。两组常量刻意分开、值不重叠：会话级推送与管理页推送
+  混用会让同一帧被两处解码，guard 会拦下重名。
 - **main 侧的单一服务入口**：[remote-workspace/index.ts](../../apps/desktop/src/main/remote-workspace/index.ts)
   把 HTTP 客户端、串流观看端与推送装成一组语义方法（HTTP 走宿主 `outboundFetch`、WS 走
   `createOutboundHttpAgent`，与 MCPRouter / 插件同一条出网口径）；IPC handler 只做参数校验与
@@ -200,11 +224,16 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
   [工程约定](engineering-conventions.md)）：`assertTrustedAppRendererEvent` 校验来源窗口、
   payload 先校验再产生副作用、失败走 `throwIpcError` 的既有码；不信任渲染层传来的任何身份字段。
 - **失败码跨 IPC**：`ipcMain.handle` 抛错跨进程只保留 `message`，所以语义由**命名空间化错误码**
-  承载：`ipc-errors.ts` 的 11 个 `PSB_*` 码（鉴权 `PSB_AUTH_REQUIRED` / 组织 `PSB_ORG_REQUIRED` /
+  承载：`ipc-errors.ts` 的 **21 个** `PSB_*` 码（鉴权 `PSB_AUTH_REQUIRED` / 组织 `PSB_ORG_REQUIRED` /
   过期 `PSB_AUTH_EXPIRED` / 通讯录 `PSB_IDENTITY_NOT_LINKED` / 占用
   `PSB_WORKSPACE_OCCUPIED_BY_OTHER` / 离线 `PSB_CLIENT_OFFLINE` / 未就绪
-  `PSB_WORKSPACE_NOT_READY` / 找不到 `PSB_NOT_FOUND` / 不可达 `PSB_UNREACHABLE` / 串流不可用
-  `PSB_STREAM_UNAVAILABLE` / 串流未启动 `PSB_STREAM_NOT_ACTIVE`）。
+  `PSB_WORKSPACE_NOT_READY` / 远端客户端无该引擎运行时 `PSB_AGENT_UNSUPPORTED` / 管理页 stale 归因
+  `PSB_WORKSPACE_MISSING` / `PSB_WORKSPACE_UNREACHABLE` / `PSB_WORKSPACE_ID_UNKNOWN` / 版本控制
+  `PSB_WORKSPACE_VCS_DIRTY` / `PSB_WORKSPACE_VCS_UNAVAILABLE` /
+  `PSB_WORKSPACE_VCS_UNSUPPORTED` / 找不到 `PSB_NOT_FOUND` / 不可达 `PSB_UNREACHABLE` /
+  串流不可用 `PSB_STREAM_UNAVAILABLE` / 串流未启动 `PSB_STREAM_NOT_ACTIVE` / 没有 running
+  桌面访问三档 `PSB_STREAM_NO_RUNNING_SESSION` / `PSB_STREAM_ACCESS_STARTING` /
+  `PSB_STREAM_ACCESS_STOPPING`）。
   main 用 `psbIpcCodeForFailure` 产出，渲染层用 `psbFailureMessageKeyForIpcCode` 映射文案键
   （或 `psbRemoteFailureFromIpcError` 取回 `PsbRemoteFailure` 形状）；协议错 / 未知码落通用
   `INTERNAL`，只带诊断原文。`message` 只放 PSB 原文或占用人名，**不含** token、Authorization 或身份字段。
@@ -212,7 +241,10 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
   `disposePsbRemoteService()`（断开串流、释放远端观看名额），捕获旧实例会让串流在本进程内永久不可用。
 - **推送点**：`WORKSPACE_CHANGED` 只在 main「刚拿到新快照」时发——新建工作区 / 占用 / 释放 / 建会话
   成功后（服务层 `emitWorkspaceSnapshot`），以及 `SESSION_STATUS` 读回、`STOP_SESSION` 停完后的会话
-  所属工作区快照；`STREAM_EVENT` 只来自串流观看端。main **不轮询** PSB，列表刷新仍由渲染层按需触发。
+  所属工作区快照；串流事件（管理页 `ADMIN_STREAM_EVENT`）只来自串流观看端，其中 `frame` / `cursor`
+  与「本端主动关闭」的 `closed(client-stopped|superseded)` 按 owner 定向、`status` / `error`
+  广播（§15.3）。main **不轮询** PSB，
+  列表刷新仍由渲染层按需触发。
 - **preload**：`psbRemote` 组只暴露最小方法集；推送用 `createIpcFanOut` 并按引用计数解绑，
   必须丢弃 `IpcRendererEvent`、不暴露 `ipcRenderer` 本体。
 - **渲染层单一入口**：[bridge.ts](../../apps/desktop/src/renderer/features/remote-workspace/bridge.ts)
@@ -240,6 +272,10 @@ Cindy 是 PSB 会话串流的**第二个观看端实现**（浏览器是第一�
 - **启动 / 停止由 WS 驱动**：PSB 不提供独立 HTTP 动作；`stream/status` 只服务「详情」与按钮可用性
   （能力位、当前是否采集、分辨率/帧率/编码、最近错误）。UI 只暴露启动 / 停止 / 详情，**不提供可调
   编解码参数**（详情与 HUD 只显示 PSB 下发的编码 / 解码器名称作诊断，不摆码率 / 预设开关）。
+- **重启 / 替换观看端：预检通过后原子替换（2026-11-26 复审）**：`streamViewer.startInternal` 顺序是
+  「读 `stream/status` 能力位 → 取 token → 取出站 agent → 建新 WS 并等握手成功 → 才替换旧连接」；
+  预检或握手任一步失败时**旧连接原样保留**（画面不中断），不再出现「重启时 PSB 抖一下 → 从有画面
+  掉到空面板」（见 §15.4）。
 - **帧投递与解码**：main 把帧转成 `PsbStreamEvent { type:'frame', payload: ArrayBuffer }` 推给
   渲染层，状态、错误与宿主光标分别走 `status` / `closed` / `error` / `cursor`（`cursor` 来自
   `stream.cursor` 文本帧，见 §12.9）；渲染层**push 式**播放器解析信封后
@@ -250,9 +286,11 @@ Cindy 是 PSB 会话串流的**第二个观看端实现**（浏览器是第一�
   `description` 配套）。这套转换必须是可单测纯函数；解不出来时按「画面不可用」呈现，不静默
   显示黑屏。
 - **观看状态刷新**：会话页读取会话 + 工作区快照（进入页面读一次、窗口重新聚焦补读、后台 30s
-  一次、页面隐藏不发请求；同一时刻最多一个在途请求，迟到结果丢弃）。会话进入终态后停止轮询；
-  读取失败保留最后一次快照（从未读到过时不拿网络抖动锁死输入，读到过则保持禁用，避免「PSB
-  断了反而放开写」）。**「远程工作区」页签不再共用这份会话级快照**：它读工作区级
+  一次、页面隐藏不发请求；同一时刻最多一个在途请求，迟到结果丢弃）。**会话进入终态后不停止
+  轮询**：终态后用户下一次发送会触发透明重建并换会话 id，重绑推送之外还要靠轮询这条第二条
+  发现路径跟上（推送丢失、页面长时间停在同一任务上时不僵住）；读取失败保留最后一次快照
+  （从未读到过时不拿网络抖动锁死输入，读到过则保持禁用，避免「PSB 断了反而放开写」）。
+  **「远程工作区」页签不再共用这份会话级快照**：它读工作区级
   `adminContext`（见 `shared/psb-workspace-admin.ts`），页面不因任务终态退化；启动 / 停止 /
   详情按 `workspaceId` 工作。
 - **名额与泄漏**：PSB 的观看名额与**浏览器页面共用**，默认 4（部署级 `PSB_STREAM_MAX_SUBSCRIBERS`；
@@ -260,12 +298,18 @@ Cindy 是 PSB 会话串流的**第二个观看端实现**（浏览器是第一�
   退出登录都必须**断开 WS**（断开即退订；不要发 `{kind:'close'}`，见 §12.1），否则名额不释放，
   表现是「别人（包括自己另一个窗口）连不上」。`subscriberId` 是**客户端生成的 UUIDv4，一个观看端
   一个**，重连复用同一值（同 id 替换旧订阅、不占新名额；PSB 0.1.170 契约，生成点见 §12.3）。
-  main 侧对应三条释放点：`STREAM_STOP`、重复 `STREAM_START` 先停旧连接、账号边界
-  `disposePsbRemoteService()`；窗口销毁时 IPC 层也会替该窗口停掉它启动过的连接。**本端主动断开**
-  （停止 / 替换 / dispose）不推 `closed` 事件；远端关闭才推，`reason` 是稳定 token
-  （`closed` / `session-ended` / `session-not-found` / `client-offline` / `replaced` / `not-ready` /
-  `slow-subscriber` / `no-stream` / `socket-unwritable` / `channel-lost` / `quota` /
-  `control-conflict` / `control-lost` / `ws-<code>`，由 `psbStreamClosedReason` 产出）；
+  main 侧释放点：管理页 `adminStreamStop`（多窗口按 owner 引用计数，**归零才真的停**）、账号边界
+  `disposePsbRemoteService()`、窗口销毁（该窗口 owner -1，归零停流）；管理页重复启动发现已有健康
+  观看连接（绑定上的 `viewerActive`）时**复用**：不重连、不产生 `superseded`，只多一个 owner
+  （观看端自身的同会话原子替换语义仍在，见 §15.3）。**本端主动关闭按原因区分并补发 `closed`**：
+  用户停止 → `closed(client-stopped)`；被新连接替换 → `closed(superseded)`，两者只发给该
+  `viewerSessionId` 的 owner。`client-stopped` 让渲染层清屏回未启动态；`superseded` **不是终态**：
+  新连接继续向同一个 `sessionId` 送帧，渲染层保留相位、不清屏、不提示，也不释放 owner。
+  `dispose` 与握手失败没有可报的界面，不推。远端关闭仍推，`reason` 是稳定 token
+  （`closed` / `session-ended` / `session-not-found` / `client-offline` / `replaced` / `superseded` /
+  `client-stopped` / `not-ready` / `slow-subscriber` / `no-stream` / `socket-unwritable` /
+  `channel-lost` / `quota` / `control-conflict` / `control-lost` / `ws-<code>`，由
+  `psbStreamClosedReason` 产出）；
   `control-conflict` / `control-lost` 是**协议保留、产品不再使用**（0.1.172 已取消单控制者仲裁，
   只有协商 `errors=frame` 的旧路径可能收到；Cindy 未启用），`ws-<code>` 只在未知关闭码时兜底。
   main 不写中文句子。
@@ -295,25 +339,31 @@ Cindy 是 PSB 会话串流的**第二个观看端实现**（浏览器是第一�
   超限帧**丢弃并只告警一次**（不关闭连接、不占坏名额）；该帧仍计入 `receivedBinaryFrames`（它确实
   来自这条流，不能把「坏帧流」归因成「从没出过画面」）。HTTP 响应同样有
   `PSB_HTTP_MAX_RESPONSE_BYTES` = 4 MiB 上限，超限按 `PSB_PROTOCOL` 失败（不是网络失败、不重试）。
-- **入口判据与页签落点**：只有 `psb:` 会话出现「远程工作区」入口（会话标题行「…」之后的文字
-  按钮）与「远程工作区」页签；`mcpr:`、SSH 与本地会话没有 PSB 观看端（判据在
+- **入口判据与页签落点**：只有 `psb:` 会话在会话标题行显示「远程工作区」入口（标题行「…」之后的
+  文字按钮）；`mcpr:`、SSH 与本地会话没有这个入口（判据在
   `features/remote-workspace/stream/psbStreamSession.ts`，不要用「有 remoteHostId」判断）。页签
-  本身是工作区级的：页面对象由 main 的 `adminContext` 解析（当前任务 psb 会话任何状态 → 最近
-  使用工作区），所以切到本地任务页时页签内容不退化成提示态。
+  本身是全局工作区级页面，右侧栏「+」菜单在任意任务下也能直接打开；页面对象由 main 的
+  `adminContext` 解析（当前任务 psb 会话任何状态 → 最近使用工作区），所以切到本地任务页时
+  页签内容不退化成提示态。
   页签是实现事实，三条都不能漂移：
   1. **全局单例**：kind `remote-workspace-admin`、固定 id `g_remote-workspace-admin`，存放在
      `features/right-sidebar/globalTabs.ts`（与插件页签同一份 localStorage），**不进**按任务分桶的
      `store.ts`；关闭不需要 `onBeforeClose`，观看名额由页面卸载清理释放。
-  2. **与插件页签同一排**：落点由 `preferredRemoteWorkspaceAdminGroup()` 决定（跟随第一个插件
-     全局页签所在的页签组；没有插件页签时用停靠面板插件的缺省边 `left`）。边组的 pane 由
-     `tabGroupPanes.ts` 的「组里有可见页签 → `ensurePaneInTree`」自动插入，**不要**为它调用
-     `requestRightSidebarVisibility('open')`；只有落进 `right` 组（可折叠的右侧 dock）时才请求展开。
-     已存在的页签只聚焦、不搬回默认组；用户没显式放置过（`tabGroups` 无条目）的旧页签在下一次
-     打开时迁到插件组。
-  3. **内容跟随当前打开的任务**：页面从宿主 `ctx`（`TabKindHostContext.sessionId` /
-     `remoteHostId`）拿当前会话，`psb:` 前缀才渲染观看端，观看端以 PSB 会话 id 作 React `key`
-     （切会话即重挂 → 本地状态重置 + 旧实例卸载时 `streamStop` 释放名额）；无会话 / 非 `psb:`
-     显示提示态。页签 state 恒为空、不落任何会话 id —— 页签不跟随「打开它时的会话」。
+  2. **与插件页签同一排**：落点先收敛为 `targetGroup`——调用方给出**显式落点**（「+」菜单 / 空
+     面板那排标签栏把所在组传成 `targetGroup`）就用它；否则按
+     `preferredRemoteWorkspaceAdminGroup()`（跟随第一个插件全局页签所在的页签组；没有插件页签时
+     用停靠面板插件的缺省边 `left`），已有页签的显式放置记忆优先。**组只写一次**：
+     `addRemoteWorkspaceAdminTab({groupId})` 是唯一写组处（新页签先落组再持久化，已有页签按同一
+     入口按需挪组），调用方**不得**返回后再 `setTabGroup` 覆盖——那样 dock 展开判定会按旧组执行
+     （在左排点「+」却弹出右侧 dock）。边组的 pane 由 `tabGroupPanes.ts` 的「组里有可见页签 →
+     `ensurePaneInTree`」自动插入，**不要**为它调用 `requestRightSidebarVisibility('open')`；只有
+     最终落进 `right` 组（可折叠的右侧 dock）时才请求展开。没有显式落点时已存在的页签只聚焦、
+     不搬回默认组（用户拖走的放置记忆优先）；用户没显式放置过（`tabGroups` 无条目）的旧页签在
+     下一次打开时迁到插件组。
+  3. **内容是工作区级管理页**：`TabBody` = `RemoteWorkspaceAdminPanel`，页面对象由 main
+     `adminContext` 解析（当前任务 psb 会话任何状态 → 最近使用工作区），观看端按工作区绑定启动 /
+     停止，页面卸载时释放名额；页签 state 恒为空、不落任何会话 id —— 页签不跟随「打开它时的
+     会话」，也不按 PSB 会话 id 做 React key。
 - **输入**：**可交互观看**（2026-11-26 用户口径，替换旧的「只读观看」）：渲染层把指针 / 键盘 /
   滚轮采集成本地事件，经**工作区级** `psb-remote:admin-stream-input` 交给 main，main 解析出观看端
   绑定会话后用`{kind:'input', event}` 写进同一条观看端 WS。鉴权与「谁能输入」由 **PSB 服务端权限模型**
@@ -347,7 +397,8 @@ PSB 的 agent 会话终态（`stopped` / `failed`）**永不逆转**，但这不
 
 1. 本地会话行 `remoteHostId` 是 `psb:<id>`（唯一依据，`parsePsbRemoteHostId`）；
 2. 当前**没有回合在跑**（`maker.getSession(id)?.isTurnRunning()`，在跑就绝不换隧道）；
-3. 该 PSB 会话已终态，**或** PSB 说它不存在（404/403）。
+3. 该 PSB 会话已终态，**或** PSB 说它不存在（404/403）。**`status: null`（未知枚举 / 缺字段）不算
+   终态、不触发重建**——把「读不到」当终态会在 PSB 抖动时无谓地换掉一条健康会话。
 
 **链路（唯一入口，不要只补某一条 UI 路径）**
 
@@ -361,14 +412,26 @@ lazy-create，否则重建完也没有入口交给 runtime。
 纯注入、可单测）；主进程副作用集中在 `main/maker-ipc/register.ts` 的接线：
 
 1. 读旧 PSB 会话（`sessionStatus`）→ 拿它自己的 `workspaceId`、状态与工作区快照；
-2. 工作区可开新会话 → `createSession({ workspaceId, agentKind, title, clientRequestId })`；
-3. **先落库**：`UPDATE sessions SET remote_host_id='psb:<新>', sdk_session_id=NULL`（CAS：
-   `WHERE remote_host_id = <旧>`），成功后 `createSessionRemoteHostIdReader.invalidate()` 失效
-   进程内缓存，再 `broadcastSessionPatched({ remoteHostId })`；
+2. 工作区可开新会话 → `createSession({ workspaceId, agentKind, title, clientRequestId })`。
+   `clientRequestId` 由 `deriveRebindRequestId(localSessionId, previousPsbSessionId)` **确定性派生**
+   （`psb-rebind-<sha256 前 32 hex>`）：同一旧身份的重试 / 崩溃恢复复用同一个键，PSB 只建一条会话，
+   不再每次 `randomUUID()`（见 §15.9）；
+3. **先落库（一次事务，含上下文交接）**：`session.remoteRebind` 事务把
+   `UPDATE sessions SET remote_host_id='psb:<新>', sdk_session_id=NULL`（CAS：
+   `WHERE ifnull(remote_host_id,'') = ifnull(<旧>,'') AND status != 'deleted'`）与一条隐藏
+   `context_rebuild` 交接标记**一起提交**（`contextRebuildPersistence.ts` →
+   `commitRemoteSessionRebindWithPorts`，`reason='remote-session-rebind'`）。成功后
+   `createSessionRemoteHostIdReader.invalidate()` 失效进程内缓存、失效旧 PSB 会话的状态快照，
+   再 `broadcastSessionPatched({ remoteHostId })`；CAS 冲突时整单不写（不插标记），按库里现值继续；
 4. 推送 `psb-remote:sessions-rebound`（payload：`{localSessionId, previousRemoteHostId,
    remoteHostId}`，落库之后才发）；
 5. 事务关掉仍持旧身份的空闲 runtime（`closeSessionIfCurrent`，与 workdir 漂移回收同口径），
    把 `createOpts.remoteHostId` 改成新身份，**继续这一轮发送**（用户不需要重试）。
+6. 交接注入：下次（含本轮）发送时 `agentHandoffPending.peek` 按隐藏标记取回交接文本，前置到
+   wire user 消息（`buildHandoffText` 的 `reason` 同名字面量），accepted 后持久标记消费。
+
+「只清 `sdk_session_id` 不写交接」是**静默错误**（界面看起来重连成功、模型已经失忆，审查 r7
+P1），所以身份与交接必须是同一个事务；这也是不把两步拆成两次写的原因。
 
 `psbSessionInputAllowed()` 因此不再把终态当成阻断：真正阻断只剩被他人占用 / 客户端离线 /
 工作区未就绪（这三种发送时也无法恢复）。「这条会话下次发送会不会重建」用
@@ -382,7 +445,8 @@ profile）+ `apps/desktop/src/main/index.ts` 的 `XDT_OFFICIAL_SHARED_PROFILE` +
 `localDb/migrate.ts` 的 `shouldRefuseOfficialProfileWriterMigration` 决定「非打包 + 正式 profile +
 存在 pending migration ⇒ 启动直接拒绝迁移」。在共享 profile 上验证用户报的那个场景必须能重启
 dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSessionRebindRow.workspaceId`
-留好了接口；若将来 PSB 会单独删除终态会话行而工作区仍在，再追加列 + 发版协调。
+类型如实为 **`null`**（本地没有这一列，工作区 id 的唯一来源是旧 PSB 会话行）；若将来 PSB 会单独
+删除终态会话行而工作区仍在，再追加列 + 发版协调。
 
 **失败语义（全部：不重绑、本地行与 runtime 保持原状、下一次发送可重试、不广播事件）**
 
@@ -391,16 +455,38 @@ dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSes
 | 工作区被**别人**占用 | `PSB_WORKSPACE_OCCUPIED_BY_OTHER`（message = 占用人名） |
 | 远端客户端离线 | `PSB_CLIENT_OFFLINE` |
 | 工作区未就绪（`planned` / `provisioning` / `failed` / `deleting`） | `PSB_WORKSPACE_NOT_READY` |
-| 客户端没有该引擎的运行时 | `UNSUPPORTED_CAPABILITY` |
+| 客户端没有该引擎的运行时 | `PSB_AGENT_UNSUPPORTED`（来自 `psbWorkspaceWritable` 的 `agent-unsupported`） |
 | 旧会话读不到且没有工作区线索 / 工作区不可见 | `PSB_NOT_FOUND`（**不猜工作区**） |
 | 新建失败 / PSB 不可达 / 鉴权失败 | 对应的 `PSB_*` 码 |
 | 落库失败 | `INTERNAL`（并尽力 `stopSession` 回收刚建出来的 PSB 会话） |
 
+可写判据统一走 `psbWorkspaceWritable(workspace, { requireAgentRuntime: true })`（与占用闸门、
+渲染层禁用态同一份判据，见 §15.10）；main **只给码**、不拼中文兜底句子，文案在 i18n（§15.9）。
+
 **幂等与并发**：同一个本地会话 id 的重建串行化（进程内 in-flight map），并发两次发送只建
 **一条** PSB 会话、两边拿到同一新身份；重建失败立刻从 map 移除，所以失败后的下一条消息会
 重新尝试。落库用 CAS：期间别的一方改过这一行时回收自己建的那条，按库里的现值继续。
+
+**发送前状态读取：快照 store（TTL + 事件失效 + fail-open，审查 r7 P1）**
+
+发送前的两项判定（要不要重建、工作区占用闸门）都读 `maker-host/psb-session-status.ts` 的
+**进程内会话快照**，不再每条消息各打一次 `sessionStatus`（`GET` + 全量 list）：
+
+- `PSB_SESSION_STATUS_TTL_MS = 10_000` 内复用；`maxAgeMs: 0` 强制刷新（重建决策前）；
+- 事件失效：重绑（旧 PSB 会话）、`stopSession`、归档 / 删除释放、应用退出都 `invalidate` /
+  `record`，隧道报出终态码时 `psb-agent-tunnel` 也失效；
+- **读不到 fail-open**：网络 / 鉴权 / 协议错**不是判定结果**——本轮继续发送、不重绑；真正
+  的终态由建隧道时的 `[PSB_SESSION_STOPPED]` 等可行动失败报出。失败时若还有旧快照一并交回
+  （`stale`），让调用方能按最近一次事实继续；
+- 「明确不存在」（404/403）才是权威事实：清掉快照并按 `missing` 返回（重建触发条件）。
+
+`maker-ipc/register.ts` 的 `preparePsbRemoteRebind` 先查快照：活的直接放行（常见路径零额外
+请求），终态 / 不存在才进协调器；`preparePsbWorkspaceLock` 在快照「在线 + ready + byMe」时
+零请求放行，读不到时同样 fail-open（PSB 服务端仍是最终裁判，未锁定者的写入会被它拒绝）。
+
 **已知边界**：重绑后远端原生上下文不延续（新 PSB 会话是全新引擎会话，本地消息历史完整）——
-所以落库时清 `sdk_session_id`，否则新会话会去 resume 一个不存在的原生会话而拒绝启动。
+所以落库时清 `sdk_session_id`，**并**同事务写入交接标记；否则新会话会去 resume 一个不存在的
+原生会话而拒绝启动（只清不交则是模型失忆）。
 
 ## 7. 合并防回归清单
 
@@ -461,28 +547,58 @@ dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSes
 
 | 文件 | 职责 | 边界 |
 | --- | --- | --- |
-| `main/remote-workspace/psbEndpoint.ts` | 站点根解析（正式 / `CINDY_MEKA_PSB_HOST` 测试覆盖）、`webUrl` 归一到当前站点 | 只回答地址，不取凭据、不发请求 |
+| `main/remote-workspace/psbEndpoint.ts` | 站点根解析（正式 / `CINDY_MEKA_PSB_HOST` 测试覆盖）、**出网 URL 唯一归一化判据 `resolvePsbUrl`**（HTTP + 两条 WS）、`webUrl` 归一到当前站点 | 只回答地址，不取凭据、不发请求 |
 | `main/remote-workspace/psbAuth.ts` | 宿主直签 Connection JWT：`getAuthState()` → `<orgSlug>:<slug>` → `ConnectionTokenProvider` | token 只在 main 内存，不进 IPC / 日志 / 渲染层 |
-| `main/remote-workspace/psbClient.ts` | HTTP 客户端（契约 §5）、错误映射、401 只重签一次 | 唯一 HTTP 出口 |
-| `main/remote-workspace/psbTunnel.ts` | agent-tunnel（与 MCPR 同帧契约）、`agentForUrl` 注入系统代理 | 不解析身份、不自己取 token |
-| `main/remote-workspace/streamViewer.ts` | 串流观看端：`wss` + Bearer、帧原样转 `ArrayBuffer`、幂等 start、generation 防泄漏 | 帧不做任何解析（解码在渲染层） |
+| `main/remote-workspace/psbClient.ts` | HTTP 客户端（契约 §5）、错误映射、401 只重签一次；`createSession` **先读工作区再建会话**（不产生孤儿会话）、`getSession` / `ensureForSession` 各 **2 次 HTTP**（会话行 + 列表）、列表缺键判协议错、`accessPoll` 是总 deadline | 唯一 HTTP 出口 |
+| `main/remote-workspace/psbTunnel.ts` | agent-tunnel（与 MCPR 同帧契约）、ready 帧**进程级能力探测**、就绪期字节回放、`PsbTunnelError` 结构化失败、`agentForUrl` 注入系统代理 | 不解析身份、不自己取 token |
+| `main/remote-workspace/wsFrames.ts` | 两条 WS 共用的字节搬运（`toBuffer` / `toArrayBuffer` / `createExecByteStream`）与就绪前 1 MiB 有界排队 | 纯结构，不碰 Electron |
+| `main/remote-workspace/streamViewer.ts` | 串流观看端：`wss` + Bearer、帧原样转 `ArrayBuffer`、预检后**原子替换**（失败保留旧连接）、本端主动关闭补发 `closed(superseded/client-stopped)`（只发给该观看连接的 owner，`superseded` 在渲染层非终态） | 帧不做任何解析（解码在渲染层） |
+| `main/remote-workspace/streamOwners.ts` | 管理页观看端 **owner 引用计数**（`workspaceId → Set<webContentsId>`；归零才停流、按 owner 定向帧与本端主动关闭事件） | 纯结构，可单测 |
 | `main/remote-workspace/index.ts` | 服务单例装配（注入 auth/token/出网/推送/日志）、mutation 后推送工作区快照 | 登录边界 dispose（退出登录断流） |
-| `main/remote-workspace/ipc.ts` | 22 个 invoke handler（16 个会话级 + 6 个管理页）、来源校验、payload 校验、失败 `PSB_*` 码 | handler 每次现取单例（dispose 后自动重建） |
+| `main/remote-workspace/ipc.ts` | 23 个 invoke handler（17 个会话级 + 6 个管理页，与 §4 的通道数一致）、来源校验、payload 校验、失败 `PSB_*` 码；管理页 start/stop 记账到 `streamOwners`、`starting` 相位停止标记（`adminStreamReleasePending`） | handler 每次现取单例（dispose 后自动重建） |
+| `main/remote-workspace/vcsNotice.ts` | VCS action **固定目标表**（kind → path/method，不采信服务端 method/path）+ 服务端形状校验 + ≤32 LRU 通知缓存 | 不自己跑 VCS、不猜清理轮询端点 |
 | `main/remote-workspace/adminService.ts` | **工作区级管理页**：工作区解析、工作区级 `stream/subscribe` 拿桌面访问会话并建立观看端绑定、重复启动复用 / 失效重订阅、串流订阅与 `STREAM_EVENT` 过滤、`CONTEXT_CHANGED` 判定。**串流不创建 Agent 会话**；旧 PSB 的过渡回退见 §11.7 | 不 import Electron/DB/真实 PSB 客户端；副作用全走注入端口（见 §11） |
 | `main/remote-workspace/adminRecentStore.ts` | 最近使用的远程工作区 + `PSB 会话→工作区`映射 + `工作区→观看端绑定会话`（JSON 键 `desktopSessions`；有上限、幂等写） | 可丢的展示偏好，不写 DB、不新增 schema |
 | `main/remote-workspace/adminRuntime.ts` | 管理页服务的生产装配（PSB 服务单例、localDb 会话行懒读、本机记录文件、两条推送） | 宿主依赖只在这里出现 |
-| `main/remote-workspace/push.ts` | `WORKSPACE_CHANGED` / `STREAM_EVENT` / `SESSIONS_REBOUND` 广播（只发受信窗口） | 出站推送同样是授权边界 |
+| `main/remote-workspace/push.ts` | `WORKSPACE_CHANGED` / `WORKSPACE_VCS_NOTICE` / `SESSIONS_REBOUND` / `ADMIN_CONTEXT_CHANGED` / `ADMIN_STREAM_EVENT` 广播（只发受信窗口；`ADMIN_STREAM_EVENT` 的帧 / 光标 / 本端主动关闭按观看端 owner 定向，`status` / `error` 广播） | 出站推送同样是授权边界 |
 | `main/remote-workspace/sessionRebind.ts` | 发送前透明重建的决策与幂等（终态/404 判定、同工作区新建、CAS 落库、并发去重） | 不 import Electron/DB/PSB：副作用全走注入（见 §6.1） |
+| `main/maker-host/psb-session-status.ts` | 发送前 PSB 会话状态快照：10s TTL + 事件失效（重绑 / 停止 / 隧道终态 / 归档释放）+ 并发共享单次读取 + **读不到 fail-open**（交回 stale 快照，不判终态） | 进程内存、不落盘、不含凭据；读口由 `maker-ipc/register.ts` 注入，重绑 / 占用闸门共用同一 store |
+| `main/maker-host/psb-workspace-session-release.ts` | 会话结束（归档 / 删除 / 退出应用）释放 PSB 工作区占用：main **单权威**（终态 observer 触发）、幂等、同工作区还有活动任务则跳过且不入账（`workspace-in-use`）、失败进有界账本（带 `workspaceId`，重试不依赖会话行）可重试、不阻断主流程 | 只对 `psb:` 生效；dataOwner 边界（切号不替旧账号归还）；渲染层提示条消费同一账本，不另记一份 |
 | `main/maker-host/psb-agent-tunnel.ts` | 三种 Harness 共用的**唯一**取 token 处 → 交给数据面 | 不在 transport 层解析登录态 |
 | `main/maker-host/remote-tunnel-dispatch.ts` | `mcpr:` → `openMcprTunnel`、`psb:` → `openPsbAgentTunnel` 的唯一分派 | 本地 / SSH 到这里是编程错误，不回落 SSH pool |
 
 ### 9.2 失败码跨 IPC（新增约定）
 
 IPC 只保留 message，所以 PSB 的语义码用**命名空间化**的 `PSB_*` 码传递：
-`shared/ipc-errors.ts` 现有 **11 码**（`PSB_AUTH_REQUIRED` / `PSB_ORG_REQUIRED` /
+`shared/ipc-errors.ts` 现有 **21 码**（`PSB_AUTH_REQUIRED` / `PSB_ORG_REQUIRED` /
 `PSB_AUTH_EXPIRED` / `PSB_IDENTITY_NOT_LINKED` / `PSB_WORKSPACE_OCCUPIED_BY_OTHER` /
-`PSB_CLIENT_OFFLINE` / `PSB_WORKSPACE_NOT_READY`（发送时重建才用到，见 §6.1）/ `PSB_NOT_FOUND` /
-`PSB_UNREACHABLE` / `PSB_STREAM_UNAVAILABLE` / `PSB_STREAM_NOT_ACTIVE`（本机没有活动观看，见 §12.2）），
+`PSB_CLIENT_OFFLINE` / `PSB_WORKSPACE_NOT_READY`（发送时重建才用到，见 §6.1）/
+`PSB_AGENT_UNSUPPORTED`（远端客户端无该引擎运行时）/ 管理页 stale 三条
+`PSB_WORKSPACE_MISSING` / `PSB_WORKSPACE_UNREACHABLE` / `PSB_WORKSPACE_ID_UNKNOWN`（见 §11.2）/
+`PSB_WORKSPACE_VCS_DIRTY` / `PSB_WORKSPACE_VCS_UNAVAILABLE` / `PSB_WORKSPACE_VCS_UNSUPPORTED`
+（占用 / 释放的版本控制检查，见 §13.5）/ `PSB_NOT_FOUND` / `PSB_UNREACHABLE` /
+`PSB_STREAM_UNAVAILABLE` / `PSB_STREAM_NOT_ACTIVE`（本机没有活动观看，见 §12.2）/
+`PSB_STREAM_NO_RUNNING_SESSION` / `PSB_STREAM_ACCESS_STARTING` / `PSB_STREAM_ACCESS_STOPPING`
+（没有 running 桌面访问的三档，见 §11.8）），
+**单表派生**：`IPC_ERROR_CODES` 是唯一手写处，`IpcErrorCode = keyof` 与 `isIpcErrorCode` 都查同一张表，
+不再保留第二份 union/Set 清单。PSB 失败码到文案 / 下一步的映射也收敛成**一张表**
+（`shared/psb-remote-workspace.ts` 的 `PSB_FAILURE_DESCRIPTORS`，**21 行** = `ipc-errors.ts` 里 21 个
+`PSB_*` 码各一行；字段 `psbCode` / `noticeCode` / `messageKey` / `state` / `nextStep`，可选
+`alsoPsbCodes`（历史别名）/ `whenMessageKey`（`AUTH_REQUIRED` 的「组织账号 vs 未登录」鉴别）/
+`writableReason` / `inputMessageKey` / `occupantName`）。可写判据、IPC 码、文案键、通知码、PSB 原始码
+与串流访问分档**全是它的投影**：`PSB_IPC_FAILURE_MESSAGE_KEYS`（保留旧名，由
+`Object.fromEntries(单表)` 生成，不再是手写清单）、`PSB_WORKSPACE_WRITABLE_FAILURES`、
+`PSB_NO_RUNNING_SESSION_IPC_CODES` 与 `psbIpcCodeForFailure` 的反查；PSB 原始码反查是
+`psbFailureDescriptorForPsbCode` / `psbFailureMessageKeyForPsbCode`（main 与常驻提示条把 main
+账本里的 PSB 原始 `failureCode` 归一成文案键用它，不在渲染层另抄码表）。不面向用户的本地诊断码
+（`PSB_PROTOCOL` / `PSB_UNKNOWN` / `PSB_AUTH_LOOP`，见 `PSB_LOCAL_DIAGNOSTIC_CODES`）刻意不入表，
+只进日志与 `INTERNAL`。新增一类失败只在单表加一行、再到 `ipc-errors.ts` 登记该 IPC 码，
+**不要**在别处手抄第二份映射。
+**DTO 收敛**：`PsbWorkspaceAdminStreamStatus` 是 `PsbSessionStreamStatus` 的**纯别名**（字段名统一
+PSB wire 名 `capability` / `encoder` / `lastErrorZh`；早期草稿 `capable` / `codec` / `lastError` 的
+兼容读取已删）；未知载荷只有一个读口 `readPsbAdminStreamStatus(unknown)`（`null` = 读不到，
+不等于 `capability:false`）；未知枚举值一律 `null`（会话 `status` / `agentKind`、工作区 `state`），
+`status:null` 不会触发远端重建（§6.1）。
 映射函数在 `shared/psb-remote-workspace.ts` §8（`psbIpcCodeForFailure` / `psbFailureMessageKeyForIpcCode` /
 `psbRemoteFailureFromIpcError`）。**不要**用 `PRECONDITION_FAILED` 之类泛化码：占用、离线、鉴权
 三种失败需要三种不同动作，糊成一个码等于把「去做哪一步」藏起来。
@@ -521,7 +637,8 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
   观看端显示不可用；页签组内嵌形态正常。另外右侧栏处于分离窗口形态时边页签组整体停用（既有行为），
   此时「远程工作区」页签与插件页签一样不投影。
 - **占用无 TTL**：异常退出（强杀、退出登录、换账号）会留下占用，需在 PSB 网页手动释放；
-  `dispose` 只断串流、不调用 `releaseWorkspace`（产品 §2.5 同口径）。
+  `dispose` 只断串流、不调用 `releaseWorkspace`（产品 §2.5 同口径）。**正常应用退出与任务结束
+  已主动释放**（`psb-workspace-session-release.ts`，见 §16.4）；这不等同于 TTL，也不覆盖强杀。
 - **工作区级 `stream/subscribe` 已适配（2026-11-26，PSB 0.1.172）**：串流观看端改走
   `POST /api/cindy/remote/workspaces/:id/stream/subscribe`，拿**桌面访问会话** id 起观看端，
   **不创建 Agent 会话**；绑定持久化、重复启动复用、失效重订阅、读路径不订阅不建会话。旧 PSB
@@ -529,6 +646,34 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 - **输入仲裁改为 PSB 权限模型**（0.1.172）：取消 `role=control` 单控制者 / `takeover` 互斥，
   改由服务端按「工作区是否被占用 + 是否已登录」判定，其它情况只丢弃输入。Cindy 默认允许交互、
   不做客户端互斥；`errors=frame` 未启用（见 §12.5）。
+
+### 9.7 渲染层单入口 / 单判据（2026-11-26 独立审查归并）
+
+同一事实只允许一处判定的渲染层落点（工程侧正本；产品口径见产品规则 §2.3 / §2.4 / §8）：
+
+- **新建任务目标**：`state/newMakerDraft.ts` 的 `DraftTarget` 联合 + `deriveDraftTargetFields()`
+  单点归约，`resolveDraftTargetKind()` 是所有闸门的唯一判据；`explicitNoProject` 只表示「对话」；
+  一次性导航三套 reader 收敛为 `NewMakerNavigationIntent` 单次 consume；PSB 草稿目标生命周期在
+  `features/cc-agent/usePsbDraftTarget.ts`（懒建 / 在途拒绝 / 换目标 / 卸载释放 + owner generation）。
+- **右栏页签创建**：`features/right-sidebar/lib/useTabCreationMenu.ts` 统一调
+  `openRemoteWorkspaceAdminTab()`（组迁移 / dock 展开 / 激活位由单入口负责），其它入口不再各自
+  计算 disabled 条件或拼 `openTab` 参数。
+- **失败文案**：根 `renderer/features/remote-workspace/psbFailureText.ts` 的
+  `psbFailureText(t,error)`（规则见 §13.4）。
+- **占用释放**：main 单权威（归档 / 删除由终态 observer 发起；同工作区还有活动 `psb:` 任务时
+  跳过且不入账）。渲染层 `features/cc-agent/psbOccupancyRelease.ts` 只剩**旧 main / 旧 preload
+  的兼容补投**（能力探测 `releaseWorkspaceForSession`，新 main 下零调用）；提示条消费两个数据源
+  （main 账本 + 工作区级账本，按 `workspaceId` 跨源去重展示；同一工作区重试由 main 代表），
+  唯一 UI 消费方是常驻提示条
+  `features/remote-workspace/release/PsbPendingReleaseNotice.tsx`（见 §16.4）。
+
+定向测试：`psbDraftTarget.test.ts` / `psbDraftSession.test.ts`（目标归约与草稿生命周期）、
+`remoteWorkspaceAdminEntry.test.tsx`（右栏「+」菜单单入口）、`psbFailureText.test.ts`（码表 /
+包装剥离 / 人名插值）、`psbOccupancyRelease.test.ts`（main 单权威探测 / 旧 main 兼容补投）、
+`PsbPendingReleaseNotice.test.tsx`（跨源去重 / 单一重试 / 失败码归一 / 关闭 / 旧 preload 降级）、`psbStreamLifecycle.test.ts` /
+`RemoteWorkspaceAdminPanel.test.tsx`（状态机 / 保活 / watchdog）、`vcsNoticeStore.test.ts` /
+`WorkspaceVcsNoticeHost.test.tsx` / `WorkspaceVcsNoticeView.test.tsx`（revision 单调 / 合并 /
+关闭语义 / 右下横幅）。
 
 
 ## 10. 与 PSB 实现的联调对齐（2026-11-25 夜，测试部署）
@@ -539,8 +684,9 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 1. **创建 / 读取会话**回答 `{ data: <会话行> }`（单条行，不夹带工作区）。`psbClient` 现在「先解析会话行，
    再按 `session.workspaceId` 从工作区列表补工作区」（`requireWorkspaceById`），两种外壳都兼容；
    渲染层的 DTO 不需要知道这个差异。
-2. **串流状态**字段是 `capability` / `encoder` / `lastErrorZh`，早期草稿是 `capable` / `codec` /
-   `lastError`。`parsePsbSessionStreamStatus` 两种拼写都认（优先 PSB 现行字段）。
+2. **串流状态**字段用 PSB wire 名 `capability` / `encoder` / `lastErrorZh`；早期草稿的
+   `capable` / `codec` / `lastError` 双拼写兼容读取**已于 2026-11-26 删除**（只认现行字段，
+   缺字段按 `null` / 未知处理，不再两种都认）。
 3. PSB **没有**「读单个工作区」路由：Cindy 的 JWT 白名单也不放行 `GET /workspaces/:id`，
    该路由在 Cindy 身份下**恒 403**（2026-11-26 真机：`open-web-workspace` 报
    `[PSB_NOT_FOUND] 这个 Cindy 身份不能访问该接口`，来自 PSB `packages/server/src/app.ts` 的
@@ -557,8 +703,9 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 - **现象**：三 Harness 在客户端全部可用后，Cindy 首条消息仍失败：
   `[PSB_SESSION_NOT_READY] session runtime is not ready: 客户端还没建立隧道，等待期内的数据已超过缓冲上限；请重试。`
 - **Cindy 侧行为**：WS 升级成功即发送首帧应用层 RPC（与 MCPRouter 隧道同契约），之后才由 PSB 把客户端
-  出站隧道接上。PSB 后续（0.1.159+）已给出就绪契约：opt-in 的 `agent-tunnel.ready` 文本帧 +
-  10s 排队等待 + 1 MiB 预检缓冲（跨仓确认项见[契约摘要](../collaboration/psb-remote-workspace-contract.md)
+  出站隧道接上。PSB 后续给出就绪契约（0.1.159+ 引入 `agent-tunnel.ready` 文本帧，0.1.160+ 起
+  opt-in、URL 不声明 `readyFrame=1` 就不发）：10s 排队等待 + 1 MiB 预检缓冲
+  （跨仓确认项见[契约摘要](../collaboration/psb-remote-workspace-contract.md)
   §1.2）。Cindy 按「收到 ready 再发首帧、等不到按超时回退」实现（见 §10.7）。
 - **不要**在 Cindy 侧私自加"盲等 N 秒"：等待时长与缓冲上限是 PSB 的事实，猜一个值只会让失败更难归因；
   就绪帧超时值也必须来自契约（exec 1.2s / 其它 5s 的超时回退只是兼容旧服务端，不是业务等待）。
@@ -595,9 +742,9 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 | S4 | 占用失败的人名在 toast 路径丢失：IPC 只带 code+message，渲染层 `personName` 恒为 null → 只剩「使用中」 | main 侧把 `occupiedByOther` 的 `message` **收敛为「占用人名 / 空串」**，渲染层按码回填 `personName`；不再混入 PSB 中文原文 |
 | S5 | `startStream` 回包把 `active` 强行置 true，面板在零帧时显示「串流中」 | 观看端**不改写 PSB 的 `active`**；面板区分「已订阅（stop 可点）」与「有画面」，新增 `remoteWorkspace.session.streamWaiting`（12 locale） |
 
-审查同时确认以下面无需改动：IPC 通道（当时 18 条；现为会话级 19 条 + 管理页 8 条通道常量）
+审查同时确认以下面无需改动：IPC 通道（当时 18 条；现为会话级 21 条 + 管理页 8 条通道常量）
 与 preload/main/bridge 一一对应、token 不进日志/IPC、
-`wss:`/`https:` 单一来源、401 只重签一次、`psb:` 的 13 个 maker-host 钩子全部走隧道分支、
+`wss:`/`https:` 单一来源、401 只重签一次、`psb:` 的 maker-host 钩子全部走隧道分支（清单见 §7）、
 渲染层判据与 main 分类器同源、草稿占用释放有 `psbTargetCommittedRef` 守护。
 
 **2026-11-26 第二轮独立审查（渲染层阻断项）**：`streaming` 改为**只由本端 `frame` 事件置 true**
@@ -628,6 +775,36 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 `psbStreamPlayer` 统计里的 `decodedFrames` / `decodeErrors`（无 UI 消费、不参与解码决策）。
 ③ `remoteWorkspace.admin.directoryValue` 等 12 个无引用 i18n key 已在上一批删除，本轮复核仍为
 零引用。
+
+**渲染层选择器 / 草稿 / 串流 / 侧栏独立修复（2026-11-26 第三轮，FIX-E）**：本批只动
+`renderer/features/remote-workspace/{dialog,draft,stream,sidebar}/**` 与根
+`psbFailureText.ts`，事实如下（实现与测试同批落地）：
+
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| E1 | 两份同名 `psbFailureText`（根 + `dialog/psbDialogModel.ts`），码表不一致：同一失败在两个入口可能显示两句话 | 实现只留根 `psbFailureText.ts`：PSB 码走共享 `psbFailureMessageKeyForIpcCode`、本地码兜底 `ipcError.<CODE>`、剥 `[CODE] ` 前缀、占用空人名回落 `remoteWorkspace.error.workspaceOccupied`；dialog 侧正则码表删除，只留 `dialog/psbFailure.ts` 的失败事实归一（`readPsbFailure` / 超时事实 / 诊断行） |
+| E2 | 弹窗与草稿页下拉逐行同构（列出→占用→刷新补人名→hydrate VCS→内联错误；行 UI / 徽标 / 事件订阅 / VCS state 各一份） | 共享 `dialog/usePsbWorkspaceSelection.ts`（选择引擎）、`dialog/PsbWorkspaceRow.tsx` + `dialog/WorkspaceStatusBadge.tsx`（行 UI/徽标）、`dialog/usePsbWorkspaceListKeyboard.ts`（radiogroup/listbox 键盘与 roving tabindex）；两个容器只留壳 |
+| E3 | 忙时无出口：占用无超时、在途禁止关闭；取消后迟到的占用成功无人释放（占用无 TTL） | 占用 20s 超时（`PSB_OCCUPY_TIMEOUT_MS`）给可行动失败；弹窗允许取消/关闭、下拉卸载即放弃；**放弃后迟到的成功立刻 `releaseWorkspace`**，失败进 `draft/psbPendingReleaseLedger.ts` 账本（`record/list/subscribe/retryPsbPendingReleases`）由常驻提示条消费（提示文案键 `remoteWorkspace.draft.releasePending` / `releaseRetained`；**12 locale 与常驻提示条 UI 均已落地**，见 §16.4） |
+| E4 | 同一占用在一行里表达三次（徽标 + 长句 + 锁）；行材质两个入口各一套 | 行内只留短徽标，占用人名/下一步进 tooltip；`other` 不再挂锁（`mine` 保留亮锁）；行材质统一为 `--border-default` + `--surface-hover` / `--accent-emphasis` 选中态（inner-control 8px 圆角） |
+| E5 | 失败 `{{name}}` 未插值、VCS 通知与通用错误同显 | 所有失败文案经根函数（人名唯一插值点）；`vcsNotice` 在场时 `visibleActionError` 为 null（同一事实一句话） |
+| E6 | 键盘/ARIA 缺失：弹窗 radiogroup 无方向键与 roving tabindex，下拉 listbox 不处理方向键；忙时按钮被原生 disabled 后焦点丢回 body | 共享键盘 hook 按 WAI-ARIA 惯例（单选跟随焦点 / 列表只移焦点）；在途按钮用 `aria-disabled` + loading（`allowWhileLoading`），行在「外部锁」时才是原生 disabled |
+| E7 | 显示名冲突无消歧：同名 + 同目录/同机器时两行完全一样 | `psbWorkspaceRowLabels()` 按整表消歧：冲突行主标题追加 `-<短 id>`（仍撞用完整 id） |
+| E8 | 历史交接值 `directoryName` 未校验：`/`、`\`、`..`、控制字符会进入虚拟工作目录 | `readPsbDraftRouteTarget` 经 `readPsbDirectoryName` 只接受单个目录名（≤255、拒分隔符/`..`/控制字符）；脏值丢弃该字段，目标仍成立 |
+| E9 | 孤儿 PSB 会话：gate 判过后清去重键、回调目标变化时静默 return → 远端残留无人引用会话，重试再建第二条 | `onSessionCreated` 改为返回是否采纳；未采纳/目标已变 → 尽力 `stopSession` 且**保留去重键**（重试按同一 `clientRequestId` 拿回同一条）；`reused` 与 `getClientRequestId` 等无消费 API 删除 |
+| E10 | 会话级串流五通道在渲染层零消费（bridge/IPC/preload 自认）；`psbStreamSessionId` 与 `remoteWorkspacePsbSessionId` 双包装；`psbWorkspaceRowHealth` 纯别名；`top-px` 魔法值无说明 | 测试/注释里的会话级引用删除（bridge 声明归 FIX-G）；身份解析收敛到 `sidebar/isRemoteWorkspaceSession.ts` 一份实现（`remoteWorkspacePsbSessionId` 接受会话对象或 `remoteHostId` 字符串）；**跨组集成波次已把最后一个调用点（`CCAgentSessionView`）迁到 `remoteWorkspacePsbSessionId` 并删除 `psbStreamSessionId` 别名**；删别名改调共享 `psbWorkspaceHealth`；`top-px` 注明 1px 光学基线对齐 |
+| E11 | 侧栏状态缓存：手列 14 字段比较、TTL 与轮询间隔同一常量、释放引用后清空却不 publish | 改为「行投影」比较（只含渲染字段）；`REFRESH_TTL_MS=12s` 与 `POLL_INTERVAL_MS=15s` 拆开；释放时清空后 `publish` 让行上的标签/锁立即消失；会话→工作区反查加带 revision 的单次解析缓存（一行两个装饰不再各扫一遍表） |
+| E12 | 串流播放器 `submittedAt` 无上限（解码器只吃输入不产出的窗口里随串流时长增长）；播放器无行为测试 | 待配对提交样本上限 `PSB_STREAM_MAX_PENDING_SUBMISSIONS=64`；`psbStreamPlayer.test.ts` 用 fake `VideoDecoder`/canvas 钉住重建、丢 delta、统计与上限 |
+| E13 | `psbDraftTarget` 脏 history state 无测试；测试夹具在两个入口重复 | 新增 `psbDraftTarget.test.ts`（脏目录名/消费语义）；`__tests__/psbTestFixtures.ts` 统一 `makePsbWorkspace` / `installPsbBridge` 等夹具，删掉两个入口各自的复制 |
+
+定向测试：`vitest run src/renderer/features/remote-workspace`（23 files / 236 tests 全通过）；
+渲染层类型检查 `tsc --noEmit -p tsconfig.renderer.json` 通过（整包 `pnpm --filter desktop run typecheck`
+的 main 分片由并行的主进程修复批次一起复验）。后续（跨组集成波次，2026-11-27）：`psbStreamSessionId`
+的最后一个调用点已迁移并删除别名；会话级串流通道删除由 FIX-G 完成；待释放账本已从「渲染层
+进程内记账（App 重启后丢失）」改为 **main 的有界账本 + IPC 读/重试/推送**（见 §16.4），渲染层
+只缓存快照。`remoteWorkspace.draft.releasePending` / `releaseRetained` 的 **12 locale 文案已在**
+（跨组集成波次补齐）；**常驻「待释放」提示条 UI 已在后续任务落地**
+（`features/remote-workspace/release/PsbPendingReleaseNotice.tsx`，主窗挂一次、非阻塞、重试 /
+关闭 / 计数徽标，单测 `PsbPendingReleaseNotice.test.tsx`），真机未验证。
 
 
 ### 10.4 外壳缺失当契约违约 + 串流失败文案去包装（2026-11-26）
@@ -687,7 +864,8 @@ cc-mgr（本机目录无 Claude 模型）、串流首帧（需 PSB 侧起 runnin
 - pi：本地会话 `38d3053e-…` / `psb:713d127d-…` / `agentKind=pi`，回复 OK 落库。
 - cc-mgr 当时未验证：该账号模型目录搜不到 Claude 模型（`Claude`/`Sonnet`/`Opus` 均 0 条）。后续换到
   可用模型后已跑通（见 §10.9 与产品 §8.2，2/2）。
-- **已落地**（PSB §14 契约，0.1.159+）：等 `agent-tunnel.ready` 再发首帧（超时回退）、文本帧不进
+- **已落地**（PSB §14 契约；就绪帧 0.1.159+ 引入、0.1.160+ 起 opt-in，见 §2）：等
+  `agent-tunnel.ready` 再发首帧（超时回退）、文本帧不进
   业务字节流（只按 `isBinary` 分流）、4004 的 JSON `cause` 分类（`SESSION_STOPPED` / `CLIENT_OFFLINE`
   等）；实现与单测见 §2 与 `main/remote-workspace/__tests__/psbTunnel.test.ts`。
 
@@ -791,21 +969,39 @@ maker-core 走 `event loop ended unexpectedly (likely remote daemon shutdown)` �
 - `PsbWorkspaceAdminContext.stale`（加性字段）：固定信息来自本机快照时为 `true`；
 - `availability`：`'missing'` = PSB 工作区列表读成功但工作区已不在（被删 / 无权限）；
   `'unavailable'` = 读不到 PSB（网络 / 鉴权 / PSB 不可达）或当前任务的 PSB 会话读不到；
-- `staleReason`：`list-failed` / `workspace-missing` / `session-unreadable` / `snapshot-only`；
-- `snapshotSavedAt`：固定信息本机落盘时间；`workspaceIdKnown: false` = 占位身份（历史会话
+- `staleReason`：`list-failed` / `workspace-missing` / `session-unreadable` / `snapshot-only` /
+  **`unknown-workspace`**（占位身份专用：只有目录名 / 会话标题这类启发式线索，连工作区 id 都
+  没有；它不表示「PSB 读不到」的某种原因，而是身份事实，渲染层据此给「只能看到本机保存的信息」）；
+- `snapshotSavedAt`：固定信息快照**第一次落盘**的时间（不是最近确认时间；见 11.5 的
+  `savedAt` / `confirmedAt` 分工）；`workspaceIdKnown: false` = 占位身份（历史会话
   种子，写操作必须拒绝）；
 - stale 时 `occupancy` 是未知（全空，渲染层显示「无法获取」）、`desktopSession` / `reasonCode`
   是 `null`、`viewerSessionId` 是 `null`；`lastErrorZh` 只放 PSB 原文做诊断；
 - 历史会话兜底（2026-11-26 真机复验修正）：本机会话行有 `remoteHostId=psb:*` /
   `workingDir=/psb-remote/<目录名>` 时，**先**按目录名去实时工作区列表匹配（`directoryName`
   或 `title` 相同；会话详情对终态也有效，可读时优先用详情的 workspace id）；匹配到就返回
-  live（名称 / 模板 / 机器 / 占用全部来自 PSB，并补记 `会话→工作区`映射与快照）。列表读失败
-  或确实匹配不到时才用降级种子：名称 = 目录名（**任务标题不是工作区名称，禁止冒充**），
+  live（名称 / 模板 / 机器 / 占用全部来自 PSB）。**这是启发式，结果只留内存**（日志记
+  `inferred: true`）：**不写** `会话→工作区`映射、**不写**固定信息快照、**不推进**
+  `lastWorkspaceId`。只有 `sessionStatus` 详情返回的 workspace id 才是权威身份，才持久化映射；
+  猜错的代价是把任务永久指向别人的工作区，远大于一次列表请求。
+  列表读失败或确实匹配不到时才用降级种子：名称 = 目录名（**任务标题不是工作区名称，禁止冒充**），
   机器 / 模板拿不到就留空；`workspaceIdKnown: false` 的占位身份拒绝写操作。列表刚失败时
-  不再重复请求一次（避免双倍超时），种子直接带 `list-failed` 归因与 PSB 原话；
-- 写操作闸门：`streamStart` 在已知 stale / 占位身份时直接抛可行动失败（`NOT_FOUND` /
-  `PSB_UNREACHABLE` + 可读原因），不再先打占用闸门；`streamStatus` 对 stale 返回
-  `status: null`，不拿可能已死的绑定去打网络。
+  不再重复请求一次（避免双倍超时），种子带上 PSB 原话；
+- 写操作闸门（2026-11-26 审查修复）：`streamStart` 在已知 stale / 占位身份时直接抛可行动失败，
+  不再先打占用闸门：
+  | 状态 | 失败码 | messageKey | 用户下一步 |
+  | --- | --- | --- | --- |
+  | 占位身份（`workspaceIdKnown:false`） | `WORKSPACE_ID_UNKNOWN` | `remoteWorkspace.admin.staleUnknownWorkspaceAction` | 重新打开一个远程工作区任务 |
+  | 工作区已不在列表（`availability:'missing'`） | `WORKSPACE_MISSING` | `remoteWorkspace.admin.staleMissingAction` | 换工作区 / 找管理员 |
+  | 读不到 PSB（`availability:'unavailable'`） | `WORKSPACE_UNREACHABLE` | `remoteWorkspace.admin.staleUnavailableAction` | 查网络后重试 |
+  `message` 只放 PSB 原文（可为空），main 不自写中文兜底。
+  上表是 main 侧 `PsbRemoteFailure.code`；跨 IPC 由 `psbIpcCodeForFailure` 翻成 `PSB_` 命名空间码
+  （`PSB_WORKSPACE_ID_UNKNOWN` / `PSB_WORKSPACE_MISSING` / `PSB_WORKSPACE_UNREACHABLE`，见 §9.2）。
+  闸门带 `checkedAt` 与 **15s 信任窗**：结论够新才直接拒绝；过旧时先重新解析一次（服务器恢复后
+  用户点「启动」应该能用，而不是被十几分钟前的失败永久拦住）。写路径的 PSB 失败也会**反向吸收**：
+  `NOT_FOUND` / `FORBIDDEN` → `missing`、`PSB_UNREACHABLE` → `unavailable` —— 刚被 PSB 告知
+  「工作区没了」之后不能还把它标成 live。`streamStatus` 对 stale 返回 `status: null`，不拿可能
+  已死的绑定去打网络。
 
 读 PSB 工作区列表失败但本机有记录时**不清空页面**：保留最后一次固定信息快照 / 会话行种子并把
 PSB 原话放进 `lastErrorZh`（与 §5「读取失败保留最后一次快照」同一取舍）。工作区在列表里**确实
@@ -832,9 +1028,9 @@ PSB 把这条读数挂在会话路径上，所以 main 借**观看端绑定里�
 - 读数失败（绑定会话已不存在 / 网络）**不抛错**：PSB 明确回 404/403 时**清掉绑定与记录**
   （下次启动重新订阅），网络失败保留记录（下次可能就好了）；`status` 仍是 `null`（未知），
   上下文照常返回工作区信息；
-- `STREAM_STATUS` 的返回值仍带 `viewerSessionId`（加性字段）：本次读数所用的绑定会话 id（只来自
-  内存绑定 / 本机记录，没有则 `null`），渲染层可以立刻用它过滤 `STREAM_EVENT` / 判断输入是否
-  可发；
+- `ADMIN_STREAM_STATUS` 的返回值仍带 `viewerSessionId`（加性字段）：本次读数所用的绑定会话 id
+  （只来自内存绑定 / 本机记录，没有则 `null`），渲染层可以立刻用它过滤 `ADMIN_STREAM_EVENT` /
+  判断输入是否可发；
 - 绑定 id 从 `null` 变为有值（记录命中并复用成功）时 main 会推一次 `CONTEXT_CHANGED`。
 
 `CONTEXT_CHANGED` 只在 main「刚拿到新事实」且与**上次发出的完整上下文**不同时推送；载荷与
@@ -842,17 +1038,24 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 窗口内只重读一次，读取在途时只记一笔待刷新、不并发叠加（`adminService.ts` 的
 `refreshContextQuietly`；代码注释里遗留的旧章节引用指的就是本节）。
 
-**推送按窗口过滤（2026-11-26 独立审查修复）**：`CONTEXT_CHANGED` 是发给所有受信窗口的**广播**，
-而 main 只有一份「最近一次读取用的 `localSessionId`」。主窗、独立页签窗口、设置窗各自打开不同
-任务时，后发起读取的窗口会改写这个 id，随后广播出的上下文属于**它** —— 渲染层若照单全收，就会
-被换成另一个任务的工作区，并可能把页头占用 / 观看端的写操作带到别人的工作区上。所以载荷从
-「与 invoke 同形」改为 `{ context, localSessionId }`（加性字段），渲染层
-`useWorkspaceAdminContext` 按 `localSessionId` 过滤：不匹配丢弃，`null`（没有任务线索 → 最近使用
-兜底）与旧 main 不带该字段时照旧接受。evict/重建仍按工作区，不影响这份过滤。
+**推送按窗口分桶（2026-11-26 独立审查修复）**：`CONTEXT_CHANGED` 是发给所有受信窗口的**广播**，
+而每个窗口各自打开一个任务。旧实现用两个全局量：全局「最近一次读取用的 `localSessionId`」与单一
+推送基线。前者让后读取的窗口改写全局 id，随后广播出的上下文标成**它**的任务；后者让两个窗口
+交替读取时互相把对方的值当成「上一次」，推送要么丢要么错标。现在：
+
+- `adminContext` 把入参固化到本次调用的局部变量，**不写任何全局「最近 id」**；
+- 推送基线与去重按 `localSessionId` **分桶**（无任务线索的兜底解析单独一桶），
+  `CONTEXT_CHANGED` 载荷仍是 `{ context, localSessionId }`（加性字段），渲染层
+  `useWorkspaceAdminContext` 按 id 过滤：不匹配丢弃，`null` 桶任何窗口都接受；
+- 动作后的刷新目标由调用方显式给出：`streamStart` / `streamStop` / `streamStatus` 接受可选
+  `{ localSessionId }`（ipc 层透传发起动作的窗口；不传也能工作），main 刷新「发起窗口的桶 +
+  所有上次解析到该工作区的桶」；串流事件驱动的刷新同样只碰相关桶。不再读「全局最近 id」，
+  于是打开别的任务 / 工作区的窗口不会被刷成别人的工作区。
+- evict / 重建仍按工作区，不影响上述过滤。
 
 ### 11.3 工作区级订阅与观看端绑定（生命周期）
 
-`adminStreamStart({ workspaceId })` 的路径（2026-11-26 起，PSB 0.1.172 服务接口）：
+`adminStreamStart({ workspaceId, localSessionId? })` 的路径（2026-11-26 起，PSB 0.1.172 服务接口）：
 
 1. **占用闸门**：`remote().ensureWorkspaceLocked(workspaceId)`（订阅/回退建会话都是工作区写操作，
    见 §13）。失败即返回可行动原因，不建立订阅。
@@ -867,34 +1070,65 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 4. **提交状态**：`binding.status` 更新、`CONTEXT_CHANGED` 重读推送、返回
    `{ status, workspaceId, viewerSessionId }`（`viewerSessionId` = 桌面访问会话 id）。
 
+**多窗口复用已有连接（2026-11-27 复审 P1）**：进程内只有一个观看端实例，`startStream` 的语义是
+原子替换旧连接并补发 `closed(superseded)`。第二个窗口点「启动」时若绑定 `viewerActive === true`，
+直接复用当前连接并返回现有状态（不重连、不产生 `superseded`），这次启动只表示多一个 owner
+（IPC 层 +1）；连接真的断了（`closed` / `error` / 显式停止）才清 `viewerActive`，下次重新
+`startStream`。
+
 其余口径：
 
+- **启动 / 停止按工作区串行 + 代次（2026-11-26 审查修复）**：同一工作区的 `adminStreamStart` /
+  `adminStreamStop` 进同一条串行队列；`streamStop` 在**入队前**推进该工作区的操作代次，
+  `streamStart` 落定（拿到启动结果）后发现代次变了就**自己停掉**刚起的串流并返回未启动状态，
+  随后排队的 stop 视为已完成、不重复停。用户快速「启动→停止」不会出现「停止返回后画面又起来」。
+  这条互斥在服务内部完成，ipc / index 不需要额外 helper。
 - **重复启动复用绑定**：先读绑定状态，正常就复用同一条桌面访问会话（不重复订阅、不重建任何
-  会话）；PSB 说它已不可用时才重新订阅。**停止只断本端观看**（`adminStreamStop` 调
-  `stopStream`），绑定保留供下次复用；窗口销毁时 IPC 层按「工作区」记的 owner 补停一次。
+  会话）；PSB 说它已不可用时才重新订阅。已有健康观看连接时连观看端也不重连（见上）。**停止只断
+  本端观看**（`adminStreamStop` 调 `stopStream`），绑定保留供下次复用；**多窗口按 owner 引用
+  计数**（`streamOwners.ts`）：`start` +1、`stop` / 窗口销毁 -1，**集合归零才停流**；`starting`
+  相位卸载的停止由 IPC 的「启动在途停止」标记兜住（见 §15.3）。
 - **桌面访问被重建**：旧绑定 id 读不到 → 丢掉绑定与本机记录，下一次启动重新订阅拿新 id
   （PSB 契约：订阅没有 `expiresAt`，不要把它当长期句柄）。
 - **没有 running 桌面访问**：订阅返回 `409` + `NO_RUNNING_SESSION`，main 原样抛
-  （`PsbClientError` 保留 PSB 可读中文），渲染层显示「先在 PSB 网页启动桌面访问」这类可行动文案；
-  **不会**自动拉起桌面访问，也**不会**降级去建会话。
+  （`PsbClientError` 保留 PSB 可读中文），渲染层显示「先在 PSB 网页启动桌面访问」这类可行动文案。
+  `ensureWorkspaceAccess` 是**可选增强**（见 §11.8）：能力位 `open` 时前台尝试拉起，其余情况
+  后台预热、不阻塞订阅，失败一律非致命；它不会降级去建会话。
 - **过渡回退（仅旧 PSB）**：订阅端点 404/405/`UNSUPPORTED` → 允许临时回退创建**内部 Agent
   会话**，必须 `purpose:'internal'` + 标题 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`
   （`Cindy 观看端 · 内部串流订阅`）+ warn 日志；新端点可用时永不执行。详见 §11.7。
+  **回退会话必须收尸（2026-11-26 审查修复）**：创建成功后若起观看端失败 → best-effort
+  `stopSession` 回滚并清掉本机绑定；PSB 说这条会话已结束 → 丢掉绑定并结束内部会话；工作区级
+  订阅成功（服务端已支持新端点）或绑定被判定失效时，按 TTL / 失效清理本进程记录的旧回退会话
+  （不再被任何绑定引用立即清，仍被引用则等 TTL）。端口上没有 `stopSession` 的旧装配跳过收尸。
 - **清理点**：工作区不可见（删/无权限）→ 丢掉内存绑定与本机记录；PSB 说绑定会话结束
   （`closed.reason` ∈ `session-ended` / `session-not-found`）→ 丢掉绑定与本机记录，**下一次启动**
   重新订阅；读状态发现绑定已失效同样只清记录、不订阅（读路径，见 §11.2）；账号边界换 PSB 服务
   实例 → 服务自己按实例身份清空内存绑定与推送基线，本机记录保留——下一次启动会把记录里的 id
   交给新实例校验，新账号看不到它时（404/403）清掉并重新订阅。
   **应用退出不主动停远端任何会话**：桌面访问会话归 PSB 与用户管理（PSB 网页可停），Cindy 只断
-  本端观看连接。
+  本端观看连接；唯一例外是过渡回退创建的内部观看端会话（它只为本端观看存在，见上条收尸口径）。
 - **串流事件**：观看端事件按 `sessionId` 过滤，只有绑定会话的事件经
   `psb-remote:admin-stream-event` 转发（`frame/status/cursor/closed/error` 复用 `PsbStreamEvent`，
   渲染层按 `context.viewerSessionId` 过滤）；`closed.detail` 的 `reasonCode` / `desktopSession`
   会写回管理页状态，随后触发一次合并后的上下文重读（§11.2「合并窗口」的「在途不并发、丢通知
-  不丢事实」）。
+  不丢事实」）。本端主动关闭的 `closed(client-stopped)` / `closed(superseded)` 只发给该
+  `viewerSessionId` 的 owner；main 内部收尸（重建前旧连接 / 代次自停）补发的
+  `closed(client-stopped)` 不转发（`quietStreamStops`，见 §15.3）。
   `cursor`（宿主光标形状）只透传给渲染层映射成**宿主风格 CSS 关键字**（只在画面区域生效），没有
   管理页状态、也不触发上下文重读
-  （契约见 §12.9）。用户任务会话的串流仍只走 `PSB_REMOTE_CHANNELS.STREAM_EVENT`。
+  （契约见 §12.9）。用户任务会话**没有**会话级串流通道（4 invoke + 1 push 已删）：观看端事件只走
+  工作区级 `ADMIN_STREAM_EVENT`。
+- **渲染层面板状态机与保活（2026-11-26 独立审查 r4）**：`useAdminStreamSession` 用显式联合态
+  `idle / starting / connecting / waiting-frame / streaming / stopping / error` 取代旧 5 个布尔；
+  `streaming` 只由 `frame` 事件进入（PSB `active` 不参与），`connecting` = 已订阅未首帧、
+  `waiting-frame` = PSB 明确说此刻没有采集。**分类切换保活**：切「版本控制 / 设置」只 `hidden`
+  不卸载连接区，已建立串流继续；只有页签不可见 / 关闭 / 换工作区才释放名额（旧实现按分类卸载
+  并静默停播）。**多窗口收敛**：本端 `closed(superseded)` 是**非终态**（同会话新连接继续送帧，
+  保留相位、不清屏、不释放 owner），只有 `closed(client-stopped)` / 远端关闭才回 `idle`；绑定从
+  有变无 / 换了、首帧 **20s watchdog**（`FIRST_FRAME_TIMEOUT_MS`）读一次状态仍无绑定 → 回 `idle`
+  （不循环、不自动重连）；**输入上行失败**按 5s 节流（`INPUT_FAILURE_THROTTLE_MS`）提示一次并回
+  `idle`；进页时历史 `lastError` 只登记、不产红条。
 - **`viewerSessionId` 语义（字段名不变）**：正常是**桌面访问会话** id；只有旧 PSB 的过渡回退才
   是内部 Agent 会话 id。渲染层只做等值过滤，不做 id 形状判断。
 
@@ -903,17 +1137,17 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 | 通道 | 方向 | 语义 |
 | --- | --- | --- |
 | `psb-remote:admin-context` | invoke | `{ localSessionId? }` → `{ context: PsbWorkspaceAdminContext \| null }` |
-| `psb-remote:admin-stream-start` | invoke | `{ workspaceId }` → `{ status, workspaceId, viewerSessionId }` |
-| `psb-remote:admin-stream-stop` | invoke | `{ workspaceId }` → `void`（幂等，只停观看） |
-| `psb-remote:admin-stream-status` | invoke | `{ workspaceId }` → `{ status: PsbWorkspaceAdminStreamStatus \| null, viewerSessionId: string \| null }`（**只用绑定里的会话 id**：内存绑定 / 本机记录里的 `desktopSessions[workspaceId]`；**不订阅、不创建会话、不占用工作区**；见 §11.2） |
+| `psb-remote:admin-stream-start` | invoke | `{ workspaceId, localSessionId? }` → `{ status, workspaceId, viewerSessionId }`（`localSessionId` 可选：只用于把 `CONTEXT_CHANGED` / 串流动作记到发起窗口的桶，不是身份字段） |
+| `psb-remote:admin-stream-stop` | invoke | `{ workspaceId, localSessionId? }` → `void`（幂等，只停观看） |
+| `psb-remote:admin-stream-status` | invoke | `{ workspaceId, localSessionId? }` → `{ status: PsbWorkspaceAdminStreamStatus \| null, viewerSessionId: string \| null }`（**只用绑定里的会话 id**：内存绑定 / 本机记录里的 `desktopSessions[workspaceId]`；**不订阅、不创建会话、不占用工作区**；见 §11.2） |
 | `psb-remote:admin-stream-input` | invoke | `{ workspaceId, event }` → `void`（键鼠输入，见 §12.2） |
 | `psb-remote:admin-stream-capture` | invoke | `{ active, workspaceId? }` → `void`（捕获态开关，见 §12.4） |
 | `psb-remote:admin-context-changed` | push | `{ context, localSessionId: string \| null }`（`context` 与 invoke 结果同形；`localSessionId` 供渲染层按窗口过滤，见 §11.2） |
 | `psb-remote:admin-stream-event` | push | `PsbStreamEvent`（`sessionId` = 观看端绑定会话：正常是桌面访问会话 id，旧 PSB 过渡回退是内部 Agent 会话 id；含 `frame/status/cursor/closed/error`，`cursor` 见 §12.9） |
 
-- **`status: null` 不是「不支持串流」**：`STREAM_STATUS` 读不到 PSB 状态时返回 `null`，渲染层
-  不得据此禁用「启动」（`capable` 只在真的读到状态时才有意义）。这是本轮最容易写错的一处：
-  把「读不到」当 `capable: false` 会让按钮永久不可用，正是本批要修的退化。
+- **`status: null` 不是「不支持串流」**：`ADMIN_STREAM_STATUS` 读不到 PSB 状态时返回 `null`，渲染层
+  不得据此禁用「启动」（`capability` 只在真的读到状态时才有意义）。这是本轮最容易写错的一处：
+  把「读不到」当 `capability: false` 会让按钮永久不可用，正是本批要修的退化。
 - 失败仍用 §9.2 的 `PSB_ 命名空间化错误码` 与 `throwIpcError`；payload 校验在 handler 内，
   校验通过才产生副作用；`message` 不含 token/身份字段。
 - preload 桥方法：`adminContext` / `onAdminContextChanged` / `adminStreamStart` /
@@ -925,27 +1159,35 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 ### 11.5 本机持久化（最近工作区 + 会话映射 + 观看端绑定 + 固定信息快照）
 
 落点 `<userData>/psb-remote-workspace-admin.json`（走既有 `createOverrideSettingsFile`：原子
-替换、跨进程锁、64 KB 上限），内容四项（顶层带 `version` schema 字段，加性、旧文件缺省按当前
-版本读）：
+替换、跨进程锁、64 KB 上限），内容四项。**没有 `version` 字段**（2026-11-26 审查）：写路径
+`writePatch` 会删掉与默认值相等的键，而 `version` 恒等于默认值，所以它**永远落不了盘**；
+现在这份文件走**加性演进**——新字段可选、读取时缺省按旧行为归一，语义变更换新键
+（`viewers` → `desktopSessions`），旧文件里的 `version` 读取时忽略：
 
 - `lastWorkspaceId`：没有远程任务时页面的默认对象，重启后仍然生效；
 - `sessions[{ sessionId, workspaceId }]`：**agent** PSB 会话读不到时兜底解析工作区，容量 32、
-  最近的在前、超出淘汰最旧；
+  最近的在前、超出淘汰最旧。**只有 `sessionStatus` 详情读成功（或会话启动那一刻）才写**；
+  按目录名 / 标题的启发式匹配不写这张表（猜错会把这个任务永久指向别人的工作区）；
 - `desktopSessions[{ workspaceId, sessionId }]`：该工作区**观看端绑定**的会话 id，容量 16、最近的
   在前。正常是工作区级 `stream/subscribe` 返回的**桌面访问会话** id；旧 PSB 的过渡回退是内部
   Agent 会话 id。它是「重启后复用同一条桌面访问会话 + 只读地读 `stream/status`」的唯一依据；
   **不按标题认领** `listSessions` 里的会话——那是全工作区可见范围，可能含别人的会话。
-- `workspaceSnapshots[{ workspaceId, title, templateTitle, clientName, clientOnline,
-  directoryName, state, savedAt }]`（2026-11-26 真机事故后新增）：固定信息快照，容量 16、按
-  `workspaceId` 幂等（同 id 只留一条）、最近确认的在最前。**只存固定字段**，不存占用 / 桌面
-  会话等易变状态（`clientOnline` 仅作诊断，stale 时不当展示事实）。写入点：`createSession`
-  成功（工作区会话启动那一刻）、占用 / 释放成功、`adminContext` 实时读成功；固定字段不变
-  时 **0 次写**（`savedAt` 保留第一次确认时间），损坏行只丢该行、读坏整份文件回空记录。
+- `workspaceSnapshots[{ workspaceId, title, templateTitle, clientName, directoryName, savedAt,
+  confirmedAt }]`（2026-11-26 真机事故后新增）：固定信息快照，容量 16、按 `workspaceId` 幂等
+  （同 id 只留一条，重复行保留 `confirmedAt` 最新的那条）。**只存固定字段**，不存占用 / 在线 /
+  工作区状态 / 桌面会话这类易变信息（2026-11-26 审查：旧实现把 `clientOnline` / `state` 也存了，
+  这两个字段每 30 秒都可能变，导致「值没变就不写」的比较永远不等、每次读页面都整份重写文件）。
+  `savedAt` = **第一次落盘**的时间（后续重写不推进）；`confirmedAt` = 最近一次落盘时固定信息被
+  PSB 确认的时间。排序 / 「最近确认过」用 `confirmedAt`；坏行（两个时间都不可解析）**直接丢弃**，
+  不伪造 1970 的时间去抢兜底位。写入点：`createSession` 成功（工作区会话启动那一刻）、
+  占用 / 释放成功、`adminContext` 实时读成功、目录启发式命中后用户占用成功（PSB 已确认工作区
+  存在）；固定字段不变时 **0 次写**；损坏行只丢该行、读坏整份文件回空记录。
 
 > **JSON 键变更（2026-11-26）**：由 `viewers` 改为 `desktopSessions`。旧值是「我们自己创建的内部
 > 观看端 Agent 会话」，语义已作废（那正是用户事故里不该出现在会话列表的行）；新代码按新键读，
 > 旧数据自然丢弃——**不迁移、不复用旧 Agent 会话**（下次启动会重新订阅拿桌面访问会话）。
 > `workspaceSnapshots` 是加性键：旧文件没有它就按空快照读，下一次实时读取会重新写入。
+> 旧文件里残留的 `clientOnline` / `state` / `version` 读取时归一忽略，不影响其它字段。
 
 为什么不用 DB 新列：加列要 migration（会阻断 dev 实例、也让发版多一道协调），而这份记录是
 **可丢的展示偏好**——丢了只回到「本机无快照」的旧行为，不损坏用户数据。写纪律：所有写入口
@@ -965,14 +1207,32 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
   语义、记录容量与幂等写（`desktopSessions`）、账号边界丢绑定、键鼠输入转发与「没有活动连接」
   失败、**读路径不订阅 / 不建会话 / 不占用**：`adminContext` / `adminStreamStatus` 在无绑定时
   返回 `null` 且订阅 / `createSession` / 占用闸门调用次数为 0、记录命中时只读复用、记录里的
-  绑定失效时清记录不重建、`viewerSessionId` 变化推送）。
+  绑定失效时清记录不重建、`viewerSessionId` 变化推送）。多窗口复用同一条健康观看连接（不重连 /
+  不产生 `superseded`）、内部收尸的 `closed(client-stopped)` 不转发、用户显式停止照常转发；
+  `psbAdminStreamOwnership.test.ts` 用真实 handler + 推送覆盖两窗口只停一次、`starting` 相位卸载
+  收流、主动关闭只发 owner。
 - 固定信息快照 / stale 降级（2026-11-26 真机事故修复，同一测试文件）：live 读取写入快照且同值
-  0 次写、目录名反查、损坏行 / 容量上限、PSB 读不到时用快照构造 `stale: true` / `availability:
-  'unavailable'` 的上下文（名称 / 模板 / 机器不变、占用与桌面会话未知）、工作区被删返回
-  `availability: 'missing'` 且只清易变记录、历史会话（无快照 / 无映射）用任务标题 +
-  `/psb-remote/<目录>` 种子、`streamStart` 在 stale 时直接可行动失败（0 次占用闸门 / 0 次订阅）；
+  0 次写、**固定字段相同但旧文件带 `clientOnline` / `state` 时也 0 次写**、目录名反查、
+  损坏行 / 容量上限、`savedAt` 保留首次落盘而 `confirmedAt` 在重写时推进、
+  `latestWorkspaceSnapshot` 按时间而不是数组顺序、坏行两个时间都不可解析时丢弃（不出现 1970）、
+  本机 JSON 不写 `version` 且旧 `version` 被忽略；PSB 读不到时用快照构造 `stale: true` /
+  `availability: 'unavailable'` 的上下文（名称 / 模板 / 机器不变、占用与桌面会话未知）、工作区
+  被删返回 `availability: 'missing'` 且只清易变记录、历史会话（无快照 / 无映射）用
+  `/psb-remote/<目录>` 的 **目录名**作种子（目录名命中本机快照就取快照的固定信息；
+  **任务标题不参与命名**）、`streamStart` 在 stale 时直接可行动失败（0 次占用闸门 / 0 次订阅）；
   renderer 侧 `RemoteWorkspaceAdminPanel.test.tsx` 覆盖「stale 仍显示名称 / 模板 · 机器、不出现
   『还没有远程工作区』、降级说明条、stale 下启动 / 占用给可行动文案且不发 IPC」。
+- **多窗口 / 写闸门新鲜度 / 启发式持久化 / 回退收尸 / 启停互斥 / ensure 位置（2026-11-26 独立
+  审查修复，同一测试文件）**：两个窗口各读不同任务 → 推送基线分桶、窗口 watchdog 重读不产生
+  错标推送；串流动作只刷新发起窗口的桶与同工作区桶（另一个窗口不被刷成别人的工作区）；
+  stale 结论过旧时 `streamStart` 重新解析（服务器恢复后能启动，旧结论新鲜时直接给码）、写路径
+  `NOT_FOUND` 被吸收后第二次启动给 `WORKSPACE_MISSING` 且不再打 PSB、占位身份给
+  `WORKSPACE_ID_UNKNOWN` + `unknown-workspace`；目录启发式命中不写会话映射 / 快照（占用成功
+  确认后才落快照，映射仍不写）；回退内部会话起观看端失败 → `stopSession` 回滚、PSB 说会话结束
+  → 结束内部会话、新订阅成功后按 TTL 清理旧回退会话；启动未落定时点停止 → 自动停掉刚起的
+  串流、排队 stop 不重复停；ensure 慢/不返回不阻塞启动、入口未开放能力位在本进程内缓存、
+  启动失败时把 ensure 的 PSB 原文补进 `failure.message`（码不变）；`context` 读会话行线索抛错时
+  退化到最近使用工作区而不向上抛。
 - `main/remote-workspace/__tests__/psbClient.test.ts` 补新契约：工作区级订阅的路径 / 方法 /
   `{ sessionId, streamPath?, subscriberId?, expiresAt? }` 解析、缺 `sessionId` 判 `PSB_PROTOCOL`、
   409 `NO_RUNNING_SESSION` 保留 PSB 可读原因、`createSession` 省略 `purpose` 时不带该字段 /
@@ -1071,14 +1331,20 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
    三条不能并成一条：合并会让用户对着「正在启动」去做「去网页启动」这种无效动作。
 3. **尽力拉起访问（可选增强，非闸门）**：`PsbRemoteService.ensureWorkspaceAccess`（`psbClient`
    实现）＝ `POST /api/remote/workspaces/:id/access/start`（PSB 通用网页接口，幂等 ensure；200/202
-   视为受理）→ 轮询 `GET /api/cindy/remote/workspaces/:id/access` 到 `running`，预算
-   `PSB_ACCESS_POLL_DEFAULT`（6 × 500ms ≈ 3s，可由 `PsbApiDeps.accessPoll` 覆盖，单测用 0ms）。
+   视为受理）→ 轮询 `GET /api/cindy/remote/workspaces/:id/access` 到 `running`。默认
+   `PSB_ACCESS_POLL_DEFAULT = { attempts: 6, intervalMs: 500, totalMs: 5000 }`，**总预算是 deadline**：
+   每次请求超时被压到剩余预算内，最坏等待恒为 5s（旧实现 6 × 单次 20s 最坏 ~120s，见 §15.7）；
+   可由 `PsbApiDeps.accessPoll` 覆盖，单测用 0ms。
    - 结果形状：`{ok:true,state:'running',startedByThisCall}` 或
      `{ok:false,reason:'cindy-entry-not-open'|'timeout'|'failed',failure}`。**永不抛异常**；
      403/404/405/`UNSUPPORTED` 归 `cindy-entry-not-open`（白名单未放行 / 旧 PSB）。
-   - 调用点：`adminService.acquireBinding()` 在**订阅之前**调用一次（`PsbAdminRemotePort` 上是
-     **可选**方法，旧装配 / fake 没有它就跳过）。刻意不放在 `streamStart` 开头：重复「启动」复用
-     活绑定时不该多发一条写请求；占用闸门仍排在它之前（先锁工作区，再谈访问起停）。
+   - 调用点：`adminService.acquireBinding()` 在订阅前经**能力位编排**（`prepareWorkspaceAccess`）：
+     能力位 `open`（上一次真的拉起到 running）→ 前台调用；`closed`（Cindy 入口未开放）→ 本进程
+     内 TTL（10 分钟）内直接跳过，不再每次启动都白打一次 403；`unknown` / `failed` / `timeout`
+     → **后台预热，不阻塞订阅**。结果（含失败码 / PSB 原话）写进工作区能力位；当它直接导致用户
+     点「启动」失败时，失败错误的 `message` 会补上这条可读原因（码与 messageKey 不变）。
+     `PsbAdminRemotePort` 上是**可选**方法，旧装配 / fake 没有它就跳过。占用闸门仍排在它之前
+     （先锁工作区，再谈访问起停）。
    - 路径只由共享契约的 `PSB_WEB_ROUTES.workspaceAccessStart` / `PSB_CINDY_ROUTES.workspaceAccess`
      提供，`PsbApiDeps.workspaceAccessStartPath` 是唯一的可覆盖点；**不许在别处拼**。
    - **当前基本拿不到 `ok:true`**：PSB 的 Cindy Bearer 白名单只放行 `/api/cindy/remote/**`，
@@ -1466,7 +1732,10 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
 ### 13.1 唯一助手
 
 `main/remote-workspace/workspaceLock.ts` 的 `createPsbWorkspaceLock(ports)`（生产装配在
-`index.ts` 的 `PsbRemoteService` 里，一处 TTL 缓存全会话共享）：
+`index.ts` 的 `PsbRemoteService` 里，一处 TTL 缓存全会话共享）。「能不能写」的判定**委托唯一判据**
+`shared/psb-remote-workspace.ts` 的 `psbWorkspaceWritable(workspace, { requireAgentRuntime: false })`
+（`requireAgentRuntime:false`：那台机器没装某个 Harness 不阻断与它无关的写），lock 只负责在该占用
+时自动占用：
 
 | 输入状态 | 结果 | 动作 |
 | --- | --- | --- |
@@ -1477,23 +1746,26 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
 | 工作区不可见 / 未就绪 | `workspace-unavailable`（`missing` / `state`） | 拒绝 |
 | 网络 / 鉴权失败 | **原样抛** `PsbClientError` | 用户看到真实原因，不静默放行 |
 
-读口只认**工作区列表**（`listWorkspaces`）：`GET /workspaces/:id` 在 Cindy 身份下恒 403（§3 与
-§10 第 3 条）。调用方手上有新鲜工作区行时用 `snapshot` 传入，省一次列表请求。
+读口：`ensure()` 不命中缓存读 **1 次工作区列表**；`ensureForSession()` 不命中缓存读 **2 次 HTTP**
+（先读会话行拿 `workspaceId`，再读列表拿占用 / 在线 / usable——PSB 没有单工作区读口，见 §13.3）。
+`GET /workspaces/:id` 在 Cindy 身份下恒 403（§3 与 §10 第 3 条）。调用方手上有新鲜工作区行时用
+`snapshot` 传入，省一次请求。
 
 ### 13.2 三个接入点（缺一处就等于让 PSB 替我们拒绝）
 
 1. **新会话**：`PsbRemoteService.createSession()` 在 `api.createSession` 之前 `ensureWorkspaceLocked`
    → 失败不建会话、不落库，直接给 `PSB_WORKSPACE_OCCUPIED_BY_OTHER`（带人名）等可行动码。
    发送前透明重建（§6.1）的建会话走同一个服务方法，因此**重绑路径同样被闸门覆盖**，没有第二条
-   绕过路径。
+   绕过路径。`psbClient.createSession` 内部**先读工作区再 POST**（共 2 次 HTTP）：读工作区失败时
+   一个请求都不发，不会留下无人认领的孤儿会话（见 §15.6）。
 2. **启动串流**：`adminService.streamStart()` 在工作区级订阅（或旧 PSB 的过渡回退建会话）与起观看
    端之前 `remote().ensureWorkspaceLocked(workspaceId)` → 失败不订阅、不建会话、不建立观看连接。
-   订阅前还会**尽力**调用一次 `ensureWorkspaceAccess`（**可选增强、不是闸门**：403/404/超时都不
-   阻断，见 §11.8），顺序是「占用闸门 → 尽力拉起访问 → 订阅」。
+   订阅前还会按能力位**尽力**调用一次 `ensureWorkspaceAccess`（**可选增强、不是闸门**：403/404/
+   超时都不阻断；只有 `open` 能力位前台等待，`unknown` / `failed` / `timeout` 是后台预热不阻塞，
+   见 §11.8），顺序是「占用闸门 → 尽力拉起访问 → 订阅」。
    只读的 `streamStatus` / `adminContext` 不受此限（读状态不是工作区写入，且**不会**订阅或创建
-   会话，只借已有绑定 id，见 §11.2）。会话级 `PSB_REMOTE_CHANNELS.STREAM_START`（当前无渲染层
-   消费方）同样在 `service().startStream()` 之前调 `ensureWorkspaceLockedForSession(sessionId)`：
-   它不能成为绕过占用检查的第二条路径。
+   会话，只借已有绑定 id，见 §11.2）。会话级串流通道已删除（§4），不存在「会话级启动串流」这条
+   绕过占用检查的路径；`ensureWorkspaceLockedForSession()` 仍保留给下面第 3 条的发送前闸门。
 3. **每次发送**：`makerSendTransaction.sendToAgentAccepted` 在 `ensureRemoteReadyForSessionStart`
    （进 lazy-create/隧道）**之前**调用 `deps.preparePsbWorkspaceLock(sessionId)`；`register.ts`
    的实现按会话行的 `remoteHostId` 定位 `psb:<id>`，再走
@@ -1507,11 +1779,12 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
 ### 13.3 缓存与新鲜度（为什么不会每条消息多打一次 HTTP）
 
 - `PSB_WORKSPACE_LOCK_TTL_MS = 1500`：**只缓存成功**（`isFresh`）。发送路径先查「本会话的工作区
-  是否在 TTL 内仍由我锁定」，命中则零网络请求；不命中才读一次 PSB **会话行**并判断。
-  **已知退化（本批未做，见 §14 末尾）**：PSB 的会话行只带 `workspaceId`，客户端
-  （`psbClient.requireWorkspaceById`）还会补一次全量 `listWorkspaces` 才能拿到占用快照；
-  优化方向是「会话行自带工作区快照时优先用，否则列表行做短 TTL 缓存」。改它直接影响发送前
-  占用判定的新鲜度，需要单独设计 + 测试矩阵，没在本批顺手做。
+  是否在 TTL 内仍由我锁定」，命中则零网络请求；不命中时按读口重新判定：`ensure()` **1 次**列表、
+  `ensureForSession()` **2 次 HTTP**（会话行 + 列表；PSB 的会话行只带 `workspaceId`，不带工作区
+  快照，见 §15.10）。
+  **已知限制（本批未做优化，见 §14 末尾）**：这 2 次请求的优化方向是「会话行自带工作区快照时
+  优先用，否则列表行做短 TTL 缓存」；改它直接影响发送前占用判定的新鲜度，需要单独设计 + 测试
+  矩阵，没在本批顺手做。
 - 失败一律不缓存：对方一释放，下一次发送立刻重新判定并自动占用。
 - 本端占用/释放（`occupyWorkspace` / `releaseWorkspace`）会 `invalidate` 该工作区的乐观缓存。
 - 取舍：最多 1.5s 的乐观窗口。期间若占用被别人拿走，**PSB 服务端的闸门才是最终裁判**（我们不会
@@ -1524,16 +1797,25 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
 `PSB_WORKSPACE_NOT_READY`）。被他人占用时 `message` **只放占用人名**（渲染层插值 `{{name}}`）。
 
 渲染层文案全部可行动（12 locale）：
-`remoteWorkspace.error.workspaceOccupied`（新增，无 `{{name}}`；发送被拒的错误横幅）、
 `remoteWorkspace.error.occupiedByOther`（带占用人名 + 「请对方释放 / 到 PSB 网页解除占用」；
-占用 / 启动串流等按钮失败）与 `remoteWorkspace.input.occupiedByOther`（输入框置灰原因 + 同一
-下一步）。**两个消费面的映射都在共享契约里**：按钮 / 操作失败用
-`psbFailureMessageKeyForIpcCode`（`occupiedByOther`，可插值名字），错误横幅用
+占用 / 启动串流等按钮失败）与输入框置灰的三条原因——被他人占用 / 客户端离线 / 工作区未就绪
+分别取 `PSB_WORKSPACE_WRITABLE_FAILURES` 的 `inputMessageKey`
+（`remoteWorkspace.error.workspaceOccupied` / `remoteWorkspace.error.clientOffline` /
+`remoteWorkspace.input.workspaceNotReady`，都是无名字的同一句 + 同一下一步，与按钮失败共享同一
+判据）。**两个消费面的映射都在共享契约里**：按钮 / 操作失败用
+`psbFailureMessageKeyForIpcCode`（`occupiedByOther`，可插值名字），错误横幅 / 输入禁用用
 `psbBannerMessageKeyForIpcCode`（`workspaceOccupied`，无名字兜底）；渲染层不得为单个码手写
 if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB 码解码在
 `renderer/lib/makerChatStore.ts` 的 `decodeRemoteErrorMessage`（`[PSB_*]` →
 `remoteWorkspace.*`）：否则通用通道会让用户看到裸的 Electron 包装串
 （`Error invoking remote method …`）。
+
+**渲染层唯一文案实现（2026-11-26 独立审查归并）**：`renderer/features/remote-workspace/psbFailureText.ts`
+的 `psbFailureText(t, error)` 是唯一出口——输入可以是原始 IPC 错误、推送里的 `PsbRemoteFailure`
+或 UI state 的 `PsbFailureLike`，按「共享 `PSB_FAILURE_DESCRIPTORS` 文案键 → `ipcError.<CODE>` →
+PSB / 本机可读原文（只作诊断行）→ 通用兜底」顺序取文案；剥掉 `Error invoking remote method…` 与
+`[CODE] ` 包装，占用人名只在这一处插值（拿不到名字回落无名字的同一句）。管理页操作 / 串流启动 /
+草稿 / 侧栏「在网页打开」全部改指它，**不要再新增第二套同码表实现**。
 
 ### 13.5 占用 / 释放时的版本控制检查（CINDY-RW-10，2026-11-26 20:4x 再更正）
 
@@ -1558,11 +1840,15 @@ Cindy 只消费服务端结论、不自己跑 VCS；两代服务端形态**并�
   **先写有界缓存（≤32，LRU）再广播** `psb-remote:workspace-vcs-notice`；成功占用 / 释放 / 清理 /
   继续后广播 `notice:null` 撤掉提示。渲染层另有 `workspaceVcsNotice` 兜底读（推送与 invoke
   失败到达顺序不可依赖）。
-- 渲染层**只传 kind**（`runWorkspaceVcsAction`），method / path / body 一律由 main 从缓存里的
-  服务端 notice 取，并用 `main/remote-workspace/vcsNotice.ts` 校验：路径必须以
-  `/api/cindy/remote/workspaces/<同一 workspaceId>/` 开头，禁绝对 URL / `..` / 反斜杠 / `#` /
-  控制字符 / `force` 查询参数；body 只接受 `revert` / `projectIds` / `confirm`（多余键整条 action
-  丢弃）；kind 与 method 必须匹配；`continue` 不允许带请求形状。
+- 渲染层**只传 kind**（`runWorkspaceVcsAction`）：main 用 `main/remote-workspace/vcsNotice.ts` 的
+  `workspaceVcsActionTarget(workspaceId, kind, operation)` 决定**固定 path + 固定方法**，**不采信
+  服务端下发的 method / path**（2026-11-26 复审）：`inspect-vcs`=GET `…/workspaces/<id>/vcs`；
+  `clean-workspace` / `revert-vcs`=POST `…/vcs/revert`；`revert-then-occupy`=POST `…/occupy`；
+  `revert-then-release`=DELETE `…/occupy`；`retry` 按产生 notice 的入口决定方向；`continue` 不发
+  请求。服务端形状只用于**确认这是一条已知 action**：方法必须与固定目标一致、pathname 必须等于
+  固定路径、同工作区 `decodeURIComponent` 比较 + 每段拒绝 `.` / `..` + 禁 `force`，否则整条丢弃；
+  body 只接受 `revert` / `projectIds` / `confirm`（多余键整条 action 丢弃）。
+  `isAllowedPsbRemoteActionPath` 是发请求前的第二道兜底（见 §15.2）。
 - 不可逆动作（`clean-workspace` / `revert-*`）**二次确认**：渲染层弹确认（列 projects / changes、
   写明删除新增 / 还原修改 / Git 切回默认分支、不可撤销），main 还要求 `confirm:true`（IPC 被绕过
   也不能凭一个 kind 触发还原）。
@@ -1576,7 +1862,8 @@ Cindy 只消费服务端结论、不自己跑 VCS；两代服务端形态**并�
 `ensureWorkspaceLocked`。自动占用产生的 advisory 也广播（operation=`ensure`）。
 
 定向测试：`apps/desktop/src/shared/__tests__/psbWorkspaceVcs.test.ts`（形状 / 白名单 / advisory
-读取）、`main/remote-workspace/__tests__/vcsNotice.test.ts`（路径 / body / 缓存安全边界）、
+读取）、`main/remote-workspace/__tests__/vcsNotice.test.ts`（路径 / body / 缓存安全边界 / 固定目标表
+（encoded-dot、method 不匹配、retry 方向））、
 `main/remote-workspace/__tests__/psbRemoteVcsService.test.ts`（advisory 广播、旧 409 兼容、
 clean 确认 / 202、continue、inspect）、`renderer/features/remote-workspace/vcs/__tests__/`
 （store 推送 / 兜底读、View 的确认取消与确认、force-release 不渲染、旧形态 retry）。
@@ -1592,7 +1879,7 @@ clean 确认 / 202、continue、inspect）、`renderer/features/remote-workspace
 
 | 挂载点 | 形态 | 数据与行为 |
 | --- | --- | --- |
-| `renderer/App.tsx`（主窗、`ConfirmDialogProvider` 内） | `WorkspaceVcsNoticeHost`：右上悬浮横幅（`variant="banner"`，非阻塞；外层 `pointer-events-none`） | 订阅 `onWorkspaceVcsNotice`，显示**最近一条**；`requestConfirm` 接宿主 `useConfirmDialog`，`notice:null`（成功占用 / 释放 / 清理 / 继续后）自动撤下。`!isSecondaryWindow() && !isSidebarWindow()`：副窗 / 侧栏子窗不挂，不重复弹。 |
+| `renderer/App.tsx`（主窗、`ConfirmDialogProvider` 内） | `WorkspaceVcsNoticeHost`：**右下角悬浮横幅**（`variant="banner"`，避开窗口按钮 / 标题栏拖拽区 / 右上 ToastContainer 落点；外层 `pointer-events-none` + 内层 `auto`，不遮断输入；带工作区名） | 订阅 `onWorkspaceVcsNotice`，显示**revision 最近的一条**；`requestConfirm` 接宿主 `useConfirmDialog`，`notice:null`（成功占用 / 释放 / 清理 / 继续后）自动撤下。`!isSecondaryWindow() && !isSidebarWindow()`：副窗 / 侧栏子窗不挂，不重复弹。 |
 | `admin/RemoteWorkspaceAdminPanel.tsx` › 版本控制分类 | `WorkspaceVcsNoticeView variant="inline"` | `useWorkspaceVcsNotice(context.workspaceId)`（挂载 / 换工作区时兜底读 main 缓存）；有通知时替换占位空态，没有时保留原「后续提供」空态。`clean-workspace` 202 被接受后页面重读一次 `adminContext`。 |
 | `admin/RemoteWorkspaceAdminActions.tsx` 页头占用 / 解除占用 | 无独立 UI | 动作成功后 `hydrateWorkspaceVcsNotice(workspaceId)` 兜底读一次（推送已覆盖时幂等；页头保持单行 ≤40px，不加提示条）。 |
 | `dialog/RemoteWorkspacePickerDialog.tsx` | `WorkspaceVcsNoticeView variant="inline"`（弹窗底部、错误条上方） | 占用失败（旧版 409）后 `hydrateWorkspaceVcsNotice` 并在弹窗内就地展示；占用成功带 advisory 时同样兜底读，但弹窗随即关闭，提示由全局宿主 / 管理页继续展示。 |
@@ -1603,6 +1890,18 @@ clean 确认 / 202、continue、inspect）、`renderer/features/remote-workspace
 不可撤销说明），再宿主 `ConfirmDialogProvider` 确认框；两者都确认后才发
 `{ kind, confirm: true }`。缺 `requestConfirm` 的裸渲染环境（单测 / Story）只有内置两步确认。
 
+**store 的最终形态（2026-11-26 独立审查 r4）**：
+
+- **顺序单调**：每条 entry 带单调递增 `revision`，更新 / 删除 / 兜底写入都推进；多工作区同时有
+  提示时取 revision 最大者（「最近一条」）。
+- **单调合并**：兜底读 `hydrate` 在请求前记下该工作区修改序号，响应回来时若期间已有推送 / 清除，
+  以本地为准（不覆盖、不清除）；静默期外的 `notice:null` 才清。
+- **关闭语义按类型**：advisory 的「继续」只关本地 store（建议可忽略）；**非 advisory（旧版 409）
+  先调 main 的 `continue` 清有界缓存再关**，否则下一次兜底读会把同一条提示带回来。
+- **「清理已开始」只属于 `clean-workspace`**（202+`operationId` 异步）；其它 kind 不显示。
+- **stale / 占位身份只读**：读不到工作区时不给写动作入口；VCS 通知与通用失败条互斥（同一事实
+  只出现一处）。
+
 接线测试（同一批）：
 `renderer/features/remote-workspace/vcs/__tests__/WorkspaceVcsNoticeHost.test.tsx`（推送订阅、
 宿主确认框确认 / 取消、`notice:null` 撤下）、`admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`
@@ -1610,10 +1909,9 @@ clean 确认 / 202、continue、inspect）、`renderer/features/remote-workspace
 hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
 `draft/__tests__/PsbWorkspacePicker.test.tsx`（占用失败兜底读 + inline 通知、成功路径 hydrate）。
 
-**已知边界**：View 的「继续」只清渲染层 store（不发请求），main 的缓存仍保留到下一次占用 /
-释放 / 清理；其它窗口或重新挂载后再兜底读可能让同一条 advisory 再出现。要彻底消掉需要让
-`continue` 走一次 `runWorkspaceVcsAction`（main 已有清缓存分支），属于 VCS 核心逻辑改动，
-不在本轮接线范围。
+**已知边界**：advisory 的「继续」是纯本地关闭，main 的缓存仍保留到下一次占用 / 释放 / 清理；
+其它窗口或重新挂载后再兜底读可能让同一条 advisory 再出现（这是「建议可忽略、但不假装已处理」的
+取舍，主窗口横幅本身不重复弹）。非 advisory（旧版 409）走 `continue` 清 main 缓存，不受此限。
 
 ## 14. 独立审查阻断项修复（2026-11-26，实现事实）
 
@@ -1621,7 +1919,7 @@ hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
 
 | # | 问题（修复前） | 修法 / 证据 |
 | --- | --- | --- |
-| 1 | `buildPsbTunnelUrl` 没带 `readyFrame=1`：PSB 0.1.160+ 就绪帧 opt-in，长连接隧道固定等满 5s、exec 等 1.2s | URL 固定带 `readyFrame=1`（服务端只认 `1`），保留超时兜底兼容老服务端；`psbTunnelWiring.test.ts` 四种 mode 都断言该参数且不破坏 `mode` / `bundleVersion` |
+| 1 | `buildPsbTunnelUrl` 没带 `readyFrame=1`：就绪帧 0.1.159+ 引入、0.1.160+ 起 opt-in（默认不发），长连接隧道固定等满 5s、exec 等 1.2s | URL 固定带 `readyFrame=1`（服务端只认 `1`），保留超时兜底兼容老服务端；`psbTunnelWiring.test.ts` 四种 mode 都断言该参数且不破坏 `mode` / `bundleVersion`。固定等待已在 2026-11-26 复审改为**进程级能力探测**（见 §15.5） |
 | 2 | codex 只把 `cwd` 换成 `.`，`runtimeWorkspaceRoots` / writableRoots / named permission profile 仍从虚拟 `workingDir` + 本机 extraDirs 派生并下发远端 | `remoteHostOwnsCwd` 时 roots 为空、profile 不启用、`sandboxPolicy.writableRoots` 不含本机目录、会话内 `extraDirs`/`writableDirs` 不进入可变授权面；`codex/index.test.ts` 用真实 pin UA（0.159.2）+ 本机 extraDirs 断言所有下行帧不含虚拟/本机路径（修复前该断言会红） |
 | 3 | 上条测试是假阳性：mock 默认 UA `mock-codex` 让版本门禁为 false | 测试显式设 `mock-codex/0.159.2` + 额外目录，先红后绿（已实测） |
 | 4 | `codex/index.ts` fork 里读未进类型的 `remoteHostOwnsCwd` 字段是死代码 | 删除该分支：远端 fork 由 `maker-orchestration/fork.ts` 对 `source.remoteHostId` 抛 `REMOTE_NOT_SUPPORTED` 拦住，虚拟路径到不了 `thread/fork`；同处注释写明将来开放远端 fork 时要在宿主层带上所有权 |
@@ -1636,10 +1934,13 @@ hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
 `remote-tunnel-dispatch` 的 `RemoteTunnelMode` 改用共享 `PsbTunnelMode`；会话级 `STREAM_START`
 补占用闸门；错误横幅的 PSB 失败码映射收进共享表（`psbBannerMessageKeyForIpcCode`，被他人占用
 用无名字兜底键），渲染层不再为单个码手写 if；`psb:<sessionId>` 控制通道的「旧流迟到 close 不误删
-新缓存」与「hello 失败 kill 流」两处泄漏/竞态修复。**未做**：`psbClient.getSession` 的全量
-`listWorkspaces` 退化（会话行自带工作区快照优先 / 列表行短 TTL 缓存）——它直接服务发送前占用
-判定，改缓存需要单独设计新鲜度与测试矩阵；会话级 `STREAM_*` 四个无消费方通道的清理（横切共享
-常量 / preload / 桥 / guard，未在本批扩大）。
+新缓存」与「hello 失败 kill 流」两处泄漏/竞态修复。**未做优化**：`psbClient.getSession` /
+`ensureForSession` 仍需 **2 次 HTTP**（会话行只带 `workspaceId`，占用 / 在线 / usable 必须再读
+列表——已按 2 次如实登记，见 §13.1 / §13.3 与 §15.6 / §15.10）；优化方向是「会话行自带工作区
+快照时优先用 / 列表行短 TTL 缓存」，它直接服务发送前占用判定，改缓存需要单独设计新鲜度与测试
+矩阵。**已在后续 r10 清理**：会话级 5 条死面通道
+（`STREAM_STATUS` / `STREAM_START` / `STREAM_STOP` / `STREAM_INPUT` + `STREAM_EVENT`，跨共享
+常量 / preload / 桥 / guard）已删除，串流只走工作区级管理页通道（见 §4）。
 
 **真机复测点**：① 隧道建立到首帧的等待时间应从 ~5s / ~1.2s 降到就绪帧到达即发（看 PSB 侧
 `readyFrame=true` 与服务端首帧时间）；② PSB codex 会话启动后 `thread/start` / `turn/start` 不带
@@ -1652,3 +1953,276 @@ codex 任务同样不带虚拟 cwd；④ psb 会话停止 / 重绑后该会话�
 **PSB codex 真机回合在修复后的代码上未验证**：历史 11-26 上午的 codex 真机结论属于修复前代码；
 本轮只有单测与 typecheck（`packages/maker-core` PSB 用例、`psbTunnelWiring`、`mcprCodexCapability`、
 `remote-session-routing`），不得写成已验证。原因与影响登记在白名单 WL-30「未验证」第 10 条。
+
+## 15. FIX-A 传输 / 安全 / 事件收口（2026-11-26 复审，实现事实）
+
+本节只记 FIX-A 改动**后的最终行为**。前置章节（§2 / §3 / §4 / §5 / §6.1 / §11 / §13 / §14）
+已按本节口径合并；若再发现冲突，以本节为准。
+
+### 15.1 出网 URL 只有一份归一化判据（`resolvePsbUrl`）
+
+`main/remote-workspace/psbEndpoint.ts` 的 `resolvePsbUrl(path, { allowPsbWebNamespace? })` 是
+HTTP 与两条 WS 出网路径的唯一来源：`new URL(path, origin)` 后要求 ①origin 相同；
+②**归一化后的 pathname 与原始 pathname 逐字节相同**（`..` / `%2e%2e` / 反斜杠 / `//`
+等 URL 解析器会改写的形态因此全部拒绝）；③以 `/api/cindy/remote/` 开头。旧实现只查字面
+`..`，`%2e%2e` 会被 URL 归一化到命名空间之外，带 Bearer 的请求可被服务端下发的 action 路径
+指到别的路由。`psbWebSocketUrl` 复用同一校验器；`psbClient` 的所有请求（含 VCS action）都经
+它拼 URL，`isAllowedPsbRemoteActionPath` 只是同判据的布尔包装。唯一显式放行
+`/api/remote/**` 的调用是「尽力拉起桌面访问」的 `POST …/access/start`（可选增强，见 §11.8），
+且必须显式传 `allowPsbWebNamespace: true`。
+
+### 15.2 VCS 处置动作：kind → 固定路径 + 固定方法（不采信服务端 method/path）
+
+`main/remote-workspace/vcsNotice.ts` 的 `workspaceVcsActionTarget(workspaceId, kind, operation)`
+是唯一目标表：`inspect-vcs`=GET `…/workspaces/<id>/vcs`；`clean-workspace` / `revert-vcs`=
+POST `…/vcs/revert`；`revert-then-occupy`=POST `…/occupy`；`revert-then-release`=DELETE
+`…/occupy`；`retry` 按产生 notice 的入口决定方向（`release` → DELETE occupy，否则 POST
+occupy）；`continue` 不发请求。服务端下发的 method/path 只用于**确认这是一条已知 action**：
+方法必须与固定目标一致、pathname 必须等于固定路径、形状校验（同工作区 `decodeURIComponent`
+比较 + 每段拒绝 `.`/`..` + 禁 `force`）必须通过，否则整条丢弃。`isAllowedPsbRemoteActionPath`
+保留为发请求前的第二道兜底。
+
+### 15.3 管理页串流：多窗口引用计数 + 帧定向 + 主动关闭定向
+
+- `ipc.ts` 的 owner 账本改为 `createPsbStreamOwnerRegistry()`（`streamOwners.ts`，纯结构）：
+  `workspaceId → Set<webContentsId>`；start +1、stop/窗口销毁 -1，**只有归零才 `streamStop`**。
+  窗口销毁另有兜底（清帧 owner + 归零工作区停流）。
+- `push.ts` 的 `ADMIN_STREAM_EVENT`：`frame` / `cursor` 只发给登记过 owner 的窗口（没有 owner
+  时回退广播）；`status` / `error` 与 `CONTEXT_CHANGED` 仍广播；本端主动关闭的
+  `closed(client-stopped)` / `closed(superseded)` 只发给该 `viewerSessionId` 的 owner，没有
+  owner 时丢弃（广播会把只是打开同一工作区页面的窗口误判成「串流被关闭」）。
+- `streamViewer.ts` 的本端主动关闭按原因区分：替换旧连接 → 补发 `closed(reason='superseded')`，
+  用户停止 → `closed(reason='client-stopped')`；`dispose` 与握手失败不推（没有可报的界面）。
+  旧实现一律不推，渲染层只能靠 invoke 返回值猜状态。
+- **多窗口复用与渲染层非终态（2026-11-27 复审 P1）**：管理页 `streamStart` 发现该工作区已有
+  健康观看连接（绑定上的 `viewerActive`）时**复用**：返回当前状态、不重连、不产生 `superseded`，
+  这次启动只表示多一个 owner（owner +1 由 IPC 层在成功返回后登记）；连接真的断了（`closed` /
+  `error` / 显式停止）才清 `viewerActive`。`superseded` 在渲染层是**非终态**：新连接继续向同一个
+  `sessionId` 送帧，所以保留相位、不清屏、不提示、也不释放 owner；`client-stopped` 才回 `idle`。
+- **本端内部收尸不转发（`quietStreamStops`）**：失效绑定重建前的旧连接、代次竞态里的自停都会让
+  `streamViewer.stop` 补发 `closed(client-stopped)`；它不是用户动作，`adminService.handleStreamEvent`
+  只更新本端状态、不转发，避免把正在看的其它窗口误判成「串流被关闭」。
+- **`starting` 相位的停止标记（2026-11-27 复审 P1）**：渲染层在 `starting` 卸载 / 快速停止时也会
+  发 `STREAM_STOP`，但这时 `STREAM_START` 可能还在 PSB 里飞、owner 尚未登记。`ipc.ts` 的
+  `adminStreamReleasePending` 先落「启动在途停止」标记；`STREAM_START` 落定后消费它：**不登记
+  owner**，并按「最后离开者」判据收掉刚起来的流（启动失败则清标记），防止 owner / 观看名额永久
+  残留。落定处还要判 `event.sender.isDestroyed()`：窗口在启动在途被销毁时不登记 owner、清该窗口
+  的停止标记，并按「没有观看者」收流——否则 `destroyed` 兜底监听没机会挂上，owner 永不归零、
+  PSB 观看名额泄漏到进程退出（`psbAdminStreamOwnership` 有对应用例）。
+
+### 15.4 重启观看端：预检通过后原子替换，失败保留旧连接
+
+`streamViewer.startInternal` 顺序：读 `stream/status`（能力位）→ 取 token → 取出站 agent →
+建新 WS 并等握手成功 → 才 `active.set` 并关旧连接。预检或握手任一步失败时**旧连接原样保留**
+（画面不中断），修复了「重启时 PSB 抖一下 / 预检失败 → 用户从有画面掉到空面板」。
+
+### 15.5 agent-tunnel：就绪能力探测 + 就绪期字节回放 + 结构化错误
+
+- `PSB_TUNNEL_READY_*` 仍是兜底，但**进程级探测一次**就够：第一次收到
+  `agent-tunnel.ready` → `supported`；第一次超时 → `unsupported`，后续连接在 `open` 时立即交
+  句柄（老服务端的兼容行为本来就是「直接发」）。不再每条长连接固定等 5s / exec 1.2s。
+- 就绪前的 binary 帧先有界排队（1 MiB，`wsFrames.ts`），句柄交给调用方后**在首个 stdout 订阅
+  者出现时按序回放**，不再丢首帧。
+- 失败改抛 `PsbTunnelError { code: PSB_TUNNEL_FAILURE_CODES, detail, failure? }`（`message` 仍
+  是 `[CODE] detail`），HTTP 与隧道共用 `psbAuthFailure` 的 token 失败归因：未登录
+  （`signed-out`）/ 非企业组织（`need-org`）→ `PSB_AUTH_REQUIRED` + 身份原因键；签发通道失败
+  （`unreachable`）→ 网络类码。取 token 失败**不失效** token 缓存（失效只发生在 PSB 明确
+  401/403 之后）。
+- 字节搬运与 `ExecStreamHandle` 包装抽到 `wsFrames.ts`（`toBuffer` / `toArrayBuffer` /
+  `createExecByteStream`），PSB 的两条 WS 与 MCPRouter 的 `agent-tunnel` **已共用同一份**：
+  `main/maker-host/mcpr-tunnel.ts` 已改为 import `wsFrames`（第三份副本已删除），两条通道的差别
+  只在参数（`binaryOnly` 不传、`closedErrorCodes:[4003,4004]`、`classifyError` / `classifyClose`）。
+
+### 15.6 开新会话：先读工作区、再建会话（不产生孤儿会话）
+
+`psbClient.createSession` 现在先 `requireWorkspaceById`（1 次列表 HTTP），再 POST 建会话
+（共 2 次请求）。旧实现先建会话、再补读工作区，补读失败会把**已经建好的 PSB 会话丢掉**
+（抛错 → 调用方认为没建成 → 远端留下无人认领的会话、本地不落 `remoteHostId`）。读工作区
+失败发生在创建之前：一个请求都不发。`getSession` 的成本仍是 2 次请求（会话行 + 工作区列表，
+PSB 没有单工作区读口），§13.3 的「读一次会话行」按本节口径修正为 2 次。
+
+### 15.7 `ensureWorkspaceAccess` 的总预算是 deadline
+
+`accessPoll = { attempts?, intervalMs?, totalMs? }`，默认 `{6, 500, 5000}`。每次请求的超时被
+压到「剩余预算」以内，最坏等待恒为 `totalMs`；旧实现 attempts=6 × 单次 20s 最坏可等 ~120s。
+
+### 15.8 列表解析：缺键是协议错，不是空列表
+
+`readArray` 在 `data` / 列表键不是数组时返回 `null`，由 `call` 统一抛 `PSB_PROTOCOL`；
+单行缺 id 仍按行丢弃但记 warn。旧实现把缺键静默变成 `[]`（界面显示「没有工作区」而真实原因
+是契约违约）。
+
+### 15.9 发送前重建：确定性去重键
+
+`psbClient` 的 `clientRequestId` 由 `(localSessionId, previousPsbSessionId)` 经
+`deriveRebindRequestId` 确定性派生（`psb-rebind-<sha256 前 32 hex>`），同一旧身份的重试复用
+同一个键（PSB 只建一条会话），不再是每次 `randomUUID()`。`PsbSessionRebindDeps.createRequestId`
+降级为可选且不再调用（装配可删）；`PsbSessionRebindRow.workspaceId` 类型如实为 `null`
+（本地没有这一列，工作区 id 的唯一来源是旧 PSB 会话行）。main 侧不再拼中文兜底句子：失败只给
+码（`PSB_AGENT_UNSUPPORTED` / `PSB_CLIENT_OFFLINE` / `PSB_WORKSPACE_NOT_READY` /
+`PSB_NOT_FOUND`），文案在 i18n。
+
+### 15.10 唯一可写判据 `psbWorkspaceWritable`（三处收敛）
+
+`shared/psb-remote-workspace.ts` 的 `psbWorkspaceWritable(workspace, { requireAgentRuntime })`
+是「能不能写」的唯一判据（先信 PSB 权威 `usable` / `unusableReason`，再用本地字段兜底），
+返回 `{ok, reason, ipcCode, messageKey, inputMessageKey, personName, state}`。三处收敛：
+`workspaceLock.decideFrom`（`requireAgentRuntime:false`：占用闸门服务建会话 / 启串流 / 发送，
+「没装某个 Harness」不阻断与它无关的写）、`sessionRebind.assertWorkspaceStartable`
+（`true`：要新建 Agent 会话）、`psbWorkspaceHealth` / `psbSessionInputAllowed`（渲染层禁用态）。
+`workspaceLock` 的文件头与端口注释如实写明 `ensureForSession` 不命中缓存时是 **2 次 HTTP**
+（会话行 + 列表），而不是「一次会话行」。
+
+### 15.11 定向测试
+
+`main/remote-workspace/__tests__` 全量 240+ 用例：新增 encoded-dot / 方法不匹配 / retry 方向 /
+固定目标（`vcsNotice`）、归一化 URL 白名单（`psbEndpoint`）、列表契约与 2 次请求 /
+先读后建 / deadline（`psbClient`）、ready 探测与就绪期回放 / token 归因（`psbTunnel`）、
+原子替换与失败保留旧连接 / 主动关闭补发（`streamViewer`）、usable 权威原因（`workspaceLock`）、
+确定性去重键与 agent-unsupported（`sessionRebind`）、多窗口引用计数（`streamOwners`）、
+多窗口 owner + 启动在途停止 + 主动关闭定向（`psbAdminStreamOwnership`，真实 handler 与推送）。
+
+## 16. r7 审查修复：能力描述符 / 归因码 / 释放（2026-11-26 夜，实现事实）
+
+审查（r7 独立审查，2026-11-26）在本块列了几条「同一事实写三遍 / 归因指错系统」的
+问题。本批按「一处判定、其余消费」收口；H 的文档汇总只改组织，本段是实现事实正本。
+
+### 16.1 transport 能力描述符（唯一能力表）
+
+`main/maker-host/remote-session-routing.ts` 现在同时是分类器与能力表：
+
+```ts
+resolveRemoteTransportCapabilities(remoteHostId): {
+  transport: 'local' | 'ssh' | 'mcpr' | 'psb';
+  tag: 'LOCAL' | 'SSH' | 'MCPR' | 'PSB';   // 错误码 / 日志归因
+  ownsCwd: boolean;                        // 只有 psb: true
+  tunnelModeByAgent: Record<RemoteAgentKind, RemoteTunnelMode> | null; // 隧道 transport 才有
+  fileOpsMode: 'local' | 'ssh' | 'tunnel-exec';
+  codexCredentialMode: 'gateway-key' | undefined;
+}
+```
+
+- `remoteSessionHostOwnsCwd()` / `isTunnelRemoteSessionTransport()` /
+  `resolveRemoteCodexCredentialMode()` 全部改为读这张表（不再各自判断前缀）；
+- `remoteTunnelModeForAgent()`（`remote-tunnel-dispatch.ts`）也从这张表取 mode，映射本身复用
+  共享契约的 `psbTunnelModeForAgent` —— `psbTunnelModeForAgent` 不再是零调用函数；
+- `McprTunnelMode` 从第二份字面量联合改成 `PsbTunnelMode` 的类型别名：MCPRouter 与 PSB 是
+  同一份 mode 语义，新 mode 只改共享契约一处；
+- cc 宿主：`resolveRemoteCcTunnelStartParams()`（`remote-cc-start.ts`）是 cwd 的唯一判定点，
+  **不再用第二分类器 `parsePsbRemoteHostId`**（畸形 `psb:` 在分类器里仍是 psb，但解析返回
+  `null`，曾把虚拟 `/psb-remote/…` 原样下发 → daemon 侧 SDK 用不存在的目录 spawn
+  `claude` → query 首个 turn 前终止、本地会话被自动关闭）。畸形 `psb:` 现在同样改成 `.`；
+- 远端 Skill 发现：`ListAgentSkillsOptions.remoteHostOwnsCwd` 由宿主按能力打标；claude 的
+  `listAgentSkills` 在该标记下**不拿虚拟 workingDir 拼远端目录**（只列 agent 全局 Skill），
+  与 codex 的 PSB 口径一致；
+- pi 的 `pi/ensure` 新增显式 cwd 契约（`cwdPolicy: 'host' | 'command' | 'explicit'`，
+  见 `docs/dev-rules/pi-harness.md`）；SSH / MCPR 传 `'command'`、PSB 传 `'host'`，
+  daemon 不再用进程 cwd 隐式兜底。
+
+### 16.2 归因码跟着 transport 走
+
+`remoteTransportErrorCode(remoteHostId, code)`：`psb:` 会话得到 `[PSB_…]`、`mcpr:` 得到
+`[MCPR_…]`、SSH / 本地得到中性的 `[REMOTE_…]`。`pi-mcpr-remote.ts` 原先固定写
+`[MCPR_PI_*]`（PSB 会话上会指向错误系统），现在全部改走这个函数，文案只描述「远端没有暴露
+该运行时 / 能力」，不再点名 MCPRouter。`mcprPiMcpBridgeUnavailable` 同理。
+
+### 16.3 隧道登记：两种作用域一张表
+
+`remoteTransportRegistry` 增加**按隧道身份**的登记档（`registerRemoteHostTransport` /
+`releaseRemoteHostTransport` / `listRemoteHostTransports` / `releaseAllRemoteTransports`）：
+
+- `psb:` 的 Codex app-server 连接按 `psb:<PSB sessionId>` 复用（Maker 会话可在同一 PSB 会话上
+  重建 runtime，长连接只有一条），所以按 host 作用域登记；
+- pi 的 `mode=pi` 隧道按 Maker 会话登记（与 cc 同档）；
+- 释放入口单一（先删条目再 dispose，单次语义），诊断表 `listRemoteTransports` /
+  `listRemoteHostTransports` + 事件流都可见。`maker:debug-remote-transports` 仍只读会话档。
+- **字节工具只有一份**：两条 PSB WS 通道与 MCPRouter 的 `agent-tunnel` 共用
+  `remote-workspace/wsFrames.ts` 的 `toBuffer` / `createExecByteStream`（MCPRouter 不传
+  `binaryOnly`、`closedErrorCodes: [4003, 4004]`，与 PSB 的差别只在帧语义声明）；
+  `psb-agent-tunnel` 把 `getPsbConnectionToken` 的 `kind` 一并交给隧道层（未登录 / 缺组织 /
+  签发通道不可达的归因更准），`detail` 只用于诊断、不进用户可见文案。
+
+### 16.4 会话结束释放占用（用户要求）
+
+`maker-host/psb-workspace-session-release.ts` 是 main 侧的释放端口（幂等、可重试、不阻断）。
+**触发与事实判断都在 main（单权威）**：
+
+- 触发点：任务进入终态（`localDb/ipc/sessions.ts` 的 `cleanupSessionTerminalArtifacts` 经
+  `setTerminalSessionStatusObserver` 注册槽，覆盖批量归档 / 元数据 patch / 侧删 / 解绑）、
+  应用退出（`bootstrap-electron.ts` 的 `onQuit('psb-workspace-session-end-release', …, 'async')`，
+  并行释放 `status='active' AND remote_host_id LIKE 'psb:%'` 的任务 + 两种作用域的隧道 +
+  待释放账本重试）。渲染层**不再**对同一次归档 / 删除重复上报：`psbOccupancyRelease.ts` 降为
+  **旧 main / 旧 preload 的兼容账本**——能力探测 `releaseWorkspaceForSession` 存在 = 新 main 已有
+  终态 observer，渲染层零调用、不写本地账本；只有旧 build 才把结束事件入账并在启动 / 可见 /
+  pagehide 补投一次。同一动作因此只产生一轮 PSB 请求，不会双记账。
+- **工作区级而不是会话级**：归档其中一条时，只要同一工作区还有**活动**（`status='active'`）的
+  `psb:` 任务，就跳过释放且**不入账**（`reason:'workspace-in-use'`）——提前解锁会让别人接手
+  正在使用的工作区。判据只能在 main 算（会话表 + 本机会话→工作区映射 + PSB 状态）。
+- 口径：先读 PSB 会话行，只有「由我占用」才 `releaseWorkspace`（PSB 侧幂等）；未占用 / 别人
+  占用 → 成功 no-op；失败（网络 / 鉴权 / 5xx）记进**有界进程内账本**
+  （`listPendingWorkspaceReleases` / `retryPendingWorkspaceReleases`），同一 `(sessionId, reason)`
+  只留一条。**账本条目带 `workspaceId`**（读会话行成功那一刻记下）：重试优先按它直接
+  `releaseWorkspace`，不依赖 PSB 会话行还在（会话 404 时锁仍可归还），也不再为一条账本各打一次
+  `sessionStatus`；`workspaceId` 未知才回退读会话行。`NOT_FOUND` / `FORBIDDEN` /
+  `WORKSPACE_OCCUPIED_BY_OTHER` 是**终止归因**（没有可释放的东西）→ 出账并留日志，不再重试。
+  条目带 **dataOwner 印记**：切号后新身份不替旧账号归还工作区（那是越权），账号边界 / teardown
+  直接清账本。
+- **重试前的两道复核（2026-11-27 终局复审 P1）**：① **这条会话是否又被恢复成活动任务**
+  （`ledgerSessionActivity` 按 `localSessionId` 查本机活动 `psb:` 任务）——`active` 时只出账，
+  **不释放锁、也不收隧道**（锁正被恢复的任务合法占用）；读活动列表失败（`unknown`）保留条目。
+  ② **同工作区是否还有别的活动任务**——只有 `mapping` / `session-status` 的确证结论才出账；
+  `unknown`（读不到本机映射且 PSB 会话行也读失败）**保留条目**，不把「无法确认在用」当成
+  「别人在用」把待释放义务与提示条一起静默丢掉。首次释放路径遇到 `unknown` 同样保守按
+  「在用」跳过、不提前解锁。
+- **不**在普通 runtime close 上释放：`/clear`、换模型、漂移回收都会 close，那不是任务结束，
+  释放会让协作锁在用户还在用时被别人拿走；真正的「任务结束」= 归档 / 删除 / 应用退出。
+- **渲染层常驻提示条（2026-11-27，T3）**：`features/remote-workspace/release/PsbPendingReleaseNotice.tsx`
+  + `pendingReleaseNoticeStore.ts` 在主窗挂一次（副窗 / 侧栏窗不挂，同一账本不会渲染多份），把
+  **main 账本**与**工作区级账本**（picker 放弃草稿 / 在途取消）合并成一条展示：右下角非阻塞
+  （`role=status` + `aria-live=polite`，`pointer-events` 分层不遮输入）、计数徽标 + 最多 3 条
+  原因行（余下用 `+N` 折叠），「重试」是**唯一**入口：先重试 main 账本，再重试**未被 main 覆盖**
+  的工作区级条目（同一工作区两本账并存时由 main 代表，避免对同一把锁打两次；旧 preload 缺 main
+  方法时两本账各自重试），不排后台重试；「关闭」只隐藏**当前这一批**（账本仍在，新的失败会重新
+  出现），重试后仍失败时正文换成 `releaseRetained`。**展示按 `workspaceId` 跨源去重**：同一把
+  工作区锁只出现一条（main 条目优先；main 内部同一 `workspaceId` 取最近失败那条；读不到
+  `workspaceId` 的 main 条目按来源 key 保留），所以计数 = 可能被占住的工作区数。**失败码归一**：
+  main 账本的 `failureCode` 是 PSB 原始码，经共享单表的 `psbFailureDescriptorForPsbCode` 归一成
+  文案键再交给 `psbFailureText`（归一不了的码才保留原始码），不在渲染层另抄码表。旧 preload /
+  无 bridge 时订阅 no-op、读取空快照、重试不假成功。「N 个远程工作区」的带数量汇总文案键留给
+  i18n Wave 2，当前用计数徽标表达 N。12 locale 的 `remoteWorkspace.draft.releasePending` /
+  `releaseRetained` 文案已在跨组集成波次补齐。
+- **渲染层会话级事件账本（兼容层）**：只在旧 main / 旧 preload 时生效（见上），补投覆盖归档 /
+  删除 / 启动 / 可见 / pagehide；`ok:false`（新 main 已记账、负责重试）按「已送达」处理，渲染层
+  不再为同一事件排第二份重试。
+- **IPC 接线（跨组集成波次，2026-11-27）**：共享通道 `RELEASE_SESSION_WORKSPACE` /
+  `PENDING_RELEASES_GET` / `PENDING_RELEASES_RETRY` / `PENDING_RELEASES_CHANGED`，preload
+  `psbRemote` 桥四个对应方法，bridge.ts 类型同步；guard 表与 main handler / preload / bridge
+  一一对应。旧 preload 缺方法时渲染层退回留账、下次启动补投，main 端口未装配时回 `not-wired`
+  （同样留账）——两者都不假装释放成功。
+
+### 16.5 测试与验证现状
+
+定向单测：`maker-host/__tests__/psbSessionStatus.test.ts`（TTL / 并发共享 / fail-open / 404
+清快照 / 事件失效 / 上限）、`psbWorkspaceSessionRelease.test.ts`（释放 / 幂等 / 非 psb no-op /
+同工作区还有活动任务 → `workspace-in-use` 跳过且不入账 / 同工作区「在用」结论 `unknown` 时
+**保留条目** / 会话归档后又被恢复成活动任务时重试**只出账不释放锁** / 账本按 `workspaceId`
+直接重试 / `NOT_FOUND` 等终止归因出账 / dataOwner 切号边界 / 失败记账 / 退出并行释放）、
+`remoteTransportRegistry.test.ts`（会话 + host 两档 + 退出全释放）、`remote-session-routing.test.ts`
+（能力表 / mode 单表 / 归因码 / `resolveRemoteCcTunnelStartParams` 含畸形 `psb:`）、删除
+`remoteCcQueryFactory.test.ts` 的源码文本 cwd 守卫改为行为断言、`localDb` 侧
+`sessionRemoteRebindTx.test.ts`（CAS 冲突不落标记 / 删任务拒绝 / 不清理原生会话时不写交接）
+与 `contextRebuildPersistence.test.ts`。跨组接线（2026-11-27）：`psbRemoteIpcWiring.guard.test.ts`
+扩表覆盖 4 条新通道 + 「释放判据在 main、IPC 层只映射结果」守卫；`psbOccupancyRelease.test.ts`
+覆盖 main 单权威探测（新 main → `main-authority` 零调用）、旧 main 补投、`ok:false`（main 已记账）
+按送达处理、`not-wired` 留账、main 账本读/重试/推送订阅与旧 preload 降级；常驻提示条
+`features/remote-workspace/release/__tests__/PsbPendingReleaseNotice.test.tsx` 覆盖「账本非空 →
+显示计数」「跨源同 `workspaceId` 只显示一条（main 优先）且重试只打一次」「重试失败保留 +
+`releaseRetained`」「关闭只影响显示、新失败重新出现」「main 原始 PSB 码归一 / 归一不了回退原文」
+「副窗 / 侧栏窗不渲染」「旧 preload 不崩」。包级 typecheck：`desktop`（main +
+renderer 分片）、`@cindy/maker-core`、`@cindy/maker-pi-manager`。**以上均为单测 / 源级守卫证据，
+真机未验证。** 真机复测点：① 连续发消息不再每次都打
+`sessionStatus`（PSB 侧请求日志）；② 终态后下一条消息透明重绑且模型记得前文；③ 归档远程任务后
+工作区立即可被他人占用（同一工作区还有另一条活动远程任务时应**保持占用**）；④ 退出应用后 PSB
+工作区不再显示本地占用；⑤ 释放失败时常驻提示条能读到 main 账本并显式重试、重试失败换成
+「占用可能仍未解除」文案（UI 已实现、单测覆盖，真机未验证）。
+

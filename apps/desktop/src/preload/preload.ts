@@ -42,8 +42,10 @@ import type { LocalPluginOauthRequest, LocalPluginSecretRequest } from '../share
 import { REMOTE_VIEWER } from '../shared/remoteDesktopViewer';
 import {
   PSB_REMOTE_CHANNELS,
+  type PsbPendingWorkspaceReleasesResult,
+  type PsbPendingWorkspaceReleasesRetryResult,
+  type PsbSessionWorkspaceReleaseResult,
   type PsbSessionsReboundEvent,
-  type PsbStreamEvent,
   type PsbWorkspaceChangedEvent,
 } from '../shared/psb-remote-workspace';
 import type {
@@ -880,12 +882,16 @@ const fanOutRemoteSshSilentInstallStatus = createIpcFanOut(
 const fanOutRemoteSshCcMgrUpgradeAvailable = createIpcFanOut(
   'maker:remote-ssh:cc-mgr-upgrade-available',
 );
-// PSB 远程工作区：串流事件（帧 / 状态 / 光标 / 关闭 / 错误）、工作区快照变更、
-// 以及「发送时透明重建」后的远程会话重绑通知。
+// PSB 远程工作区：工作区快照变更、以及「发送时透明重建」后的远程会话重绑通知。
 // 通道名来自共享契约，preload 不 import main（chunk 边界）。
-const fanOutPsbStreamEvent = createIpcFanOut(PSB_REMOTE_CHANNELS.STREAM_EVENT);
+// 会话级串流推送（`PSB_REMOTE_CHANNELS.STREAM_EVENT`）已删除：渲染层零消费，观看端只走
+// 管理页的工作区级串流通道（`PSB_ADMIN_CHANNELS.STREAM_EVENT`，见下）。
 const fanOutPsbWorkspaceChanged = createIpcFanOut(PSB_REMOTE_CHANNELS.WORKSPACE_CHANGED);
 const fanOutPsbSessionsRebound = createIpcFanOut(PSB_REMOTE_CHANNELS.SESSIONS_REBOUND);
+// 会话结束释放：main 的待释放账本快照变更（失败入账 / 重试成功出账），多窗口都要收敛。
+const fanOutPsbPendingReleasesChanged = createIpcFanOut(
+  PSB_REMOTE_CHANNELS.PENDING_RELEASES_CHANGED,
+);
 // CINDY-RW-10：占用 / 释放的版本控制检查通知（0.1.180 advisory 与旧版 409 兼容路径共用）。
 const fanOutPsbWorkspaceVcsNotice = createIpcFanOut(PSB_REMOTE_CHANNELS.WORKSPACE_VCS_NOTICE);
 // 「远程工作区」管理页（工作区级，与用户任务解耦）：当前工作区上下文变化 + 观看端绑定串流事件。
@@ -916,16 +922,29 @@ function createPsbRemoteBridge(): PsbRemoteBridge {
     sessionStatus: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.SESSION_STATUS, input),
     stopSession: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STOP_SESSION, input),
     openWebWorkspace: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.OPEN_WEB_WORKSPACE, input),
-    streamStatus: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_STATUS, input),
-    streamStart: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_START, input),
-    streamStop: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_STOP, input),
-    streamInput: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_INPUT, input),
-    onStreamEvent: (handler) =>
-      fanOutPsbStreamEvent((data) => handler(data as PsbStreamEvent)),
     onWorkspaceChanged: (handler) =>
       fanOutPsbWorkspaceChanged((data) => handler(data as PsbWorkspaceChangedEvent)),
     onSessionsRebound: (handler) =>
       fanOutPsbSessionsRebound((data) => handler(data as PsbSessionsReboundEvent)),
+    // 会话结束释放工作区占用：报告一条终态事件 + 读/重试 main 的待释放账本。
+    // 释放判据与账本都在 main；preload 只透传，不解构失败、不自己重试。
+    releaseWorkspaceForSession: (input) =>
+      ipcRenderer.invoke(
+        PSB_REMOTE_CHANNELS.RELEASE_SESSION_WORKSPACE,
+        input,
+      ) as Promise<PsbSessionWorkspaceReleaseResult>,
+    pendingWorkspaceReleases: () =>
+      ipcRenderer.invoke(
+        PSB_REMOTE_CHANNELS.PENDING_RELEASES_GET,
+      ) as Promise<PsbPendingWorkspaceReleasesResult>,
+    retryPendingWorkspaceReleases: () =>
+      ipcRenderer.invoke(
+        PSB_REMOTE_CHANNELS.PENDING_RELEASES_RETRY,
+      ) as Promise<PsbPendingWorkspaceReleasesRetryResult>,
+    onPendingWorkspaceReleasesChanged: (handler) =>
+      fanOutPsbPendingReleasesChanged((data) =>
+        handler(data as PsbPendingWorkspaceReleasesResult),
+      ),
     // CINDY-RW-10：版本控制检查通知（0.1.180 advisory / 旧版 409 兼容）与处置动作。
     // 处置动作只传 kind：method/path/body 由 main 从服务端 notice 取并校验，preload 不持有 URL。
     workspaceVcsNotice: (input) =>

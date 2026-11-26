@@ -3266,7 +3266,7 @@
     },
     {
       "id": "remote-workspace-admin",
-      "status": "proposed",
+      "status": "decided",
       "en": "Remote workspace",
       "translations": {
         "zh-CN": "远程工作区",
@@ -3281,7 +3281,33 @@
         "zh-Hant-x-lzh": "遠端工作區",
         "zh-Hans-x-lzh": "远程工作区"
       },
-      "note": "远程工作区会话页标题行「…」之后的入口按钮、右侧栏标签页名与全局页签页面名（用户 2026-11-26 指定中文叫「远程工作区」，按钮位置从窗口右上角挪到会话标题行「…」之后）。页面是 PSB 网页「远程工作区」的简化版 / 快捷访问：按工作区工作、不依赖当前任务是否结束。与「远程桌面」「远程连接」不是同一功能；旧称「远程管理」已废弃，不要再使用。"
+      "forbidden": {
+        "zh-CN": [
+          {
+            "text": "远程管理",
+            "whenEn": "Remote workspace"
+          }
+        ],
+        "zh-TW": [
+          {
+            "text": "遠端管理",
+            "whenEn": "Remote workspace"
+          }
+        ],
+        "zh-Hant-x-lzh": [
+          {
+            "text": "遠端管理",
+            "whenEn": "Remote workspace"
+          }
+        ],
+        "zh-Hans-x-lzh": [
+          {
+            "text": "远程管理",
+            "whenEn": "Remote workspace"
+          }
+        ]
+      },
+      "note": "远程工作区会话页标题行「…」之后的入口按钮、右侧栏标签页名与全局页签页面名（用户 2026-11-26 指定中文叫「远程工作区」，按钮位置从窗口右上角挪到会话标题行「…」之后）。页面是 PSB 网页「远程工作区」的简化版 / 快捷访问：按工作区工作、不依赖当前任务是否结束。与「远程桌面」「远程连接」不是同一功能；旧称「远程管理」已废弃，不要再使用。2026-11-26 裁决为 decided，并把「远程管理 / 遠端管理」按 whenEn=Remote workspace 条件禁用——它仍是其它英文概念（如 remote management）的正确译法，不能无条件禁。2026-11-27 第三轮：zh-CN 的同一批用户可见文案统一用「远程」，不再混用「远端」（zh-TW / zh-Hant-x-lzh 的「遠端」是本语言已裁决译法，保持不动）。"
     },
     {
       "id": "request-refund",
@@ -3535,7 +3561,6 @@
         "desktop:newChat.chatInput.agentSwitch.confirmation.description",
         "desktop:newChat.collaboration.archiveWorkerConfirmDesc",
         "desktop:newChat.collaboration.stopConfirmDesc",
-        "desktop:remoteWorkspace.session.reboundNotice",
         "desktop:settings.about.debugLogDescription",
         "desktop:settings.builtinTools.toast.disabled",
         "desktop:settings.builtinTools.toast.enabled",

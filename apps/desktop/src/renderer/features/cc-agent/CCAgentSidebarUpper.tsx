@@ -340,7 +340,10 @@ import {
   loadActiveBoundScheduleNames,
 } from '@/features/scheduler/lib/archiveScheduleWarning';
 import { resolveDialogueDeviceTarget, type DialogueDeviceTarget } from './lib/dialogueCreateTarget';
-import { makeDialogueNewMakerRouteState } from './lib/newMakerRouteState';
+import {
+  makeDialogueNewMakerRouteState,
+  makePsbTargetNewMakerRouteState,
+} from './lib/newMakerRouteState';
 import { makeGenericNewMakerRouteState } from './lib/genericNewMakerRouteState';
 
 const log = createLogger('CCAgentSidebarUpper');
@@ -2969,16 +2972,13 @@ function ExpandedView({
       // 不 replace：这是用户发起的「打开一个新草稿」，与其它新建入口一样留一条历史记录，
       // 浏览器/应用内后退能回到点之前的位置（独立审查：replace 会把用户原来的页面顶掉）。
       navigate('/cc-agent/new', {
-        state: {
-          ...makeNewMakerRouteState('generic'),
-          psbTarget: {
-            workspaceId: target.workspaceId,
-            clientId: target.clientId,
-            clientName: target.clientName,
-            workspaceTitle: target.workspaceTitle,
-            directoryName: target.directoryName,
-          },
-        },
+        state: makePsbTargetNewMakerRouteState({
+          workspaceId: target.workspaceId,
+          clientId: target.clientId,
+          clientName: target.clientName,
+          workspaceTitle: target.workspaceTitle,
+          directoryName: target.directoryName,
+        }),
       });
     },
     [handleClearSelection, navigate],

@@ -79,11 +79,16 @@ describe('SSH-only 模型清单探针的接线', () => {
     expect(chatInputSource).not.toMatch(/sshHostId \? mergeSshCodexCatalog/);
   });
 
-  it('会话模型选择在读远端清单前判过 transport', () => {
-    const guard = selectionSource.indexOf('resolveRemoteCodexModelHostId({');
-    const probe = selectionSource.indexOf('.listCodexModels(');
-    expect(guard).toBeGreaterThan(0);
-    expect(probe).toBeGreaterThan(guard);
+  it('会话模型选择的单入口只经唯一判据接触 SSH-only 探针', () => {
+    // 行为级覆盖在 unit tier：`__tests__/sshCodexModels.test.tsx` 用真实 `window.electronAPI`
+    // 替身验证「真 SSH 主机才发探针」「`mcpr:` 身份（含未类型化调用者）零次探针、用本机目录」
+    // 与失败不回落到本机模型。这里只留跨文件接线：单入口复用共享判据模块、不自己手写
+    // transport 前缀；草稿路由经这条单入口（而不是直接发 SSH IPC）建会话模型。
+    expect(selectionSource).toContain("from '@/lib/remoteCodexModelHost'");
+    expect(selectionSource).toContain('asSshRemoteHostId(');
+    expect(selectionSource).not.toMatch(/startsWith\(\s*['"](?:mcpr|psb):/);
+    expect(draftRouteSource).toContain('loadSshSessionModelSelection(');
+    expect(draftRouteSource).not.toContain('remoteSsh.listCodexModels(');
   });
 
   it('SSH 专属的「同步 Codex 登录」只对真 SSH 主机成立', () => {

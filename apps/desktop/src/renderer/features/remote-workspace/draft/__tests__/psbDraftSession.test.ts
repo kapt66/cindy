@@ -1,32 +1,37 @@
 /**
- * psbDraftSession 单测 —— 「首条消息懒建 PSB 会话」的去重与「放弃草稿归还远端资源」的顺序。
+ * psbDraftSession 单测 —— 「首条消息懒建 PSB 会话」的去重/孤儿与「放弃草稿归还远端资源」的顺序/记账。
  *
  * 测试价值
  * - 生产入口与可观察结果：`createPsbSessionGate()` / `releasePsbDraftTarget()` 是草稿页与
  *   离开草稿路径的唯一实现（`NewMakerDraftRoute` 调它们）。可观察结果是「调了几次
- *   `bridge.createSession`」与「stop/release 的调用顺序」——都是 PSB 侧能看到的真实副作用。
+ *   `bridge.createSession`、用的哪个 clientRequestId」与「stop/release 的调用顺序、失败是否入账」
+ *   ——都是 PSB 侧或用户能看到的真实副作用。
  * - Bug／规则依据：`docs/dev-rules/psb-remote-session-transport.md` §2（同一草稿只能建一条
- *   PSB 会话；重试复用 `clientRequestId`）与 §3（放弃草稿先停会话再释放协作锁，
- *   否则锁在我名下且没有 TTL）。
- * - 现有覆盖缺口：这两条不变量此前只由人工联调发现——(a) `reset()` 之后旧请求的 `finally`
- *   会把新请求的在途句柄清掉，导致紧随其后的并发 `ensure` 再建一条 PSB 会话（新
- *   `clientRequestId`，PSB 幂等键挡不住）；(b) stop 与 release 并发发出时，服务端可能因
- *   「仍有运行中会话」拒绝释放，锁留下。
- * - 最小失败输入：在 `createSession` 未落地时 `reset()` 并发起第二次 `ensure`；以及带
- *   sessionId 的目标直接 `releasePsbDraftTarget`。
+ *   PSB 会话；重试复用 `clientRequestId`）与 §3（放弃草稿先停会话再释放协作锁，否则锁在我
+ *   名下且没有 TTL）；产品 §2.5（释放失败不能静默）。
+ * - 2026-11-26 独立审查修复的缺口：
+ *   (a) gate 判过之后、回调拒绝采纳时，旧实现已清去重键且静默 return → 远端留下没人引用的
+ *       PSB 会话，重试还会再建第二条；现在未采纳会 stopSession 且**保留**去重键；
+ *   (b) `reset()` 之后旧请求的 `finally` 会清掉新请求的在途句柄 → 并发 ensure 再建一条；
+ *   (c) stop 超时/失败后仍 release 的失败只 `log.warn`，用户不知道锁还留着；现在记账。
+ * - 最小失败输入：`onSessionCreated` 返回 false（目标在回调这一帧被换掉）；`createSession`
+ *   未落地时 `reset()` 并发起第二次 `ensure`；release 被 PSB 拒绝。
  * - tier：unit（假 bridge，无网络/Electron/真实定时器）。
  * - 实测耗时：单独运行 < 1s。
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { NewMakerDraftPsbTarget } from '@/state/newMakerDraft';
+
+import type { PsbRemoteBridge } from '../../bridge';
+import { resetPsbPendingReleasesForTest } from '../psbPendingReleaseLedger';
 import {
   createPsbSessionGate,
   releasePsbDraftTarget,
   type PsbDraftSession,
 } from '../psbDraftSession';
-import type { PsbRemoteBridge } from '../../bridge';
-import type { NewMakerDraftPsbTarget } from '@/state/newMakerDraft';
+import { deferred } from '../../__tests__/psbTestFixtures';
 
 const TARGET: NewMakerDraftPsbTarget = {
   workspaceId: 'ws-1',
@@ -36,53 +41,38 @@ const TARGET: NewMakerDraftPsbTarget = {
   directoryName: 'saga2_project',
 };
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (e: unknown) => void } {
-  let resolve!: (value: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function createBridge(overrides: Partial<PsbRemoteBridge>): PsbRemoteBridge {
   return {
-    status: async () => ({ ready: true, reasonKey: null, host: 'h', testHost: false }),
-    listWorkspaces: async () => ({ workspaces: [] }),
-    listClients: async () => ({ clients: [] }),
-    listProjectTemplates: async () => ({ templates: [] }),
-    createWorkspace: async () => {
-      throw new Error('unused');
-    },
-    occupyWorkspace: async () => {
-      throw new Error('unused');
-    },
-    releaseWorkspace: async () => {
-      throw new Error('unused');
-    },
     createSession: async () => {
       throw new Error('unused');
     },
-    sessionStatus: async () => {
-      throw new Error('unused');
-    },
     stopSession: async () => undefined,
-    openWebWorkspace: async () => undefined,
-    refreshWorkspaces: async () => ({ workspaces: [] }),
-    streamStatus: async () => {
+    releaseWorkspace: async () => {
       throw new Error('unused');
     },
-    streamStart: async () => {
-      throw new Error('unused');
-    },
-    streamStop: async () => undefined,
-    streamInput: async () => undefined,
-    onStreamEvent: () => () => undefined,
-    onWorkspaceChanged: () => () => undefined,
     ...overrides,
-  } as PsbRemoteBridge;
+  } as unknown as PsbRemoteBridge;
 }
+
+function ensureInput(overrides: {
+  bridge: PsbRemoteBridge;
+  onSessionCreated?: (sessionId: string) => boolean;
+  isCurrentTarget?: () => boolean;
+}) {
+  return {
+    target: TARGET,
+    agentKind: 'pi' as const,
+    title: null,
+    getBridge: () => overrides.bridge,
+    isCurrentTarget: overrides.isCurrentTarget ?? (() => true),
+    onSessionCreated: overrides.onSessionCreated ?? (() => true),
+  };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+  resetPsbPendingReleasesForTest();
+});
 
 describe('createPsbSessionGate', () => {
   it('并发 ensure 共享同一次 createSession（双击不会建出两条 PSB 会话）', async () => {
@@ -90,14 +80,7 @@ describe('createPsbSessionGate', () => {
     const createSession = vi.fn(() => pending.promise);
     const bridge = createBridge({ createSession: createSession as never });
     const gate = createPsbSessionGate();
-    const input = {
-      target: TARGET,
-      agentKind: 'pi' as const,
-      title: null,
-      getBridge: () => bridge,
-      isCurrentTarget: () => true,
-      onSessionCreated: () => undefined,
-    };
+    const input = ensureInput({ bridge });
     const first = gate.ensure(input);
     const second = gate.ensure(input);
     pending.resolve({ session: { id: 'psb-1' } as never });
@@ -108,9 +91,6 @@ describe('createPsbSessionGate', () => {
   });
 
   it('reset() 之后旧请求的 finally 不会清掉新请求的在途句柄', async () => {
-    // 场景：createSession 未落地 → reset()（换目标/离开草稿）→ 立刻第二次 ensure。
-    // 旧请求结束时若无条件 `inFlight = null`，会把新请求的句柄清掉，后面的并发 ensure
-    // 于是再发一条 createSession（新 clientRequestId），远端多出一条孤儿会话。
     const firstPending = deferred<{ session: PsbDraftSession }>();
     const secondPending = deferred<{ session: PsbDraftSession }>();
     let call = 0;
@@ -120,20 +100,12 @@ describe('createPsbSessionGate', () => {
     });
     const bridge = createBridge({ createSession: createSession as never });
     const gate = createPsbSessionGate();
-    const base = {
-      target: TARGET,
-      agentKind: 'pi' as const,
-      title: null,
-      getBridge: () => bridge,
-      isCurrentTarget: () => true,
-      onSessionCreated: () => undefined,
-    };
+    const input = ensureInput({ bridge });
 
-    const stale = gate.ensure(base);
+    const stale = gate.ensure(input);
     gate.reset();
-    const fresh = gate.ensure(base);
-    const concurrent = gate.ensure(base); // 应与 fresh 共享，而不是再发一条
-    // 旧请求失败收尾：不能影响新请求的在途状态。
+    const fresh = gate.ensure(input);
+    const concurrent = gate.ensure(input);
     firstPending.reject(new Error('stale request failed'));
     await expect(stale).resolves.toMatchObject({ ok: false });
 
@@ -142,6 +114,61 @@ describe('createPsbSessionGate', () => {
     const [f, c] = await Promise.all([fresh, concurrent]);
     expect(f.ok).toBe(true);
     expect(c.ok).toBe(true);
+  });
+
+  it('回调拒绝采纳时停掉孤儿会话，并保留去重键让重试拿回同一条（不再建第二条）', async () => {
+    const createSession = vi.fn(async () => ({ session: { id: 'psb-1' } }));
+    const stopSession = vi.fn(async () => undefined);
+    const bridge = createBridge({
+      createSession: createSession as never,
+      stopSession: stopSession as never,
+    });
+    const gate = createPsbSessionGate();
+    const rejected = await gate.ensure(
+      ensureInput({ bridge, onSessionCreated: () => false }),
+    );
+    expect(rejected).toEqual({ ok: false, reason: 'stale' });
+    await vi.waitFor(() => expect(stopSession).toHaveBeenCalledWith({ sessionId: 'psb-1' }));
+
+    // 后一次发送（目标仍没变、用户重试）：去重键还在，PSB 会拿回同一条会话。
+    const adopted = await gate.ensure(ensureInput({ bridge }));
+    expect(adopted.ok).toBe(true);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    const firstRequest = (createSession.mock.calls[0] as unknown[])[0] as {
+      clientRequestId: string;
+    };
+    const secondRequest = (createSession.mock.calls[1] as unknown[])[0] as {
+      clientRequestId: string;
+    };
+    expect(secondRequest.clientRequestId).toBe(firstRequest.clientRequestId);
+  });
+
+  it('目标在等待期间被换掉：停掉刚建出的会话，去重键保留给重试', async () => {
+    const createSession = vi.fn(async () => ({ session: { id: 'psb-9' } }));
+    const stopSession = vi.fn(async () => undefined);
+    const bridge = createBridge({
+      createSession: createSession as never,
+      stopSession: stopSession as never,
+    });
+    const gate = createPsbSessionGate();
+    const result = await gate.ensure(
+      ensureInput({ bridge, isCurrentTarget: () => false }),
+    );
+    expect(result).toEqual({ ok: false, reason: 'stale' });
+    await vi.waitFor(() => expect(stopSession).toHaveBeenCalledWith({ sessionId: 'psb-9' }));
+  });
+
+  it('已建出会话的目标直接复用，不再请求 PSB', async () => {
+    const createSession = vi.fn();
+    const bridge = createBridge({ createSession: createSession as never });
+    const gate = createPsbSessionGate();
+    const input = ensureInput({ bridge });
+    const result = await gate.ensure({
+      ...input,
+      target: { ...TARGET, sessionId: 'psb-existing' },
+    });
+    expect(result).toMatchObject({ ok: true, session: { sessionId: 'psb-existing' } });
+    expect(createSession).not.toHaveBeenCalled();
   });
 });
 
@@ -160,10 +187,7 @@ describe('releasePsbDraftTarget', () => {
         return { workspace: {} as never };
       }) as never,
     });
-    releasePsbDraftTarget(
-      { workspaceId: 'ws-1', sessionId: 'psb-1' },
-      { getBridge: () => bridge },
-    );
+    releasePsbDraftTarget({ workspaceId: 'ws-1', sessionId: 'psb-1' }, { getBridge: () => bridge });
     await Promise.resolve();
     // stop 还没落地时不能 release
     expect(order).toEqual(['stop:start']);
@@ -181,5 +205,43 @@ describe('releasePsbDraftTarget', () => {
     });
     releasePsbDraftTarget({ workspaceId: 'ws-2', sessionId: null }, { getBridge: () => bridge });
     await vi.waitFor(() => expect(order).toEqual(['release']));
+  });
+
+  it('stop 超时后仍会 release（远端可能已在收尸，不能把离开也拖住）', async () => {
+    vi.useFakeTimers();
+    const releaseWorkspace = vi.fn(async () => ({ workspace: {} as never }));
+    const bridge = createBridge({
+      stopSession: (() => new Promise<void>(() => undefined)) as never,
+      releaseWorkspace: releaseWorkspace as never,
+    });
+    releasePsbDraftTarget({ workspaceId: 'ws-3', sessionId: 'psb-3' }, { getBridge: () => bridge });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(releaseWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-3' });
+  });
+
+  it('release 失败不再只写日志：记进待释放账本，可被显式重试', async () => {
+    const releaseWorkspace = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error('远端忙'), { code: 'PSB_UNREACHABLE' }),
+      )
+      .mockResolvedValueOnce({ workspace: {} as never });
+    const bridge = createBridge({
+      stopSession: async () => undefined,
+      releaseWorkspace: releaseWorkspace as never,
+    });
+    const { listPsbPendingReleases, retryPsbPendingReleases } = await import(
+      '../psbPendingReleaseLedger'
+    );
+    releasePsbDraftTarget({ workspaceId: 'ws-4', sessionId: null }, { getBridge: () => bridge });
+    await vi.waitFor(() => expect(listPsbPendingReleases()).toHaveLength(1));
+    const [entry] = listPsbPendingReleases();
+    expect(entry).toMatchObject({ workspaceId: 'ws-4', attempts: 1 });
+    expect(entry?.failure.code).toBe('PSB_UNREACHABLE');
+
+    // 用户显式重试（不自动重放写操作）：成功后账本清空。
+    await retryPsbPendingReleases(() => bridge);
+    expect(releaseWorkspace).toHaveBeenCalledTimes(2);
+    expect(listPsbPendingReleases()).toHaveLength(0);
   });
 });

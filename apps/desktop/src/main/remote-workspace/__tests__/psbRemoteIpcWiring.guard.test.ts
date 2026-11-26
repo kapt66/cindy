@@ -78,18 +78,17 @@ const BRIDGE_METHODS: ReadonlyArray<{
   { method: 'sessionStatus', channel: 'SESSION_STATUS', invoke: true },
   { method: 'stopSession', channel: 'STOP_SESSION', invoke: true },
   { method: 'openWebWorkspace', channel: 'OPEN_WEB_WORKSPACE', invoke: true },
-  { method: 'streamStatus', channel: 'STREAM_STATUS', invoke: true },
-  { method: 'streamStart', channel: 'STREAM_START', invoke: true },
-  { method: 'streamStop', channel: 'STREAM_STOP', invoke: true },
-  { method: 'streamInput', channel: 'STREAM_INPUT', invoke: true },
-  { method: 'onStreamEvent', channel: 'STREAM_EVENT', invoke: false },
   { method: 'onWorkspaceChanged', channel: 'WORKSPACE_CHANGED', invoke: false },
-  // 发送时透明重建 PSB 会话后 main → renderer 的「这个任务换了一条会话」推送。
   { method: 'onSessionsRebound', channel: 'SESSIONS_REBOUND', invoke: false },
   // CINDY-RW-10：版本控制检查通知的兜底读取 / 处置动作 invoke，以及通知推送。
   { method: 'workspaceVcsNotice', channel: 'WORKSPACE_VCS_NOTICE_GET', invoke: true },
   { method: 'runWorkspaceVcsAction', channel: 'WORKSPACE_VCS_ACTION', invoke: true },
   { method: 'onWorkspaceVcsNotice', channel: 'WORKSPACE_VCS_NOTICE', invoke: false },
+  // 会话结束释放工作区占用（r6/r7）：报告一次终态 + main 待释放账本的读/重试/推送。
+  { method: 'releaseWorkspaceForSession', channel: 'RELEASE_SESSION_WORKSPACE', invoke: true },
+  { method: 'pendingWorkspaceReleases', channel: 'PENDING_RELEASES_GET', invoke: true },
+  { method: 'retryPendingWorkspaceReleases', channel: 'PENDING_RELEASES_RETRY', invoke: true },
+  { method: 'onPendingWorkspaceReleasesChanged', channel: 'PENDING_RELEASES_CHANGED', invoke: false },
 ];
 
 /**
@@ -158,12 +157,15 @@ describe('PSB 远程工作区 IPC 接线', () => {
       'satisfies PsbListTemplatesResult',
       'satisfies PsbCreateWorkspaceResult',
       'satisfies PsbOccupyWorkspaceResult',
-      'satisfies PsbStreamStartResult',
       // 管理页（工作区级）的三个返回值同样锁形：`{context}` / `{status,…}` / `{status:null}`
       // 都是渲染层直接解构的形状，裸返回会让页面永远停在「读取中」。
       'satisfies PsbWorkspaceAdminContextResult',
       'satisfies PsbWorkspaceAdminStreamStartResult',
       'satisfies PsbWorkspaceAdminStreamStatusResult',
+      // 会话结束释放：报告结果与待释放账本快照也都是渲染层直接解构的形状。
+      'satisfies PsbSessionWorkspaceReleaseResult',
+      'satisfies PsbPendingWorkspaceReleasesResult',
+      'satisfies PsbPendingWorkspaceReleasesRetryResult',
     ]) {
       expect(ipcSource, `ipc.ts 缺少返回值形状锁定：${marker}`).toContain(marker);
     }
@@ -238,6 +240,19 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(gateBlock).toContain('psbIpcCodeForFailure(failure) ?? \'INTERNAL\'');
   });
 
+  it('管理页串流多窗口：引用计数账本与帧定向投递接线在位', () => {
+    // 多窗口看同一工作区时，只有最后离开的窗口才能停流；帧/光标只发给登记过的窗口。
+    expect(ipcSource, 'ipc.ts 未使用引用计数账本').toContain('createPsbStreamOwnerRegistry()');
+    expect(ipcSource, 'ipc.ts 未按「最后离开者」停流').toContain('untrackAdminStreamOwner');
+    expect(ipcSource, 'ipc.ts 未登记帧 owner').toContain('registerPsbAdminStreamOwner');
+    const pushSource = readSource('src/main/remote-workspace/push.ts');
+    expect(pushSource, 'push.ts 帧未按 owner 定向').toContain(
+      'adminStreamFrameOwners.owners(event.sessionId)',
+    );
+    // 状态 / 关闭 / 错误与上下文变化仍是广播（多窗口都要收敛状态）。
+    expect(pushSource).toContain('broadcastToTrustedWindows(PSB_ADMIN_CHANNELS.STREAM_EVENT');
+  });
+
   it('写操作前的占用闸门接线齐备（新会话 / 启动串流 / 每次发送 / 重绑）', () => {
     // PSB 服务端对工作区写操作校验占用（2026-11-26 口径）：Cindy 这三个入口都必须先 ensure，
     // 漏一处的后果是「用户在 PSB 侧被拒后只看到一句不可行动的失败」，且没有编译错误。
@@ -257,24 +272,29 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(createRequest, 'createSession 未真正调用 PSB').toBeGreaterThan(createEnsure);
 
     // 2) 启动串流：先 ensure，再建立观看端绑定（工作区级订阅 / 旧 PSB 过渡回退）并订阅。
+    //    2026-11-26 FIX-B：start / stop 改为按工作区串行 + 代次，实际动作在 `startStreamLocked`
+    //    里执行（`streamStart` 只做校验、取代次并入队），锚点跟着实现走，但顺序契约不变。
     const streamStartAt = adminSource.indexOf('async function streamStart(');
-    const streamEnsure = adminSource.indexOf('await remote().ensureWorkspaceLocked(id)');
-    const streamBind = adminSource.indexOf('await startStreamWithRecovery(id)');
+    const lockedStartAt = adminSource.indexOf('async function startStreamLocked(');
+    const streamEnsure = adminSource.indexOf('await remote().ensureWorkspaceLocked(workspaceId)');
+    const streamBind = adminSource.indexOf('await startStreamWithRecovery(workspaceId)');
+    expect(streamStartAt, 'adminService 缺少 streamStart').toBeGreaterThanOrEqual(0);
+    expect(lockedStartAt, 'adminService 缺少 startStreamLocked').toBeGreaterThanOrEqual(0);
+    // wrapper 必须经串行队列把动作交给 locked 函数（不能自己直接执行、绕过互斥）。
+    const stopLockedAt = adminSource.indexOf('async function stopStreamLocked(');
+    const streamStartBlock = adminSource.slice(streamStartAt, stopLockedAt);
+    expect(streamStartBlock).toContain('runWorkspaceOperation(');
+    expect(streamStartBlock).toContain('startStreamLocked(');
     expect(streamEnsure, 'adminService 启动串流前未 ensure 工作区锁定').toBeGreaterThan(
-      streamStartAt,
+      lockedStartAt,
     );
     expect(streamBind).toBeGreaterThan(streamEnsure);
 
-    // 2b) 会话级启动串流（当前无渲染层消费方）也必须走同一闸门，不能成为绕过占用检查的
-    //     第二条路径：handler 先 ensure 该会话所属工作区，再 true 启动。
-    const sessionStreamStartAt = ipcSource.indexOf('PSB_REMOTE_CHANNELS.STREAM_START');
-    const sessionGate = ipcSource.indexOf(
-      'await service().ensureWorkspaceLockedForSession(sessionId)',
-      sessionStreamStartAt,
-    );
-    const sessionStart = ipcSource.indexOf('service().startStream(sessionId)', sessionStreamStartAt);
-    expect(sessionGate, '会话级启动串流缺少占用闸门').toBeGreaterThan(sessionStreamStartAt);
-    expect(sessionStart, '会话级启动串流未真正调用 PSB').toBeGreaterThan(sessionGate);
+    // 2b) 会话级串流通道（STREAM_STATUS/START/STOP/INPUT/EVENT）已删除：渲染层零消费，
+    //     main 侧也不能留 handler/推送（否则就是一条没有来源的旁路）。
+    expect(ipcSource).not.toContain('PSB_REMOTE_CHANNELS.STREAM');
+    const pushSource = readSource('src/main/remote-workspace/push.ts');
+    expect(pushSource).not.toContain('PSB_REMOTE_CHANNELS.STREAM_EVENT');
 
     // 3) 每次发送：事务在远端就绪准备/派发之前调用闸门（不能是可选的成功路径）。
     const lockCall = transactionSource.indexOf(
@@ -294,6 +314,65 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(registerSource).toContain('ensureWorkspaceLockedForSession(psbSessionId)');
     expect(registerSource, '重绑建会话未走带闸门的 PSB 服务').toContain(
       'getPsbRemoteService().createSession(input)',
+    );
+  });
+
+  it('会话结束释放的唯一判据在 main 释放模块，IPC 层只做校验与结果映射', () => {
+    // 判据（读 PSB 会话行、确认「由我占用」、记待释放账本）必须留在
+    // `maker-host/psb-workspace-session-release.ts` 一处；IPC 层自己再判一遍会让两处漂移
+    // （渲染层只看得到本地会话 id，根本判不了占用者）。
+    expect(ipcSource, 'ipc.ts 未调用 main 的释放端口').toContain(
+      'releasePsbWorkspaceForSession(',
+    );
+    expect(ipcSource, 'ipc.ts 未读取待释放账本').toContain('listPendingWorkspaceReleases()');
+    expect(ipcSource, 'ipc.ts 未重试待释放账本').toContain('retryPendingWorkspaceReleases()');
+    expect(ipcSource, 'ipc.ts 未把账本变更推给渲染层').toContain(
+      'broadcastPsbPendingReleasesChanged(',
+    );
+    // 失败形状（main 记账 → IPC 返回 ok:false 而非抛 IPC 错）不在源级 pin：它由 main 的
+    // `maker-host/__tests__/psbWorkspaceSessionRelease.test.ts`（失败入账 / 重试 / 出账）与渲染层
+    // `features/cc-agent/__tests__/psbOccupancyRelease.test.ts`（ok:false = 已送达、not-wired 留账）
+    // 按行为覆盖；通道 ↔ 端口 ↔ DTO 这几层接线已由上方的映射表用例断言。
+  });
+
+  it('会话结束释放的触发权威只在 main，渲染层只做旧 main 兼容探测；teardown 清账本', () => {
+    // 二轮审查 s5/s8 P1：main 终态 observer 与渲染层对同一次归档各发一次 release =
+    // 一次归档两轮 PSB 请求 + 双记账。触发权威必须在 main（终态 observer 注册槽），
+    // 渲染层生命周期入口不得直接调 bridge。
+    const registerSource = readSource('src/main/maker-ipc/register.ts');
+    expect(registerSource, 'register 未注册终态释放 observer').toContain(
+      'setTerminalSessionStatusObserver((sessionId, status) => {',
+    );
+    expect(registerSource, 'observer 未调用 main 的释放端口').toContain(
+      'await releasePsbWorkspaceForSession({',
+    );
+    // 同一工作区还有活动任务时不能提前解锁：端口必须拿到会话表查询与「会话→工作区」映射。
+    expect(registerSource, '释放端口未注入活动任务查询').toContain('listActivePsbSessions: async () =>');
+    expect(registerSource, '释放端口未注入会话→工作区映射').toContain(
+      'workspaceIdForPsbSession: (psbSessionId) =>',
+    );
+
+    const lifecycleSource = readSource(
+      'src/renderer/features/cc-agent/hooks/useSessionLifecycleActions.ts',
+    );
+    expect(lifecycleSource, '渲染层生命周期入口不得直接调 releaseWorkspaceForSession').not.toContain(
+      'releaseWorkspaceForSession(',
+    );
+    expect(lifecycleSource, '渲染层必须走带 main-authority 探测的兼容入口').toContain(
+      'releasePsbOccupancyForEndedSession(',
+    );
+    const releaseSource = readSource('src/renderer/features/cc-agent/psbOccupancyRelease.ts');
+    expect(releaseSource, '兼容层缺少 main-authority 探测').toContain(
+      'psbMainOwnsSessionEndRelease(',
+    );
+
+    // 切号 / teardown：PSB 服务 dispose 必须同时清空待释放账本（旧账号的锁只能用旧身份归还）。
+    const indexSource = readSource('src/main/remote-workspace/index.ts');
+    const disposeAt = indexSource.indexOf('export function disposePsbRemoteService(): void {');
+    expect(disposeAt, 'index.ts 缺少 disposePsbRemoteService').toBeGreaterThanOrEqual(0);
+    const disposeBlock = indexSource.slice(disposeAt, indexSource.indexOf('\n}', disposeAt));
+    expect(disposeBlock, 'disposePsbRemoteService 未清空待释放账本').toContain(
+      'clearPendingWorkspaceReleases()',
     );
   });
 });

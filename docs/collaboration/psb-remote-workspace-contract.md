@@ -37,10 +37,11 @@
 - 关闭码：`4003` 鉴权、`4004` 未就绪（排队期 close reason 是整段 JSON，含
   `cause=ATTACH_TIMEOUT|BUFFER_OVERFLOW|SESSION_STOPPED|CLIENT_OFFLINE` 等）；握手 401/403 鉴权、
   404 不可见、409 未就绪/占用/离线、429 限流。
-- **就绪帧**：PSB 0.1.159+ 支持文本帧 `{"type":"agent-tunnel.ready",…}`（**opt-in**：客户端必须在
-  隧道 URL 显式带 `readyFrame=1`，默认不发；恰一条且在业务字节之前）。Cindy 的
-  `buildPsbTunnelUrl` **固定带 `readyFrame=1`**；等待它有超时（exec 1.2s、其它 5s），等不到按旧
-  行为继续；文本帧一律不进业务字节流。
+- **就绪帧**：PSB 0.1.159+ 提供文本帧 `{"type":"agent-tunnel.ready",…}`，0.1.160+ 起改为 **opt-in**
+  （客户端必须在隧道 URL 显式带 `readyFrame=1` 才发，默认不发；恰一条且在业务字节之前）。
+  Cindy 的 `buildPsbTunnelUrl` **固定带 `readyFrame=1`**；等待是**进程级能力探测**：第一次超时
+  （exec 1.2s、其它 5s）后判定该站点不支持、后续连接不再等待（老服务端的兜底行为就是直接发），
+  就绪期字节有界回放；文本帧一律不进业务字节流（2026-11-26 复审，见工程契约 §15.5）。
 - **cwd 归属**：远端进程的工作目录由 PSB 按工作区 / 会话记录决定，Cindy **不得下发虚拟路径**
   （`psb:` 的 cc-mgr `cwd='.'`、pi 不写 `cd`、codex 传 `.`）；`stream/status` 不暴露
   `workspacePath`（避免第二种事实源）。
@@ -78,9 +79,10 @@
 - **`errors=frame`（可选协商）**：不带参数时行为与旧版逐字节一致；带上后 PSB 先回 101 再发
   `stream.reject` 原因帧并按 `4409`（名额满）/ `4001`（会话停止）/ `4404`（会话不存在）等关闭。
   当前 Cindy **未启用**该参数（见 §3.2）。
-- **`stream/status`**：`capability` = 这台客户端能不能串流，`active` = 此刻有没有画面；
-  `desktopSession` / `reasonCode` / `lastErrorZh` 是加性字段，缺字段是「未知」而不是 `none`。
-  `active` 的语义是「中继里有没有订阅者」，Cindy 不把它改写成 true。
+- **`stream/status`**：`capability` = 这台客户端能不能串流，`active` = 此刻那台机器有没有在采集
+  （有没有可看的画面）；`desktopSession` / `reasonCode` / `lastErrorZh` 是加性字段，缺字段是
+  「未知」而不是 `none`。`active` 的语义是「当前是否有采集在跑」，**不是**「中继里有没有订阅者」；
+  Cindy 不把它改写成 true。
 - **4004 的两种含义**：未就绪（`reasonCode` / `desktopSession` 结构前缀优先）与慢订阅者被断开
   （只会在收到过帧之后出现）；Cindy 按「结构前缀 + 是否收过帧」归因。
 - **4008 = 心跳超时**：中继判定观看端已失联后的关闭。Cindy 归因成稳定 token
@@ -144,10 +146,12 @@
 - **跟进项（Cindy → PSB，2026-11-26）：放行 Cindy 的 `access/start` 入口**。PSB 拉起桌面访问的
   机器接口是**通用网页**路由 `POST /api/remote/workspaces/:id/access/start`（幂等 ensure，200/202/
   409），但 Cindy 的 Bearer 白名单是精确形状（只放行 `/api/cindy/remote/**`），这条对 Cindy 恒
-  **403**（PSB 台账记「Cindy 入口下一轮加」）。Cindy 已预埋 `ensureWorkspaceAccess`（订阅前尝试一次
-  + 轮询 `GET …/access` 到 running，403/404/超时一律**非致命**），**等 PSB 放行或提供
+  **403**（PSB 台账记「Cindy 入口下一轮加」）。Cindy 已预埋 `ensureWorkspaceAccess`（`POST …/access/start`
+  + 轮询 `GET …/access` 到 running；按能力位编排：只有 `open` 前台等待，`unknown` / `failed` /
+  `timeout` 后台预热、不阻塞订阅，403/404/超时一律**非致命**），**等 PSB
+  放行或提供
   `/api/cindy/remote/**` 命名空间下的等价入口即可生效，无需改 UI**。同时请给该接口的**最终 409
-  示例**（当前 `details` 形状按 `none`/`starting`/… 推断，见 `联动需求.md`）。
+  示例**（当前 `details` 形状按 `none`/`starting`/… 推断；该请求已并入本节跟进项）。
 
 ## 2. 跨仓确认项（稳定编号 `CINDY-RW-*`）
 
@@ -194,7 +198,9 @@
   `psbClient.test.ts`。
 - **版本控制检查（CINDY-RW-10，2026-11-26）已适配**：0.1.180 的 2xx `data.vcs`（advisory）被解析为
   非阻塞提示（查看详情 / 一键清理（二次确认）/ 继续）；旧版 409 `details.vcs` 保留兼容处置
-  （`retry` / 旧 `revert-*`）；无 force 分支，action 的 method/path/body 只经 main 校验后执行。
+  （`retry` / 旧 `revert-*`）；无 force 分支，action 的 method/path/body 由 main 的
+  kind → 固定目标表决定（本地拼 `encodeURIComponent(workspaceId)`），服务端下发的形状只用于
+  确认（方法 / pathname 不一致或形状越界整条丢弃）。
   证据入口：工程契约 §13.5；定向测试
   `shared/__tests__/psbWorkspaceVcs.test.ts`、`main/remote-workspace/__tests__/vcsNotice.test.ts`、
   `psbRemoteVcsService.test.ts`、`renderer/features/remote-workspace/vcs/__tests__/`。
@@ -224,7 +230,10 @@
 6. **Cindy 还不能自己拉起桌面访问（待 PSB 放行白名单）**：`ensureWorkspaceAccess` 已实现（幂等
    ensure + 轮询），但 PSB 只对 Cindy 放行 `/api/cindy/remote/**`，通用网页
    `POST /api/remote/workspaces/:id/access/start` 对 Cindy 恒 403；该尝试被设计成**非致命**，
-   用户下一步仍是「去 PSB 网页启动访问」。PSB 放行后无需改客户端。
+   用户下一步仍是「去 PSB 网页启动访问」。**能力位编排**（`GET …/access` 的结果写成工作区能力位：
+  只有 `open` 走前台等待，`unknown` / `failed` / `timeout` 只做后台预热、不阻塞订阅）已有单测，
+   但因为入口恒 403，**四个分支都没有真机证据**；PSB 放行后无需改客户端，补一次真机即可
+   （产品规则 §6 已按「单测级待真机」登记）。
 
 ### 3.3 未验证（真机 / 环境）
 

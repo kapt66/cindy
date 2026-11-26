@@ -29,6 +29,24 @@ function readText(value: unknown): string {
 }
 
 /**
+ * `directoryName` 是 PSB 侧**一个目录名**（用于拼虚拟工作目录 `/psb-remote/<name>`），
+ * 不是路径。history state 可能被旧版本写入或手改，**含 `/`、`\` 或 `..` 的值一律丢弃**
+ * （`null`）：否则虚拟目录会出现多余层级、`..` 还能让显示/匹配逻辑跑出前缀语义。
+ * 校验不过只丢掉这个展示字段，目标本身仍成立（调用方用工作区 id 兜底虚拟目录）。
+ */
+export function readPsbDirectoryName(value: unknown): string | null {
+  const text = readText(value);
+  if (!text) return null;
+  if (text === '.' || text === '..') return null;
+  if (text.includes('/') || text.includes('\\')) return null;
+  if (text.includes('..')) return null;
+  // 控制字符在路径/日志里都只会制造不可见歧义。
+  if (/[\u0000-\u001f\u007f]/.test(text)) return null;
+  if (text.length > 255) return null;
+  return text;
+}
+
+/**
  * 读交接载荷。`workspaceId` 必填（没有它无法占用/建会话）；展示字段可缺省——
  * 旧版本或手改的 history state 缺客户端名时，目标头退回「—」，但目标本身仍然成立。
  */
@@ -39,7 +57,7 @@ export function readPsbDraftRouteTarget(state: unknown): PsbDraftRouteTarget | n
   const record = raw as Record<string, unknown>;
   const workspaceId = readText(record.workspaceId);
   if (!workspaceId) return null;
-  const directoryName = readText(record.directoryName) || null;
+  const directoryName = readPsbDirectoryName(record.directoryName);
   return {
     workspaceId,
     clientId: readText(record.clientId),

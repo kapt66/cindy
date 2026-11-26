@@ -457,6 +457,9 @@ async function buildPiManagerDaemonCmd(
     env,
     envHash: launchHash,
     restart: true,
+    // cwd 归属显式写进契约：SSH 的 `piCmd` 自带 `cd <远端绝对路径> &&`，spawn cwd 与它无关，
+    // 所以声明 `command`（不向 daemon 要求任何 spawn 目录）。别再靠 daemon 的进程 cwd 隐式补。
+    cwdPolicy: 'command',
   });
   // 轮 15 缺口 5:isReattach 留日志 —— 诊断断链重连是「会话继续」(消息历史
   // 完整)还是「全新 spawn」(历史可能丢)的关键线索。

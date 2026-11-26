@@ -1,4 +1,4 @@
-import { commitContextRebuildWithPorts } from '../contextRebuildPersistence.js';
+import { commitContextRebuildWithPorts, type ContextRebuildReason } from '../contextRebuildPersistence.js';
 import { parseAgentMetaRecord, patchMessageAgentMetaWithResultRow, findVisibleToolUseMessageByAliasesRow,
   writeMessageContentRow, rollbackAssistantMessageRow, readVisiblePiUserEntry } from '../messageMutations.js';
 import type { MessageAgentMetaPatchResult, VisibleToolUseMessageLink } from '../messageMutations.js';
@@ -1212,12 +1212,7 @@ export function commitContextRebuild(
   sessionId: string,
   handoff: string,
   meta: {
-    reason:
-      | 'context-overflow'
-      | 'model-window-switch'
-      | 'pi-prompt-timeout'
-      | 'native-session-recovery'
-      | 'idle-gap';
+    reason: ContextRebuildReason;
     sourceUserClientId: string | null;
     sourceAgentKind?: 'cc' | 'codex' | 'pi';
     sourceModel?: string | null;

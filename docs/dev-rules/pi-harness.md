@@ -692,15 +692,27 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
     spawn pi，Cindy 手里的 `/psb-remote/<目录>` 是**本机虚拟路径**。`pi/ensure` 的 `cmd` 里拼
     `cd "<虚拟路径>"` 会让 `bash -c` 立即 `exit 1`（表象是 `pi process exited (code=null,
     signal=null)`）。因此 `buildPiLaunchCommand` 接受 `cwd: string | null`：`psb:` 传 `null`
-    （不写 `cd`，由宿主的 spawn cwd 决定），SSH / MCPR 保持原语义。判定走唯一分类器
-    `remoteSessionHostOwnsCwd`（`maker-host/remote-session-routing.ts`，内部即
-    `classifyRemoteSessionTransport`），不在钩子里手写 `startsWith('psb:')`；回归见
-    `piRemoteTransport.test.ts` 与 `pi-mcpr-remote.ts` 的注释。Codex 侧同一裁决见
-    `docs/dev-rules/psb-remote-session-transport.md` §2。
+    （不写 `cd`，由宿主的 spawn cwd 决定），SSH / MCPR 保持原语义。判定走能力表
+    `remoteSessionHostOwnsCwd`（`maker-host/remote-session-routing.ts`），不在钩子里手写
+    `startsWith('psb:')`；回归见 `piRemoteTransport.test.ts` 与 `pi-mcpr-remote.ts` 的注释。
+    Codex 侧同一裁决见 `docs/dev-rules/psb-remote-session-transport.md` §2。
+  - **`pi/ensure` 的 cwd 契约（2026-11-26 r7，显式化）**：`PiEnsureParams` 新增类型化
+    `cwdPolicy: 'host' | 'command' | 'explicit'`（可选 `cwd`，`'explicit'` 时必须给绝对且存在
+    的目录，否则 `INVALID_PARAMS` fail-closed，绝不把 pi 静默跑在 `/` 里）。daemon 侧唯一判定
+    点是 `resolvePiEnsureChildCwd`（`session-registry.ts`），**不再**由 registry 用进程 cwd /
+    启动目录隐式兜底；`spawn` 的 cwd 由它解析结果决定。各 transport 显式传：SSH / MCPR 传
+    `'command'`（`cmd` 自带 `cd <绝对路径>`，spawn cwd 与它无关，行为不变），PSB 传 `'host'`
+    （daemon 在其**启动工作区**里 spawn，宿主按 PSB 会话记录拉起 daemon）；缺省（旧客户端）
+    等价 `'host'`，保持兼容。回归：`packages/maker-pi-manager/src/__tests__/session-registry.test.ts`
+    的 cwdPolicy 三态用例。
+  - **归因码跟着 transport 走**：`pi-mcpr-remote.ts` 不再固定写 `[MCPR_PI_*]`；改用
+    `remoteTransportErrorCode(remoteHostId, code)` —— `psb:` 会话得到 `[PSB_PI_*]`、`mcpr:` 得到
+    `[MCPR_PI_*]`、SSH / 本地得到中性的 `[REMOTE_PI_*]`，文案只描述「远端没有暴露该运行时 /
+    能力」。PSB 会话上冒 `[MCPR_*]` 会把运维指向错误系统（审查 r7 P2）。
   - **二进制路径**:runtime 自己物化 pi。客户端解析顺序 =
     `CINDY_PI_AGENT_BIN`(runtime 注入,零协议新增)→ 实例 PATH 上的 `pi` → 与 SSH 安装布局
     同约定的 `$HOME/.xdt-server/v1/pi/pi`;三者都不可执行才抛
-    `[MCPR_PI_BINARY_MISSING]`(不静默回落本机路径)。
+    `[<TAG>_PI_BINARY_MISSING]`（`<TAG>` 随 transport，见上条；不静默回落本机路径）。
   - **有意不投影的 Cindy 能力**(都是「该 transport 没有对应通道」,不是新增拒绝):
     ① 控制端 in-process MCP bridge(ghost / cindy_memory / orca / 电脑驱动等)——
     agent-tunnel 只有正向字节流,没有 `-R` 反向转发(Claude 走的是 cc-mgr 自己的

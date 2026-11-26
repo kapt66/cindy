@@ -35,6 +35,7 @@ export type DbTxName =
   | 'projectAliases.replaceIdentity'
   | 'toolResults.compactSession'
   | 'session.agentSwitchFallback'
+  | 'session.remoteRebind'
   | 'context.rebuild'
   | 'message.insert'
   | 'message.updateContent'
@@ -398,6 +399,43 @@ export interface SessionAgentSwitchFallbackArgs {
   boundaryClientId: string;
   boundaryContent: string;
   updatedAt: number;
+}
+
+/**
+ * 远端会话透明重建（`psb:`）后的本地身份与上下文交接：**同一事务**里
+ *  1. 用 CAS 把 `remote_host_id` 换到重建出来的新远端会话；
+ *  2. 清掉旧原生会话绑定（新远端会话里不存在那个 vendor session）；
+ *  3. 追加隐藏的 `context_rebuild` 交接标记（下一次发送注入旧任务的上下文）。
+ *
+ * 三步必须原子：只改身份不交上下文时，UI 看起来「透明重连成功」而模型已经失忆
+ * （2026-11-26 审查 r7 P1）；只写交接不改身份时，交接会喂给旧的终态远端会话。
+ * 冲突（期间别的写入者先改了这行）时不写任何东西，调用方按库里现值继续。
+ */
+export interface SessionRemoteRebindArgs {
+  sessionId: string;
+  /** CAS：本地行此刻的远端身份必须仍是它（`null` = 本地会话）才写。 */
+  expectedRemoteHostId: string | null;
+  /** 重建出来的新远端身份（`psb:<PSB sessionId>`）。 */
+  remoteHostId: string;
+  /** 新远端会话所属工作区（PSB 权威来源；只作为诊断/交接备注，不落列）。 */
+  workspaceId: string;
+  /** `true` = 与身份一起清空 `sdk_session_id`（新远端会话不会认出旧 vendor session）。 */
+  clearNativeSession: boolean;
+  /**
+   * 与身份同事务写入的隐藏上下文重建标记；缺省 = 不写交接（例如只是换身份、
+   * 上层明确要求保留原生会话）。
+   */
+  marker?: {
+    id: string;
+    clientId: string;
+    content: string;
+    createdAt: number;
+  } | null;
+  updatedAt: number;
+}
+
+export interface SessionRemoteRebindResult {
+  status: 'persisted' | 'conflict';
 }
 
 /** 上下文超限后同一任务换干净原生会话：清 sdk 绑定并追加隐藏 context_rebuild。 */
@@ -1389,6 +1427,7 @@ export type DbTxArgsByName = {
   'projectAliases.replaceIdentity': ProjectAliasesReplaceIdentityArgs;
   'toolResults.compactSession': CompactSessionToolResultsArgs;
   'session.agentSwitchFallback': SessionAgentSwitchFallbackArgs;
+  'session.remoteRebind': SessionRemoteRebindArgs;
   'context.rebuild': ContextRebuildArgs;
   'message.insert': MessageInsertArgs;
   'message.updateContent': MessageUpdateContentArgs;
@@ -1489,6 +1528,7 @@ export type DbTxResultByName = {
   } | null;
   'toolResults.compactSession': CompactSessionToolResultsResult;
   'session.agentSwitchFallback': undefined;
+  'session.remoteRebind': SessionRemoteRebindResult;
   'context.rebuild': undefined;
   'message.insert': { changes: number };
   'message.updateContent': { changes: number };

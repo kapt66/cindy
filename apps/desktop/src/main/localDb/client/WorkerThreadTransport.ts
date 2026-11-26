@@ -500,6 +500,8 @@ function dispatchTransaction(readyDb, payload) {
       return compactSessionToolResults(readyDb, request.args);
     case 'session.agentSwitchFallback':
       return sessionAgentSwitchFallback(readyDb, request.args);
+    case 'session.remoteRebind':
+      return sessionRemoteRebind(readyDb, request.args);
     case 'context.rebuild':
       return contextRebuild(readyDb, request.args);
     case 'mcpApps.viewState.save':
@@ -745,6 +747,39 @@ function sessionAgentSwitchFallback(readyDb, args) {
         code: 'NOT_FOUND',
       });
     }
+  })();
+}
+
+// ⚠️ 与 worker/opHandlers/tx.ts 的同名事务保持一致。
+function sessionRemoteRebind(readyDb, args) {
+  const payload = asRecord(args, 'session.remoteRebind args');
+  const sessionId = expectString(payload.sessionId, 'sessionId');
+  const expectedRemoteHostId = nullableString(payload.expectedRemoteHostId);
+  const remoteHostId = expectString(payload.remoteHostId, 'remoteHostId');
+  const clearNativeSession = payload.clearNativeSession === true;
+  const updatedAt = expectNumber(payload.updatedAt, 'updatedAt');
+  const marker = payload.marker === undefined || payload.marker === null
+    ? null : asRecord(payload.marker, 'marker');
+  return readyDb.transaction(() => {
+    // 外层是 WORKER_CODE 模板串：SQL 里的单引号用双引号 JS 字符串包，不能在模板串里写
+    // 反斜杠转义单引号（模板串会把反斜杠吃掉，生成非法的 worker 代码）。
+    const result = readyDb.prepare(
+      "UPDATE sessions SET remote_host_id = ?, sdk_session_id = CASE WHEN ? = 1 THEN NULL ELSE sdk_session_id END, updated_at = ? WHERE id = ? AND ifnull(remote_host_id, '') = ifnull(?, '') AND status != 'deleted'",
+    ).run(remoteHostId, clearNativeSession ? 1 : 0, updatedAt, sessionId, expectedRemoteHostId);
+    if (result.changes !== 1) return { status: 'conflict' };
+    if (marker) {
+      readyDb.prepare(
+        "INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES (?, ?, ?, 'context_rebuild', ?, ?, ?)",
+      ).run(
+        expectString(marker.id, 'marker.id'),
+        expectString(marker.clientId, 'marker.clientId'),
+        sessionId,
+        expectString(marker.content, 'marker.content'),
+        expectNumber(marker.createdAt, 'marker.createdAt'),
+        expectNumber(marker.createdAt, 'marker.createdAt'),
+      );
+    }
+    return { status: 'persisted' };
   })();
 }
 

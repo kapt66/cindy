@@ -327,14 +327,6 @@ export function isCapturePassthroughKey(
   );
 }
 
-// 删除了两个无生产调用的早期导出（2026-11-26 独立审查）：
-//   - `isInputCaptureActive(fullscreen, focused)`：捕获态判据在生产里由采集 hook 的
-//     `captureRef = interactive && fullscreen`（还要叠加「输入通道存在」）单点决定，这个纯函数
-//     没有人调用，留着只会诱导后来者按两个条件各写一份；
-//   - `keyboardLockSupport(navigator)`：探测已被 `keyboardLockApiOf()` 覆盖（hook 直接判断
-//     `lock` 是否可调），再用一个包装函数判断「supported/unsupported」只会多一层重复。
-// 两者原来的单测一并删除，不保留只测死代码的用例。
-
 /* ============================== 6. Keyboard Lock ============================== */
 
 /**

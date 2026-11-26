@@ -25,45 +25,133 @@
  *    两条路由 PSB 都接受）。**读路径绝不订阅、绝不创建 PSB 会话、绝不占用工作区**；没有绑定
  *    （用户还没点过「启动」/ 重启后无记录）时桌面状态就是 `null`（未知）。
  *
- * ## 过渡兜底：只有旧 PSB 才回退到内部 Agent 会话
+ * ## 多窗口：所有「最近一次」都必须按 localSessionId 分桶（2026-11-26 独立审查）
+ *
+ * 管理页是**广播**面：`CONTEXT_CHANGED` 发给所有受信窗口，而每个窗口各自打开一个任务。
+ * 旧实现用两个全局量：
+ *
+ *   - 全局 `lastLocalSessionId`（最后一次 `context()` 入参）：窗口 B 读一次就改写了它，随后
+ *     窗口 A 的动作刷新出来的推送标成 B 的任务 —— A 会丢弃，B 会把它当成自己的工作区；
+ *   - 单一 `lastEmitted` 推送基线：A、B 交替读不同任务时基线互相覆盖，同一份上下文会被
+ *     反复当成「变了」/「没变」，推送要么丢要么错。
+ *
+ * 现在：
+ *   - `context()` 把入参固化到本次调用的局部变量，不再写任何全局「最近 id」；
+ *   - 推送基线与去重按 `localSessionId` 分桶（无任务线索的兜底桶单独一桶），
+ *     `emitIfChanged(context, localSessionId)` 显式带桶；
+ *   - **无任务线索的兜底桶（`localSessionId = null`）只建立基线、不广播**（2026-11-27 审查
+ *     s2 P1）：`CONTEXT_CHANGED` 是广播面，一个「没有任务」的上下文推到有任务的窗口会被当成
+ *     「当前任务的工作区变了」而覆盖页面状态。没有任务线索的调用方拿 invoke 的返回值即可；
+ *   - `refreshContextNow/Quietly` 由调用方传入 `{ localSessionId, workspaceId }`：刷新
+ *     发起窗口的桶 + 所有「上次解析到该工作区」的桶。不再读全局最近 id（ipc 层可以把
+ *     发起动作的 `localSessionId` 透传进来；不透传时按工作区匹配也能覆盖单窗口场景）。
+ *
+ * ## stale 闸门的新鲜度（写操作前）
+ *
+ * `KnownWorkspaceState` 带 `checkedAt`：`streamStart` 只在状态足够新时直接拒绝；过旧就先重新
+ * 解析一次（服务器恢复后点「启动」应该能用，而不是被十几分钟前的失败永久拦住）。
+ * 写路径的 PSB 失败也会**反向吸收**进闸门：`NOT_FOUND` / `FORBIDDEN` → `missing`，
+ * `PSB_UNREACHABLE` → `unavailable` —— 刚被 PSB 告知「工作区没了」之后不能还把它标成 live。
+ * 占位身份（`workspaceIdKnown: false`）用专门的 `staleReason: 'unknown-workspace'` 与
+ * 专门的失败码 / messageKey（`remoteWorkspace.admin.staleUnknownWorkspaceAction`）。
+ *
+ * ## 启发式匹配不落盘（持久化风险）
+ *
+ * 历史会话没有会话详情时，会用 `/psb-remote/<目录名>` 反查实时工作区列表（目录名 / title /
+ * clientPath basename）。这是**启发式**：同名目录在列表里唯一时才命中，但仍是猜测。猜对了
+ * 可以按 live 展示；**猜错了不能持久化**——否则这个任务以后永远指向别人的工作区。所以：
+ *   - 只有 `sessionStatus` 详情返回的 workspace id 才写 `会话→工作区` 映射；
+ *   - 目录 / title 命中的结果只留在内存（`lastWorkspaceRowById` 标 inferred，日志记
+ *     `inferred: true`），不写映射、不写快照；
+ *   - 之后用户点「启动」并在 PSB 上真的锁定成功，那一刻 PSB 已确认工作区存在，才落快照。
+ *
+ * ## 过渡回退（只有旧 PSB）：内部会话必须收尸
  *
  * 工作区级订阅端点是 PSB 0.1.172 新增的。旧服务端上这条路由不存在（404/405/`UNSUPPORTED`），
- * 此时**允许临时回退**到「内部 Agent 会话」充当观看端，但必须同时满足：
+ * 此时允许临时回退到「内部 Agent 会话」充当观看端，必须同时满足：
  *
- *   - 创建时显式传 `purpose: 'internal'`（PSB 默认不列进会话列表、不增加 `sessionCount`；
- *     其它值 PSB 会 400）；
+ *   - 创建时显式传 `purpose: 'internal'`（PSB 默认不列进会话列表、不增加 `sessionCount`）；
  *   - 标题写明内部用途（`PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`），**不伪装成用户任务**；
  *   - 记 warn 日志。
  *
+ * 旧实现只建会话、不收尸：创建成功但起观看端失败时内部会话留在 PSB 里；PSB 升级后旧的内部
+ * 会话也永远没人清。现在：
+ *   - 起观看端失败 → **best-effort `stopSession`** 回滚这条内部会话（失败只记 debug）；
+ *   - 记录本进程创建的 fallback 会话；**工作区级订阅成功**（说明服务端已支持新端点）或
+ *     绑定被判定失效时，按 TTL / 失效清理（不再被任何绑定引用即可清；仍被引用时等 TTL）。
+ *
  * 新端点可用时这条路径**永不**执行；其它失败（409 没有 running 桌面访问、鉴权、网络、可读
  * 业务错误）不触发回退 —— 那些不是「端点不存在」，静默建会话只会掩盖真实原因。
+ *
+ * ## 启动前的 `ensureWorkspaceAccess` 不是必经路径
+ *
+ * `ensureWorkspaceAccess` 是**可选增强**：Cindy 的 Bearer 目前未被 PSB 放行 `/api/remote/**`
+ * （403），所以它通常只会白等一次网络往返。旧实现把它 `await` 在订阅之前 —— 每次「启动」都
+ * 先付出最多 ~3s 的轮询预算，只为了记一条日志。
+ *
+ * 现在按**能力位**决定：
+ *   - `open`（上一次真的拉起到 running）：前台调用（它可能真的让订阅成功）；
+ *   - `closed`（Cindy 入口未开放）：本进程内 TTL 内直接跳过，不再白打；
+ *   - `unknown` / `failed` / `timeout`：**后台预热**，不阻塞订阅；
+ *   - 结果（含失败码 / PSB 原文）写进工作区能力状态，而不是只写日志；当它**直接导致用户点
+ *     「启动」失败**时，失败错误会带上这条可读原因（复用主失败的码，只补 message detail）。
  *
  * ## 三条不变式
  *
  * 1. **页面不写「猜测」**：读不到的桌面会话状态是 `null`（未知），**不是** `none`；读不到
  *    串流状态时 `STREAM_STATUS` 返回 `null` 而不是 `capable:false`。
  *    「不知道」被当成「不支持」会让按钮永久不可用，这正是本批要修的退化。
- * 2. **推送只在「刚拿到新事实」时发**：`CONTEXT_CHANGED` 的比较对象是完整上下文快照，
- *    值没变不发；main 不轮询 PSB（与 `push.ts` 的既有取舍同一条）。
- * 3. **失败归因保留 PSB 原话**：跨 IPC 的 `message` 只放 PSB 的可读原文或空串，不放 token /
- *    身份字段；桌面会话 id 与内部会话 id 都是 PSB 的、不是凭据。
+ * 2. **推送只在「刚拿到新事实」时发**：`CONTEXT_CHANGED` 的比较对象是该 `localSessionId`
+ *    桶的完整上下文快照，值没变不发；main 不轮询 PSB（与 `push.ts` 的既有取舍同一条）。
+ * 3. **失败归因保留 PSB 原话**：跨 IPC 的 `message` 只放 PSB 的可读原文或 `null`，
+ *    **不再写中文兜底句**（文案在 i18n，由渲染层按码选择）；不放 token / 身份字段；
+ *    桌面会话 id 与内部会话 id 都是 PSB 的、不是凭据。
  *
  * ## 固定信息快照与 stale 降级（2026-11-26 真机事故）
  *
  * 用户口径：工作区名称 / 模板 / 机器在会话启动时就是**固定信息**，不会变；但设备会掉线、
  * 工作区会被移除，所以不能只靠服务器即时读取。实现：
  *
- *   - 实时读成功（`context` / `createSession` / 占用成功，见 `index.ts` 与
- *     `adminRecentRuntime.ts`）→ 把固定字段落盘成快照（值不变 0 次写）；
+ *   - 实时读成功（`context` / `createSession` / 占用成功）→ 把固定字段落盘成快照（值不变 0 次写）；
  *   - 读不到（断网 / 被删 / 当前任务的 PSB 会话读不到）→ **仍返回上下文**，`stale: true`
  *     + `availability`（`missing` = 列表读成功但工作区不在 / `unavailable` = 读不到 PSB），
  *     状态类字段（占用 / 桌面会话）留空由渲染层显示「无法获取」；
- *   - 历史会话（快照 & 会话映射都缺）→ 用本机会话行的 `title` + `/psb-remote/<目录>` 种子出
- *     占位上下文（`workspaceIdKnown: false`，写操作一律拒绝）；
+ *   - 历史会话（快照 & 会话映射都缺）→ 用虚拟工作目录的目录名种子出占位上下文
+ *     （`workspaceIdKnown: false`，写操作一律拒绝）；
  *   - 只有本机**完全没有线索**（没有快照、没有会话行种子）才返回 `context: null`。
  *
  * stale 时写操作（启动串流等）由 `streamStart` 直接给可行动失败（工作区已不可见 / 连不上），
  * 不再发一次注定失败的 PSB 写请求。
+ *
+ * ## 并发：start / stop 按工作区串行 + 代次
+ *
+ * 用户可以在「启动」还在路上时点「停止」（或反过来）。旧实现让两条动作并发跑，结果是
+ * 「停止已经返回，随后启动完成的串流又起来了」。现在：
+ *   - 同一工作区的 start / stop 进同一条串行队列；
+ *   - `streamStop` 在**入队前**推进该工作区的操作代次；
+ *   - `streamStart` 记下入队时的代次，落定（拿到启动结果）后发现代次变了就**自己停掉**
+ *     刚起的串流并返回未启动状态，随后排队的 stop 视为已完成、不重复停。
+ * 这条互斥在服务内部完成，ipc / index 不需要额外的 helper。
+ *
+ * ## 多窗口：一条观看连接，多个 owner（2026-11-27 复审 P1）
+ *
+ * 进程内只有一个串流观看端实例（`streamViewer`），`startStream` 的语义是**替换**该会话的旧连接
+ * 并补发 `closed(superseded)`。管理页是多窗口面：两个窗口可以打开同一个工作区各自点「启动」。
+ * 旧实现每次都真的重连，于是第二个窗口启动会换掉第一个窗口的连接 —— 第一个窗口被判「已终止」
+ * 回 idle，之后它点「停止」也不再发 `adminStreamStop`（已不在观看态），owner 引用计数永不归零，
+ * 最后一个窗口停止时流不停。
+ *
+ * 现在的语义：
+ *
+ * - `streamStart` 发现该工作区**已有健康观看连接**（绑定上的 `viewerActive`）时**复用**：返回
+ *   当前状态、不重连、不产生 `superseded`；这次启动只表示多一个观看者（owner +1 在 ipc 层）。
+ * - 连接真的断了（`closed` / `error` 事件 / 显式停止）才清掉 `viewerActive`，下次启动重新
+ *   `startStream`。
+ * - 本端**内部收尸**（绑定失效后重建前的旧连接、代次竞态里的自停）补发的
+ *   `closed(client-stopped)` 只更新本端状态、**不转发**（`quietStreamStops`）：它不是用户动作，
+ *   广播出去会把别的窗口误判成「串流被关闭」。
+ * - owner 账本在 ipc 层（`streamOwners.ts`）：`start` +1、`stop` / 窗口销毁 / 渲染层收到
+ *   `closed`/`error` 后的「仅释放 owner」请求 -1，**归零才停流**。
  *
  * ## 纯度
  *
@@ -80,6 +168,7 @@ import type {
   PsbSessionStatusResult,
   PsbSessionStreamStatus,
   PsbStreamEvent,
+  PsbWorkspaceState,
   PsbWorkspaceStreamSubscription,
 } from '../../shared/psb-remote-workspace.js';
 import { parsePsbRemoteHostId } from '../../shared/psb-remote-workspace.js';
@@ -140,6 +229,9 @@ export interface PsbAdminRemotePort {
    * 生产 = `PsbRemoteService.ensureWorkspaceAccess`：Cindy 的 Bearer 目前未被 PSB 放行
    * `/api/remote/**`（403），所以通常返回 `reason:'cindy-entry-not-open'`，此时订阅照常进行，
    * 由 409 给出可行动文案。旧装配 / 单测 fake 可以完全没有这个方法（可选端口）。
+   *
+   * 它**不在启动的必经路径上**（见文件头「ensureWorkspaceAccess 不是必经路径」）：能力位为
+   * open 时前台调用，其余情况后台预热。
    */
   ensureWorkspaceAccess?(workspaceId: string): Promise<PsbWorkspaceAccessEnsureOutcome>;
   /**
@@ -147,6 +239,13 @@ export interface PsbAdminRemotePort {
    * `purpose: 'internal'`（见文件头）。
    */
   createSession(input: PsbCreateSessionRequest): Promise<PsbCreateSessionResult>;
+  /**
+   * **结束**一条 PSB 会话（`DELETE …/sessions/:id`）。管理页只用它给过渡回退创建的内部
+   * Agent 会话收尸（旧实现建了就不管，PSB 升级后那些会话永远留着）。
+   *
+   * 可选端口：旧装配 / 单测 fake 没有它时跳过（best-effort，失败只记日志）。
+   */
+  stopSession?(sessionId: string): Promise<void>;
   getStreamStatus(sessionId: string): Promise<PsbSessionStreamStatus>;
   startStream(sessionId: string): Promise<PsbSessionStreamStatus>;
   stopStream(sessionId: string): Promise<void>;
@@ -198,12 +297,23 @@ export interface PsbWorkspaceAdminServiceDeps {
    * 正常路径（工作区级订阅）不需要它。
    */
   createRequestId(): string;
+  /** 可注入时钟（单测用固定时钟验证 TTL / 时间戳；缺省 `Date.now`）。 */
+  now?(): number;
+}
+
+/** 启动 / 停止 / 状态读数的可选入参：发起动作的窗口任务 id（多窗口推送分桶用）。 */
+export interface PsbAdminActionInput {
+  /** 发起这次动作的窗口当前打开的任务；只用于刷新该窗口的上下文桶。 */
+  readonly localSessionId?: string | null;
 }
 
 export interface PsbWorkspaceAdminService {
   context(input: { localSessionId?: string | null }): Promise<PsbWorkspaceAdminContextResult>;
-  streamStart(workspaceId: string): Promise<PsbWorkspaceAdminStreamStartResult>;
-  streamStop(workspaceId: string): Promise<void>;
+  streamStart(
+    workspaceId: string,
+    input?: PsbAdminActionInput,
+  ): Promise<PsbWorkspaceAdminStreamStartResult>;
+  streamStop(workspaceId: string, input?: PsbAdminActionInput): Promise<void>;
   /**
    * 读工作区级串流状态。
    *
@@ -211,7 +321,10 @@ export interface PsbWorkspaceAdminService {
    * 工作区**。没有绑定（用户还没点过「启动」）或 PSB 读不到时返回 `status: null`（不抛错，
    * `null` ≠ `capable:false`）。返回值带 `viewerSessionId`（加性；只来自内存绑定 / 本机记录）。
    */
-  streamStatus(workspaceId: string): Promise<PsbWorkspaceAdminStreamStatusResult>;
+  streamStatus(
+    workspaceId: string,
+    input?: PsbAdminActionInput,
+  ): Promise<PsbWorkspaceAdminStreamStatusResult>;
   /**
    * 转发一条键鼠输入到该工作区绑定的观看端 WS。
    *
@@ -237,6 +350,20 @@ interface ViewerBinding {
   readonly sessionId: string;
   /** 最近一次读到的串流状态（事件 / 显式读数都会更新它）。 */
   status: PsbWorkspaceAdminStreamStatus | null;
+  /**
+   * 本端**是否有一条健康观看连接**（`remote().startStream` 成功、此后没有 `closed` / `error`）。
+   *
+   * 为什么需要它（2026-11-27 复审 P1「多窗口误杀」）：`streamViewer.start` 的语义是
+   * **原子替换**旧连接并补发 `closed(superseded)`。多窗口共用同一条进程内观看端，第二个窗口
+   * 点「启动」若直接再调 `startStream`，第一个窗口就会收到 superseded 而回 idle、并且再也不会
+   * 发 `adminStreamStop`（它已不在观看态）—— owner 引用计数泄漏，最后一个窗口停止时流不停。
+   * 所以启动路径先看这个标记：**有健康连接就复用**（不重连、不产生 superseded），只把 owner
+   * 计数加一；连接真的断了（`closed` / `error` 事件）才重新 `startStream`。
+   *
+   * 语义边界：它只表示「那一条观看连接还在」，不是 PSB 的 `active`（有没有画面仍以
+   * `status.active` 为准，见文件头）。
+   */
+  viewerActive: boolean;
 }
 
 /** 工作区实时解析结果（PSB 行可用）。 */
@@ -246,6 +373,12 @@ interface ResolvedWorkspaceLive {
   readonly source: PsbWorkspaceAdminContextSource;
   /** 解析时 PSB 给的可读失败原因（只在兜底到缓存时用于解释）。 */
   readonly failureMessageZh: string | null;
+  /**
+   * 是不是按目录名 / title **启发式**匹配出来的（不是会话详情 / 已知 id 的权威结果）。
+   *
+   * 启发式结果只用于这次展示：不写「最近使用」与固定信息快照（见文件头）。
+   */
+  readonly inferred: boolean;
 }
 
 /**
@@ -263,13 +396,15 @@ interface ResolvedWorkspaceStale {
   readonly title: string;
   readonly templateTitle: string | null;
   readonly clientName: string;
-  readonly clientOnline: boolean | null;
   readonly directoryName: string | null;
-  readonly state: string | null;
+  /** PSB 工作区状态词；未知 / 旧 PSB 没给时 `null`（不再伪装成某个词）。 */
+  readonly state: PsbWorkspaceState | null;
   /** 固定信息快照的落盘时间（ISO）；会话行种子没有快照，为 `null`。 */
   readonly snapshotSavedAt: string | null;
   readonly workspaceIdKnown: boolean;
   readonly failureMessageZh: string | null;
+  /** 这次降级解析背后 PSB 给的失败形状（码 + 原文），写操作闸门据此给专用失败码。 */
+  readonly failure: PsbRemoteFailure | null;
 }
 
 type ResolvedWorkspace = ResolvedWorkspaceLive | ResolvedWorkspaceStale;
@@ -277,14 +412,17 @@ type ResolvedWorkspace = ResolvedWorkspaceLive | ResolvedWorkspaceStale;
 type WorkspaceLookup =
   | { readonly kind: 'found'; readonly workspace: PsbRemoteWorkspace }
   | { readonly kind: 'missing' }
-  | { readonly kind: 'failed'; readonly failureMessageZh: string | null };
+  | { readonly kind: 'failed'; readonly failure: PsbRemoteFailure };
 
 /** 管理页在内存里记住的「这个工作区上次解析结果」，给写操作闸门用。 */
 interface KnownWorkspaceState {
   readonly availability: 'live' | 'unavailable' | 'missing';
   readonly staleReason: PsbWorkspaceAdminStaleReason | null;
   readonly workspaceIdKnown: boolean;
-  readonly failureMessageZh: string | null;
+  /** PSB 的失败形状（没读到时为 `null`）：写闸门的失败码 / 原文都从这里来。 */
+  readonly failure: PsbRemoteFailure | null;
+  /** 这次结论是什么时候得出的（`now()` 毫秒）。过旧时 `streamStart` 会重新解析一次。 */
+  readonly checkedAt: number;
 }
 
 /**
@@ -300,8 +438,65 @@ type BindingProbe =
   | { readonly kind: 'dead'; readonly failure: PsbRemoteFailure }
   | { readonly kind: 'failed'; readonly failure: PsbRemoteFailure; readonly error: unknown };
 
+/**
+ * 一个 `localSessionId` 的推送桶。
+ *
+ * 多窗口各自打开不同任务时，各桶的上下文完全不同；推送基线必须按桶保存，否则 A/B 交替读取
+ * 会互相把对方的值当成「上一次」。`lastWorkspaceId` 只用于「按工作区刷新」时找到该刷哪些桶。
+ */
+interface ContextBucket {
+  readonly key: string;
+  readonly localSessionId: string | null;
+  /** 最近一次发出的上下文序列化值；`undefined` = 还没建立基线（首次只记不发）。 */
+  lastEmitted: string | undefined;
+  /** 最近一次解析到的真实工作区 id（占位身份 / 空上下文为 `null`）。 */
+  lastWorkspaceId: string | null;
+}
+
+/** 「尽力拉起桌面访问」的能力位（见文件头）。 */
+type AccessEnsureState = 'unknown' | 'open' | 'closed' | 'failed' | 'timeout';
+
+interface AccessEnsureCapability {
+  readonly state: AccessEnsureState;
+  readonly checkedAt: number;
+  /** 失败时 PSB 的形状（`closed` 也带 403/404 的形状，便于诊断）。 */
+  readonly failure: PsbRemoteFailure | null;
+}
+
+/** 过渡回退创建的内部 Agent 会话（用于回滚 / TTL 清理）。 */
+interface FallbackSessionRecord {
+  readonly workspaceId: string;
+  readonly createdAt: number;
+}
+
+/** 触发上下文重读的目标（显式传，不再读全局「最近 id」）。 */
+interface AdminRefreshTarget {
+  /** 发起这次动作的窗口任务（只刷新它自己的桶）。 */
+  readonly localSessionId?: string | null;
+  /** 刷新所有「上次解析到这个工作区」的桶。 */
+  readonly workspaceId?: string | null;
+}
+
 /** 缓存上限：工作区级别的内存表也要有界（见工程约定 §8.4）。 */
 const WORKSPACE_CACHE_LIMIT = 16;
+
+/** 多窗口推送桶的上限（同时打开的不同任务上下文；超过淘汰最久没读的）。 */
+const CONTEXT_BUCKET_LIMIT = 8;
+
+/** 过渡回退内部会话的容量上限（同一进程不会同时给很多工作区做回退）。 */
+const FALLBACK_SESSION_LIMIT = 8;
+
+/** 写操作闸门对「工作区能不能写」的信任窗口：过旧就先重新解析，而不是拿旧结论永久拦。 */
+const WORKSPACE_STATE_TRUST_MS = 15_000;
+
+/** 「Cindy 拉起入口未开放」能力位的重新探测窗口（避免每次启动都白等一次 403）。 */
+const ACCESS_ENSURE_CAPABILITY_TTL_MS = 10 * 60_000;
+
+/** 过渡回退内部会话的兜底存活上限（仍被绑定引用时，超过它也会被清理）。 */
+const FALLBACK_SESSION_TTL_MS = 30 * 60_000;
+
+/** 无任务线索的兜底桶 key（与正常 localSessionId 不可能撞）。 */
+const NULL_CONTEXT_BUCKET_KEY = '\u0000no-local-session';
 
 function normalizedId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -415,28 +610,49 @@ function psbPathBasename(path: string | null | undefined): string {
   return parts[parts.length - 1]?.trim() ?? '';
 }
 
+/** 这个工作区状态是否允许写操作（PSB 事实 + 真 id）。 */
+function workspaceStateIsWritable(state: KnownWorkspaceState): boolean {
+  return state.availability === 'live' && state.workspaceIdKnown;
+}
+
 /**
  * stale / 占位身份下写操作的可行动失败（`streamStart` 的闸门）。
  *
- * 为什么不放行再去打 PSB：工作区已不可见时那只会得到一条 404/网络错误，用户看到的是
- * 「操作失败」一类不可行动的话；这里直接说清「已经看不到这个工作区」或「暂时连不上」，
- * 并保留 PSB 原话做诊断。渲染层还会按 `availability` 先给本地化文案，这是 main 侧兜底。
+ * 三种状态给三条**不同的码**（渲染层按码选 i18n 文案，见 `PSB_IPC_FAILURE_MESSAGE_KEYS`）：
+ *   - 占位身份（`workspaceIdKnown:false`）：`WORKSPACE_ID_UNKNOWN` —— 本机只有历史线索，
+ *     重试也没用，要重新打开一个远程工作区任务；
+ *   - 工作区已不可见：`WORKSPACE_MISSING` —— 换工作区 / 找管理员；
+ *   - 读不到 PSB：`WORKSPACE_UNREACHABLE` —— 查网络后重试。
+ * `message` 只放 PSB 原文（`null` = 没有），**不再自写中文兜底**。
  */
 function staleWorkspaceActionFailure(state: KnownWorkspaceState): PsbClientError {
-  const missing = state.availability === 'missing';
-  const detail = state.failureMessageZh?.trim() || null;
+  const detail = state.failure?.message?.trim() || null;
+  if (!state.workspaceIdKnown) {
+    return new PsbClientError(
+      {
+        code: 'WORKSPACE_ID_UNKNOWN',
+        messageKey: 'remoteWorkspace.admin.staleUnknownWorkspaceAction',
+        message: detail,
+      },
+      null,
+    );
+  }
+  if (state.availability === 'missing') {
+    return new PsbClientError(
+      {
+        code: 'WORKSPACE_MISSING',
+        messageKey: 'remoteWorkspace.admin.staleMissingAction',
+        message: detail,
+      },
+      null,
+    );
+  }
   return new PsbClientError(
-    missing
-      ? {
-          code: 'NOT_FOUND',
-          messageKey: 'remoteWorkspace.error.notFound',
-          message: detail ?? '这个远程工作区已不可见（可能已被删除或没有访问权限），无法继续操作。',
-        }
-      : {
-          code: 'PSB_UNREACHABLE',
-          messageKey: 'remoteWorkspace.error.unreachable',
-          message: detail ?? '暂时连不上这个远程工作区（网络或 PSB 不可达），请检查网络后重试。',
-        },
+    {
+      code: 'WORKSPACE_UNREACHABLE',
+      messageKey: 'remoteWorkspace.admin.staleUnavailableAction',
+      message: detail,
+    },
     null,
   );
 }
@@ -444,32 +660,49 @@ function staleWorkspaceActionFailure(state: KnownWorkspaceState): PsbClientError
 export function createPsbWorkspaceAdminService(
   deps: PsbWorkspaceAdminServiceDeps,
 ): PsbWorkspaceAdminService {
+  const clock = deps.now ?? (() => Date.now());
+
   /** 工作区 id → 观看端绑定。 */
   const bindings = new Map<string, ViewerBinding>();
   /** 工作区 id → 进行中的「拿到可用绑定」（并发 start 共享一次订阅 / 过渡回退创建）。 */
   const ensureInFlight = new Map<string, Promise<ViewerBinding>>();
   /** 工作区 id → 最近一次解析出的可信度（写操作闸门用：stale / 占位身份时直接给可行动失败）。 */
   const lastWorkspaceState = new Map<string, KnownWorkspaceState>();
-  /** 工作区 id → 最近一次读到的工作区行（PSB 读不到时保留最后一次快照）。 */
-  const lastWorkspaceRowById = new Map<string, PsbRemoteWorkspace>();
+  /** 工作区 id → 最近一次读到的工作区行 + 它是不是目录 / title 启发式的猜测（不落盘）。 */
+  const lastWorkspaceRowById = new Map<
+    string,
+    { readonly row: PsbRemoteWorkspace; readonly inferred: boolean }
+  >();
   /** 工作区 id → 最近一次串流状态（来自显式读数或串流事件）。 */
   const lastStatusByWorkspace = new Map<string, PsbWorkspaceAdminStreamStatus>();
+  /** localSessionId 分桶的推送基线（多窗口，见文件头）。 */
+  const contextBuckets = new Map<string, ContextBucket>();
+  /** 过渡回退创建的内部 Agent 会话（用于回滚 / TTL 清理，见文件头）。 */
+  const fallbackSessions = new Map<string, FallbackSessionRecord>();
+  /** 「拉起桌面访问」的能力位（按工作区；见文件头）。 */
+  const accessEnsureCapabilityByWorkspace = new Map<string, AccessEnsureCapability>();
+  /** 进行中的「尽力拉起桌面访问」（同一工作区不叠加请求）。 */
+  const accessEnsureInFlight = new Map<string, Promise<void>>();
+  /** 按工作区的串行队列尾部：start / stop 同一工作区不并发。 */
+  const workspaceOperationTail = new Map<string, Promise<void>>();
+  /** 按工作区的操作代次：`streamStop` 入队前 +1；`streamStart` 落定后发现它变了就自停。 */
+  const workspaceGeneration = new Map<string, number>();
+  /** 已经被「代次变化」自动停掉的代次（排队的 stop 看到它就不重复停一次）。 */
+  const selfStoppedGeneration = new Map<string, number>();
 
   let currentRemote: PsbAdminRemotePort | null = null;
   let unsubscribeStream: (() => void) | null = null;
-  /** 最近一次 `context()` 的入参：串流动作后按它重新解析并推送（页面是「单页」语义）。 */
-  let lastLocalSessionId: string | null = null;
-  /** 最近一次发出的上下文序列化值；`undefined` = 还没建立基线（首次只记不发）。 */
-  let lastEmitted: string | undefined;
-  /** `CONTEXT_CHANGED` 的合并窗口：串流事件可能连发，重读不叠加（§8.6）。 */
+  /** 待重读的桶：key → 该桶的 localSessionId（合并窗口，见工程约定 §8.6）。 */
+  const refreshPending = new Map<string, string | null>();
   let refreshInFlight: Promise<void> | null = null;
-  let refreshPending = false;
 
   function remote(): PsbAdminRemotePort {
     const next = deps.resolveRemote();
     if (next !== currentRemote) {
       // 账号边界换了服务实例：旧绑定与旧订阅全部失效（旧实例的 socket 已随 dispose 断开）。
-      resetState();
+      // 首次装配（currentRemote === null）不能走清理：那时可能已经有排队中的动作，
+      // 清掉按工作区的串行队列会让同一工作区的 start / stop 失去互斥。
+      if (currentRemote !== null) resetState();
       currentRemote = next;
       unsubscribeStream = next.onStreamEvent(handleStreamEvent);
       deps.log.debug('psb admin: bound to a new remote service instance');
@@ -489,9 +722,91 @@ export function createPsbWorkspaceAdminService(
     lastWorkspaceState.clear();
     lastWorkspaceRowById.clear();
     lastStatusByWorkspace.clear();
-    lastEmitted = undefined;
+    contextBuckets.clear();
+    fallbackSessions.clear();
+    accessEnsureCapabilityByWorkspace.clear();
+    accessEnsureInFlight.clear();
+    workspaceOperationTail.clear();
+    workspaceGeneration.clear();
+    selfStoppedGeneration.clear();
+    refreshPending.clear();
     refreshInFlight = null;
-    refreshPending = false;
+  }
+
+  /* ------------------------------ 推送桶 ------------------------------ */
+
+  function bucketKeyFor(localSessionId: string | null): string {
+    return localSessionId ?? NULL_CONTEXT_BUCKET_KEY;
+  }
+
+  /** 取（或建）一个 localSessionId 的推送桶；访问顺序即 LRU。 */
+  function contextBucketFor(localSessionId: string | null): ContextBucket {
+    const key = bucketKeyFor(localSessionId);
+    const existing = contextBuckets.get(key);
+    if (existing) {
+      contextBuckets.delete(key);
+      contextBuckets.set(key, existing);
+      return existing;
+    }
+    const bucket: ContextBucket = {
+      key,
+      localSessionId,
+      lastEmitted: undefined,
+      lastWorkspaceId: null,
+    };
+    rememberBounded(contextBuckets, key, bucket, CONTEXT_BUCKET_LIMIT);
+    return bucket;
+  }
+
+  /**
+   * 值没变不发推送；第一次只建立基线（invoke 的返回值本身就是这一次的事实）。
+   *
+   * 基线与去重**按 localSessionId 分桶**：不同窗口各自有一份「上次发出的上下文」，
+   * 载荷里的 `localSessionId` 必须与桶一致（渲染层按它过滤）。
+   *
+   * **无任务线索的兜底桶（`localSessionId = null`）只更新基线、不推送**（2026-11-27 审查 s2 P1）：
+   * `CONTEXT_CHANGED` 是广播面，一个「没有任务」的上下文推到所有窗口后，有任务窗口会把它当成
+   * 「当前任务的工作区变了」而覆盖自己的页面状态。没有任务线索的调用方本来就有 invoke 的
+   * 返回值（`context()` / `streamStart()` / `streamStatus()` 都返回上下文），不需要推送。
+   */
+  function emitIfChanged(
+    context: PsbWorkspaceAdminContext | null,
+    localSessionId: string | null,
+    resolvedWorkspaceId: string | null,
+  ): void {
+    const bucket = contextBucketFor(localSessionId);
+    bucket.lastWorkspaceId = resolvedWorkspaceId;
+    const serialized = JSON.stringify(context);
+    const previous = bucket.lastEmitted;
+    bucket.lastEmitted = serialized;
+    if (previous === undefined || previous === serialized) return;
+    if (bucket.localSessionId === null) {
+      // 兜底桶不推送：见上面的方法注释（只保留基线，避免跨窗口覆盖）。
+      return;
+    }
+    deps.emitContextChanged({ context, localSessionId: bucket.localSessionId });
+  }
+
+  /** 这次刷新要重读哪些桶（显式目标，不读全局最近 id）。 */
+  function collectRefreshBuckets(target: AdminRefreshTarget): ContextBucket[] {
+    const keys = new Set<string>();
+    if (target.localSessionId !== undefined) {
+      const localSessionId = normalizedId(target.localSessionId);
+      const key = bucketKeyFor(localSessionId);
+      if (contextBuckets.has(key)) keys.add(key);
+    }
+    const workspaceId = normalizedId(target.workspaceId ?? null);
+    if (workspaceId) {
+      for (const bucket of contextBuckets.values()) {
+        if (bucket.lastWorkspaceId === workspaceId) keys.add(bucket.key);
+      }
+    }
+    const buckets: ContextBucket[] = [];
+    for (const key of keys) {
+      const bucket = contextBuckets.get(key);
+      if (bucket) buckets.push(bucket);
+    }
+    return buckets;
   }
 
   /* ------------------------------ 工作区解析 ------------------------------ */
@@ -505,10 +820,9 @@ export function createPsbWorkspaceAdminService(
    * 历史事实，页面要继续显示（stale 口径，见文件头），下一次解析也还要靠映射找回这条快照。
    */
   function forgetWorkspaceLocally(workspaceId: string): void {
-    bindings.delete(workspaceId);
+    forgetBinding(workspaceId);
     lastStatusByWorkspace.delete(workspaceId);
     lastWorkspaceRowById.delete(workspaceId);
-    deps.store.forgetDesktopSession(workspaceId);
   }
 
   async function lookupWorkspace(workspaceId: string): Promise<WorkspaceLookup> {
@@ -523,7 +837,7 @@ export function createPsbWorkspaceAdminService(
         workspaceId,
         code: failure.code,
       });
-      return { kind: 'failed', failureMessageZh: failure.message };
+      return { kind: 'failed', failure };
     }
   }
 
@@ -534,36 +848,64 @@ export function createPsbWorkspaceAdminService(
       title: workspace.title,
       templateTitle: workspace.templateTitle,
       clientName: workspace.clientName,
-      clientOnline: workspace.clientOnline,
       directoryName: workspace.directoryName,
-      state: workspace.state,
     });
   }
 
-  /** 实时解析成功：刷新内存行、固定信息快照与「写操作可信度」表。 */
+  /** 记录一次写操作闸门用的工作区状态（`checkedAt` 用注入时钟）。 */
+  function setWorkspaceState(
+    workspaceId: string,
+    state: Omit<KnownWorkspaceState, 'checkedAt'>,
+  ): void {
+    lastWorkspaceState.set(workspaceId, { ...state, checkedAt: clock() });
+  }
+
+  /**
+   * 实时解析成功：刷新内存行、固定信息快照与「写操作可信度」表。
+   *
+   * @param options.persist 是否落盘快照 / 最近使用（**目录 / title 启发式命中时传 `false`**）。
+   * @param options.inferred 这次结果来自启发式匹配（只留内存，日志记 inferred）。
+   */
   function liveResolved(
     workspace: PsbRemoteWorkspace,
     source: PsbWorkspaceAdminContextSource,
-    failureMessageZh: string | null = null,
+    options: {
+      readonly persist?: boolean;
+      readonly inferred?: boolean;
+      readonly failureMessageZh?: string | null;
+    } = {},
   ): ResolvedWorkspaceLive {
-    rememberBounded(lastWorkspaceRowById, workspace.id, workspace);
-    rememberSnapshotFor(workspace);
-    lastWorkspaceState.set(workspace.id, {
+    const inferred = options.inferred === true;
+    rememberBounded(lastWorkspaceRowById, workspace.id, { row: workspace, inferred });
+    if (options.persist !== false) rememberSnapshotFor(workspace);
+    setWorkspaceState(workspace.id, {
       availability: 'live',
       staleReason: null,
       workspaceIdKnown: true,
-      failureMessageZh: null,
+      failure: null,
     });
-    return { kind: 'live', workspace, source, failureMessageZh };
+    if (inferred) {
+      deps.log.info(
+        'psb admin: matched a workspace by directory/title heuristic; keeping it in memory only',
+        { workspaceId: workspace.id, inferred: true },
+      );
+    }
+    return {
+      kind: 'live',
+      workspace,
+      source,
+      failureMessageZh: options.failureMessageZh ?? null,
+      inferred,
+    };
   }
 
   /** 记录 stale 解析结果（写操作闸门据此直接拒绝，不再打一次注定失败的 PSB 写请求）。 */
   function noteStaleState(resolved: Omit<ResolvedWorkspaceStale, 'kind'>): ResolvedWorkspaceStale {
-    lastWorkspaceState.set(resolved.workspaceId, {
+    setWorkspaceState(resolved.workspaceId, {
       availability: resolved.availability,
       staleReason: resolved.staleReason,
       workspaceIdKnown: resolved.workspaceIdKnown,
-      failureMessageZh: resolved.failureMessageZh,
+      failure: resolved.failure,
     });
     return { kind: 'stale', ...resolved };
   }
@@ -574,7 +916,7 @@ export function createPsbWorkspaceAdminService(
     source: PsbWorkspaceAdminContextSource,
     availability: 'unavailable' | 'missing',
     staleReason: PsbWorkspaceAdminStaleReason,
-    failureMessageZh: string | null,
+    failure: PsbRemoteFailure | null,
   ): ResolvedWorkspaceStale {
     return noteStaleState({
       workspaceId: snapshot.workspaceId,
@@ -584,12 +926,12 @@ export function createPsbWorkspaceAdminService(
       title: snapshot.title,
       templateTitle: snapshot.templateTitle,
       clientName: snapshot.clientName,
-      clientOnline: snapshot.clientOnline,
       directoryName: snapshot.directoryName,
-      state: snapshot.state,
+      state: null,
       snapshotSavedAt: snapshot.savedAt,
       workspaceIdKnown: true,
-      failureMessageZh,
+      failureMessageZh: failure?.message ?? null,
+      failure,
     });
   }
 
@@ -600,7 +942,7 @@ export function createPsbWorkspaceAdminService(
   function staleFromCachedRow(
     row: PsbRemoteWorkspace,
     source: PsbWorkspaceAdminContextSource,
-    failureMessageZh: string | null,
+    failure: PsbRemoteFailure | null,
   ): ResolvedWorkspaceStale {
     return noteStaleState({
       workspaceId: row.id,
@@ -610,12 +952,12 @@ export function createPsbWorkspaceAdminService(
       title: row.title,
       templateTitle: row.templateTitle?.trim() || null,
       clientName: row.clientName,
-      clientOnline: row.clientOnline,
       directoryName: row.directoryName ?? null,
       state: row.state,
       snapshotSavedAt: null,
       workspaceIdKnown: true,
-      failureMessageZh,
+      failureMessageZh: failure?.message ?? null,
+      failure,
     });
   }
 
@@ -627,13 +969,14 @@ export function createPsbWorkspaceAdminService(
    * 「联调测试只回复OK」这种任务标题冒充成工作区名，必须禁止。机器名 / 模板拿不到就留空
    * （渲染层显示「—」），不编造。
    *
-   * `workspaceIdKnown: false` 明确告诉渲染层「这个 id 是占位，不能拿去写 PSB」。
+   * 占位身份（`workspaceIdKnown: false`）用**专门的 `staleReason: 'unknown-workspace'`**：
+   * 它不是「PSB 读不到」的一种原因，而是「连工作区 id 都没有」这个身份事实；渲染层据此给
+   * 「只能看到本机保存的信息，重新打开远程工作区任务再试」的文案。
    */
   function staleFromSessionHint(
     psbSessionId: string | null,
     hint: PsbAdminLocalSessionHint | null,
-    staleReason: PsbWorkspaceAdminStaleReason,
-    failureMessageZh: string | null,
+    failure: PsbRemoteFailure | null,
   ): ResolvedWorkspaceStale | null {
     const directoryName = psbVirtualDirectoryName(hint?.workingDir ?? null);
     // 目录名通常唯一（`saga2_project-2`）：命中快照就能拿回名称 / 模板 / 机器。
@@ -645,8 +988,8 @@ export function createPsbWorkspaceAdminService(
         byDirectory,
         'last-used',
         'unavailable',
-        staleReason,
-        failureMessageZh,
+        'session-unreadable',
+        failure,
       );
     }
     const title = directoryName ?? '';
@@ -658,16 +1001,16 @@ export function createPsbWorkspaceAdminService(
       workspaceId,
       source: 'session',
       availability: 'unavailable',
-      staleReason,
+      staleReason: 'unknown-workspace',
       title,
       templateTitle: null,
       clientName: '',
-      clientOnline: null,
       directoryName,
       state: null,
       snapshotSavedAt: null,
       workspaceIdKnown: false,
-      failureMessageZh,
+      failureMessageZh: failure?.message ?? null,
+      failure,
     });
   }
 
@@ -678,11 +1021,14 @@ export function createPsbWorkspaceAdminService(
    *
    * 真机里「会话详情 404、但工作区好好地在列表里」被误判成 stale；服务器通畅时必须走服务器：
    * 匹配到就返回实时行（`live`，页头名称 / 模板 / 机器 / 占用全部来自 PSB）。
+   *
+   * **这是启发式，结果不持久化**（见文件头）：命中只用于这一次展示；只有会话详情返回的
+   * workspace id 才写 `会话→工作区` 映射。
    */
   type DirectoryWorkspaceMatch =
     | { readonly kind: 'found'; readonly workspace: PsbRemoteWorkspace }
     | { readonly kind: 'none' }
-    | { readonly kind: 'failed'; readonly failureMessageZh: string | null };
+    | { readonly kind: 'failed'; readonly failure: PsbRemoteFailure };
 
   async function matchWorkspaceByDirectoryName(
     directoryName: string,
@@ -696,7 +1042,7 @@ export function createPsbWorkspaceAdminService(
         directoryName,
         code: failure.code,
       });
-      return { kind: 'failed', failureMessageZh: failure.message };
+      return { kind: 'failed', failure };
     }
     const target = directoryName.trim();
     // PSB 的 `directoryName` 可能带后缀（`saga2_project-2`）而用户可读 `title` 是 `saga2_project`；
@@ -723,7 +1069,7 @@ export function createPsbWorkspaceAdminService(
     try {
       const result = await remote().sessionStatus(psbSessionId);
       const workspace = result.workspace;
-      // 读成功就把映射刷新一遍：终态/404 之后靠它兜底，也顺带把「最近使用」推进到当前工作区。
+      // **权威映射**：会话详情读成功才把「这条 PSB 会话属于哪个工作区」落盘（启发式匹配不写）。
       deps.store.rememberSessionWorkspace(psbSessionId, workspace.id);
       deps.store.rememberWorkspace(workspace.id);
       return liveResolved(workspace, 'session');
@@ -741,12 +1087,15 @@ export function createPsbWorkspaceAdminService(
   interface KnownWorkspaceResolution {
     readonly resolved: ResolvedWorkspace | null;
     readonly listFailed: boolean;
-    readonly failureMessageZh: string | null;
+    readonly failure: PsbRemoteFailure | null;
   }
 
   /**
    * 按已知 workspaceId 解析：实时行 → （不可见 / 读不到时）固定信息快照 → 内存上一次行。
    * `resolved: null` 时调用方继续用其它兜底，不在这里直接清空页面。
+   *
+   * **无论有没有可展示的降级结果，闸门状态都会更新**：`streamStart` 过旧时靠这次重新解析
+   * 决定「工作区恢复了没有」；只更新有快照的分支会让「快照丢失后工作区恢复了也点不动」。
    */
   async function resolveKnownWorkspaceId(
     workspaceId: string,
@@ -756,20 +1105,27 @@ export function createPsbWorkspaceAdminService(
       return {
         resolved: liveResolved(lookup.workspace, 'last-used'),
         listFailed: false,
-        failureMessageZh: null,
+        failure: null,
       };
     }
     if (lookup.kind === 'missing') {
       // 工作区已不可见（被删 / 无权限）：易变记录清掉，固定信息快照留着显示。
       forgetWorkspaceLocally(workspaceId);
       const snapshot = deps.store.workspaceSnapshot(workspaceId);
-      return {
-        resolved: snapshot
-          ? staleFromSnapshot(snapshot, 'last-used', 'missing', 'workspace-missing', null)
-          : null,
-        listFailed: false,
-        failureMessageZh: null,
-      };
+      if (snapshot) {
+        return {
+          resolved: staleFromSnapshot(snapshot, 'last-used', 'missing', 'workspace-missing', null),
+          listFailed: false,
+          failure: null,
+        };
+      }
+      setWorkspaceState(workspaceId, {
+        availability: 'missing',
+        staleReason: 'workspace-missing',
+        workspaceIdKnown: true,
+        failure: null,
+      });
+      return { resolved: null, listFailed: false, failure: null };
     }
     // PSB 暂时读不到：保留上一次的固定信息（快照优先，其次内存行），状态类字段降级。
     const snapshot = deps.store.workspaceSnapshot(workspaceId);
@@ -780,20 +1136,27 @@ export function createPsbWorkspaceAdminService(
           'last-used',
           'unavailable',
           'list-failed',
-          lookup.failureMessageZh,
+          lookup.failure,
         ),
         listFailed: true,
-        failureMessageZh: lookup.failureMessageZh,
+        failure: lookup.failure,
       };
     }
-    const cached = lastWorkspaceRowById.get(workspaceId);
-    return {
-      resolved: cached
-        ? staleFromCachedRow(cached, 'last-used', lookup.failureMessageZh)
-        : null,
-      listFailed: true,
-      failureMessageZh: lookup.failureMessageZh,
-    };
+    const cached = lastWorkspaceRowById.get(workspaceId)?.row;
+    if (cached) {
+      return {
+        resolved: staleFromCachedRow(cached, 'last-used', lookup.failure),
+        listFailed: true,
+        failure: lookup.failure,
+      };
+    }
+    setWorkspaceState(workspaceId, {
+      availability: 'unavailable',
+      staleReason: 'list-failed',
+      workspaceIdKnown: true,
+      failure: lookup.failure,
+    });
+    return { resolved: null, listFailed: true, failure: lookup.failure };
   }
 
   /**
@@ -825,33 +1188,23 @@ export function createPsbWorkspaceAdminService(
      * 直接产出带 `list-failed` 归因的降级种子。
      */
     const tryDirectoryMatch = async (
-      knownListFailure: { readonly failureMessageZh: string | null } | null = null,
+      knownListFailure: PsbRemoteFailure | null = null,
     ): Promise<ResolvedWorkspace | null> => {
       if (!directoryName) return null;
       if (knownListFailure) {
-        return staleFromSessionHint(
-          psbSessionId,
-          sessionHint,
-          'list-failed',
-          knownListFailure.failureMessageZh,
-        );
+        return staleFromSessionHint(psbSessionId, sessionHint, knownListFailure);
       }
       const matched = await matchWorkspaceByDirectoryName(directoryName);
       if (matched.kind === 'found') {
-        // 用实时行做 live 渲染（名称 / 模板 / 机器 / 占用都是 PSB 事实），并补记映射，
-        // 下次重启即使列表读不到也能用快照兜底。
-        if (psbSessionId) {
-          deps.store.rememberSessionWorkspace(psbSessionId, matched.workspace.id);
-        }
-        deps.store.rememberWorkspace(matched.workspace.id);
-        return liveResolved(matched.workspace, 'session');
+        // 用实时行做 live 渲染（名称 / 模板 / 机器 / 占用都是 PSB 事实），但**是启发式命中**：
+        // 只留内存、记 inferred，不写 `会话→工作区` 映射 / 快照（猜错会被持久化）。
+        return liveResolved(matched.workspace, 'session', { persist: false, inferred: true });
       }
       // 列表读失败 / 确实匹配不到：降级种子，名称用目录名（不是任务标题）。
       return staleFromSessionHint(
         psbSessionId,
         sessionHint,
-        matched.kind === 'failed' ? 'list-failed' : 'session-unreadable',
-        matched.kind === 'failed' ? matched.failureMessageZh : null,
+        matched.kind === 'failed' ? matched.failure : null,
       );
     };
 
@@ -866,20 +1219,20 @@ export function createPsbWorkspaceAdminService(
         const mapped = await resolveKnownWorkspaceId(mappedId);
         if (mapped.resolved) return mapped.resolved;
         if (mapped.listFailed) {
-          const seeded = await tryDirectoryMatch({ failureMessageZh: mapped.failureMessageZh });
+          const seeded = await tryDirectoryMatch(mapped.failure);
           if (seeded) return seeded;
         }
       }
       const byDirectory = await tryDirectoryMatch();
       if (byDirectory) return byDirectory;
-      const seeded = staleFromSessionHint(psbSessionId, sessionHint, 'session-unreadable', null);
+      const seeded = staleFromSessionHint(psbSessionId, sessionHint, null);
       if (seeded) return seeded;
     } else if (localSessionId) {
       // `remoteHostId` 丢了但工作目录还是 `/psb-remote/<目录>`：历史会话同样先按目录名
       // 实时匹配，匹配不到才给降级上下文。
       const byDirectory = await tryDirectoryMatch();
       if (byDirectory) return byDirectory;
-      const seeded = staleFromSessionHint(null, sessionHint, 'session-unreadable', null);
+      const seeded = staleFromSessionHint(null, sessionHint, null);
       if (seeded) return seeded;
     }
 
@@ -933,10 +1286,100 @@ export function createPsbWorkspaceAdminService(
     return deps.store.desktopSessionIdForWorkspace(workspaceId);
   }
 
-  /** 丢掉内存绑定与本机记录（远端会话不在这里停：桌面访问会话归 PSB，内部会话归 PSB 清理）。 */
+  /** 结束一条内部回退会话（best-effort；端口没有该方法 / 失败都只记 debug）。 */
+  async function stopSessionQuietly(sessionId: string): Promise<void> {
+    let port: PsbAdminRemotePort;
+    try {
+      port = remote();
+    } catch (error) {
+      deps.log.debug('psb admin: resolving the remote service while stopping a session failed', {
+        viewerSessionId: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    if (typeof port.stopSession !== 'function') return;
+    try {
+      await port.stopSession(sessionId);
+    } catch (error) {
+      deps.log.debug('psb admin: stopping the fallback internal stream session failed', {
+        viewerSessionId: sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** 记录一条回退内部会话（有界；超出上限时丢最旧的跟踪记录，不在此时发网络请求）。 */
+  function trackFallbackSession(sessionId: string, workspaceId: string): void {
+    rememberBounded(
+      fallbackSessions,
+      sessionId,
+      { workspaceId, createdAt: clock() },
+      FALLBACK_SESSION_LIMIT,
+    );
+  }
+
+  /** 丢掉内存绑定与本机记录；若是回退内部会话，顺带 best-effort 结束它（fire-and-forget）。 */
   function forgetBinding(workspaceId: string): void {
+    const binding = bindings.get(workspaceId);
     bindings.delete(workspaceId);
     deps.store.forgetDesktopSession(workspaceId);
+    if (binding && fallbackSessions.delete(binding.sessionId)) {
+      deps.log.info(
+        'psb admin: dropping a fallback internal stream session that is no longer usable',
+        { workspaceId, viewerSessionId: binding.sessionId },
+      );
+      void stopSessionQuietly(binding.sessionId);
+    }
+  }
+
+  /**
+   * 起观看端失败后回滚回退内部会话（await 版：失败路径要真的把它结束掉再抛原错误）。
+   *
+   * 只处理本进程 `trackFallbackSession` 记录过的会话：上一进程遗留的内部会话没有可靠判据，
+   * 不在这里猜（下一次工作区级订阅成功时的 TTL / 失效清理覆盖不到它，属已知边界）。
+   */
+  async function rollbackFallbackSession(workspaceId: string, sessionId: string): Promise<void> {
+    if (!fallbackSessions.delete(sessionId)) return;
+    if (bindings.get(workspaceId)?.sessionId === sessionId) {
+      bindings.delete(workspaceId);
+      deps.store.forgetDesktopSession(workspaceId);
+    }
+    deps.log.info(
+      'psb admin: ending the fallback internal session after the stream failed to start',
+      { workspaceId, viewerSessionId: sessionId },
+    );
+    await stopSessionQuietly(sessionId);
+  }
+
+  /**
+   * 工作区级订阅成功 = 服务端已支持新端点：清掉本进程遗留的旧回退内部会话。
+   *
+   * 清理条件（见文件头）：不再被任何内存绑定引用（失效）→ 立即清；仍被引用 → 等 TTL。
+   * 全部 best-effort、不阻塞当前启动。
+   */
+  function cleanupFallbackSessionsAfterSubscribe(): void {
+    if (fallbackSessions.size === 0) return;
+    const boundSessionIds = new Set<string>();
+    for (const binding of bindings.values()) boundSessionIds.add(binding.sessionId);
+    const stale: Array<{ sessionId: string; record: FallbackSessionRecord }> = [];
+    for (const [sessionId, record] of fallbackSessions) {
+      if (boundSessionIds.has(sessionId) && clock() - record.createdAt < FALLBACK_SESSION_TTL_MS) {
+        continue;
+      }
+      stale.push({ sessionId, record });
+    }
+    if (stale.length === 0) return;
+    for (const entry of stale) fallbackSessions.delete(entry.sessionId);
+    void (async () => {
+      for (const entry of stale) {
+        deps.log.info('psb admin: ending an obsolete fallback internal stream session', {
+          workspaceId: entry.record.workspaceId,
+          viewerSessionId: entry.sessionId,
+        });
+        await stopSessionQuietly(entry.sessionId);
+      }
+    })();
   }
 
   /** 用一条已知的会话 id 建立内存绑定（已存在则复用同一条，不重复写记录）。 */
@@ -949,6 +1392,8 @@ export function createPsbWorkspaceAdminService(
             workspaceId,
             sessionId,
             status: lastStatusByWorkspace.get(workspaceId) ?? null,
+            // 只是「有一条绑定 id」，本端还没有订阅（例如重启后从本机记录复用的读口）。
+            viewerActive: false,
           };
     bindings.set(workspaceId, binding);
     return binding;
@@ -1006,44 +1451,122 @@ export function createPsbWorkspaceAdminService(
     return binding;
   }
 
+  /* ---------------------- 尽力拉起桌面访问（能力位 + 后台预热） ---------------------- */
+
+  /** 当前生效的能力位（过期退回 unknown，下次动作重新探测）。 */
+  function currentAccessEnsureCapability(workspaceId: string): AccessEnsureCapability {
+    const cached = accessEnsureCapabilityByWorkspace.get(workspaceId);
+    if (cached && clock() - cached.checkedAt <= ACCESS_ENSURE_CAPABILITY_TTL_MS) return cached;
+    return { state: 'unknown', checkedAt: 0, failure: null };
+  }
+
+  /** 把一次「拉起访问」的结果写进能力位（失败原因不再只进日志）。 */
+  function recordAccessEnsureOutcome(
+    workspaceId: string,
+    outcome: PsbWorkspaceAccessEnsureOutcome,
+  ): void {
+    accessEnsureCapabilityByWorkspace.set(workspaceId, {
+      // `cindy-entry-not-open` 归到「closed」：本进程内 TTL 窗口不再白打一次 403/404。
+      state: outcome.ok
+        ? 'open'
+        : outcome.reason === 'cindy-entry-not-open'
+          ? 'closed'
+          : outcome.reason,
+      checkedAt: clock(),
+      failure: outcome.ok ? null : outcome.failure,
+    });
+  }
+
   /**
-   * 订阅前**尽力**拉起桌面访问（可选增强，失败一律不阻断）。
+   * 真正调用一次「拉起桌面访问」。失败一律非致命（端口约定永不抛，这里再兜一层）。
    *
-   * 为什么放在这里而不是 `streamStart` 开头：订阅是唯一需要「有一个 running 桌面访问」的地方；
-   * 重复「启动」复用仍活着的绑定时，不该为一次纯 HTTP 复用多发一条 ensure。放在订阅前一刻，
-   * 语义仍是「subscribe 前先尝试 ensure」，且旧 PSB 过渡回退也覆盖到。
-   *
-   * ## 为什么结果只记日志
-   *
-   * Cindy 的 Bearer 目前**没有**被放行 PSB 通用网页接口（`/api/remote/**` 恒 403），PSB 台账
-   * 记的是「Cindy 入口下一轮加」。所以这里不能把「拉起访问」当闸门：入口没开时继续往下走，
-   * 由订阅的 409（`NO_RUNNING_SESSION` + `state`）给出可行动文案。端口没有该方法（旧装配 /
-   * 单测 fake）时同样直接跳过。
+   * 同一工作区同时只发一条；结果写进能力位并记日志（含失败码，便于诊断「入口未放行」）。
    */
-  async function ensureWorkspaceAccessQuietly(workspaceId: string): Promise<void> {
-    const port = remote();
-    if (typeof port.ensureWorkspaceAccess !== 'function') return;
-    try {
-      const outcome = await port.ensureWorkspaceAccess(workspaceId);
-      if (outcome.ok) {
-        deps.log.info('psb admin: workspace access is running before subscribing', {
+  function runWorkspaceAccessEnsure(workspaceId: string): Promise<void> {
+    const pending = accessEnsureInFlight.get(workspaceId);
+    if (pending) return pending;
+    // 先声明再赋值：任务内部（`finally`）要用同一个 promise 身份做「只清自己这一票」，
+    // 直接 `const task = (async () => … task …)()` 会命中「变量在赋值前被使用」。
+    let task: Promise<void> | null = null;
+    const run = (async (): Promise<void> => {
+      const port = remote();
+      if (typeof port.ensureWorkspaceAccess !== 'function') return;
+      try {
+        const outcome = await port.ensureWorkspaceAccess(workspaceId);
+        // 账号边界可能在这条请求在途时换了服务实例：旧实例的结论不能写进新账号的能力位。
+        if (currentRemote !== port) return;
+        recordAccessEnsureOutcome(workspaceId, outcome);
+        if (outcome.ok) {
+          deps.log.info('psb admin: workspace access is running before subscribing', {
+            workspaceId,
+            startedByThisCall: outcome.startedByThisCall,
+          });
+        } else {
+          deps.log.info(
+            'psb admin: workspace access ensure did not succeed; continuing to subscribe',
+            { workspaceId, reason: outcome.reason, code: outcome.failure?.code ?? null },
+          );
+        }
+      } catch (error) {
+        const failure = toPsbRemoteFailure(error);
+        if (currentRemote === port) {
+          accessEnsureCapabilityByWorkspace.set(workspaceId, {
+            state: 'failed',
+            checkedAt: clock(),
+            failure,
+          });
+        }
+        deps.log.warn('psb admin: workspace access ensure threw; continuing to subscribe', {
           workspaceId,
-          startedByThisCall: outcome.startedByThisCall,
+          code: failure.code,
+          error: error instanceof Error ? error.message : String(error),
         });
-        return;
+      } finally {
+        if (task !== null && accessEnsureInFlight.get(workspaceId) === task) {
+          accessEnsureInFlight.delete(workspaceId);
+        }
       }
-      deps.log.info('psb admin: workspace access ensure did not succeed; continuing to subscribe', {
-        workspaceId,
-        reason: outcome.reason,
-        code: outcome.failure?.messageKey ?? null,
-      });
-    } catch (error) {
-      // 约定是「永不抛」，但端口是外部实现：这里兜一层，保证启动流程不被增强接口打断。
-      deps.log.warn('psb admin: workspace access ensure threw; continuing to subscribe', {
-        workspaceId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    })();
+    task = run;
+    accessEnsureInFlight.set(workspaceId, run);
+    return run;
+  }
+
+  /**
+   * 订阅前的「拉起访问」编排：**不阻塞启动必经路径**（见文件头）。
+   *
+   * - 能力位 `open`：前台调用（它可能真的把访问拉起来，让订阅成功）；
+   * - `closed`：跳过（入口未放行，别每次启动都白打 403）；
+   * - `unknown` / `failed` / `timeout`：后台预热，订阅不等它。
+   */
+  async function prepareWorkspaceAccess(workspaceId: string): Promise<void> {
+    const capability = currentAccessEnsureCapability(workspaceId);
+    if (capability.state === 'closed') return;
+    if (capability.state === 'open') {
+      await runWorkspaceAccessEnsure(workspaceId);
+      return;
     }
+    void runWorkspaceAccessEnsure(workspaceId);
+  }
+
+  /**
+   * 启动失败时补一条可读原因：若订阅 / 启动失败自己没带 PSB 原文，而「拉起访问」有失败原话，
+   * 就把原话补进 `message`（码 / messageKey 仍用主失败的那条，不改变可行动语义）。
+   *
+   * 只在用户点「启动」真的失败时发生；启动成功时不打扰用户（结果只记在能力位 / 日志里）。
+   */
+  async function enrichStartFailureWithAccessReason(
+    workspaceId: string,
+    error: unknown,
+  ): Promise<unknown> {
+    if (!(error instanceof PsbClientError)) return error;
+    if (error.failure.message?.trim()) return error;
+    const inflight = accessEnsureInFlight.get(workspaceId);
+    if (inflight) await inflight.catch(() => undefined);
+    const capability = accessEnsureCapabilityByWorkspace.get(workspaceId);
+    const detail = capability?.failure?.message?.trim();
+    if (!detail) return error;
+    return new PsbClientError({ ...error.failure, message: detail }, error.status);
   }
 
   /**
@@ -1051,16 +1574,18 @@ export function createPsbWorkspaceAdminService(
    *
    * 正常路径**不创建任何 Agent 会话**：`subscribeWorkspaceStream` 只解析当前 running 的桌面
    * 访问会话。回退路径必须带 `purpose:'internal'`（见文件头），新端点可用时永不执行。
-   * 订阅前先尝试 `ensureWorkspaceAccess`（尽力而为，见上）；没有 running 访问会话时 PSB 的
+   * 订阅前先「拉起访问」（能力位编排，非必经路径，见上）；没有 running 访问会话时 PSB 的
    * 409 会被客户端解析成 `PSB_STREAM_NO_RUNNING_SESSION` + `state`，原样上抛给渲染层。
    */
   async function acquireBinding(workspaceId: string): Promise<ViewerBinding> {
-    await ensureWorkspaceAccessQuietly(workspaceId);
+    await prepareWorkspaceAccess(workspaceId);
     let sessionId: string;
     let viaInternalFallback = false;
     try {
       const subscription = await remote().subscribeWorkspaceStream(workspaceId);
       sessionId = subscription.sessionId;
+      // 新端点可用：本进程遗留的旧回退内部会话该收了（TTL / 失效，见文件头）。
+      cleanupFallbackSessionsAfterSubscribe();
     } catch (error) {
       if (!isWorkspaceSubscribeUnavailable(error)) throw error;
       viaInternalFallback = true;
@@ -1083,9 +1608,16 @@ export function createPsbWorkspaceAdminService(
         clientRequestId: deps.createRequestId(),
       });
       sessionId = created.session.id;
+      // 记录回退会话：起观看端失败时要回滚；PSB 升级后要按 TTL / 失效清理。
+      trackFallbackSession(sessionId, workspaceId);
     }
 
-    const binding: ViewerBinding = { workspaceId, sessionId, status: null };
+    const binding: ViewerBinding = {
+      workspaceId,
+      sessionId,
+      status: null,
+      viewerActive: false,
+    };
     bindings.set(workspaceId, binding);
     // 立刻落盘：应用重启 / 页面重新打开时**只认这条记录**去读状态（读路径不订阅、不建会话）。
     deps.store.rememberDesktopSession(workspaceId, binding.sessionId);
@@ -1119,11 +1651,25 @@ export function createPsbWorkspaceAdminService(
     return task;
   }
 
+  /**
+   * 本端内部收尸（重建前的旧连接 / 代次竞态的自停）正在停的会话。
+   *
+   * 为什么需要：`streamViewer.stop` 会补发 `closed(client-stopped)`，那是**给用户点停止**用的
+   * 状态收敛事件。内部收尸不是用户的动作：它的 `closed` 既不该广播给别的窗口（会把正在看的
+   * 窗口误判成「被关闭」并回 idle），也不该在启动路径里被当成「本轮失败」。停的时候按下标记，
+   * `handleStreamEvent` 据此不转发这条事件；其余状态（绑定 / `active:false`）照常更新。
+   * 生产里 `remote().stopStream` → viewer.stop 的事件是**同步** emit 的，所以标记覆盖整个 await。
+   */
+  const quietStreamStops = new Set<string>();
+
   async function stopStreamQuietly(sessionId: string): Promise<void> {
+    quietStreamStops.add(sessionId);
     try {
       await remote().stopStream(sessionId);
     } catch {
-      /* best-effort：重建前的旧连接收尸，失败也不该挡住新连接 */
+      /* best-effort：重建前的旧连接收尸，失败也不该挡住新连接 / 停止请求 */
+    } finally {
+      quietStreamStops.delete(sessionId);
     }
   }
 
@@ -1136,6 +1682,9 @@ export function createPsbWorkspaceAdminService(
    *
    * 重新订阅也失败（例如 409「没有 running 桌面访问会话」）就把 PSB 的可读原因抛给用户：
    * 那是可行动的下一步（先去 PSB 网页启动桌面访问），不是「本机不能串流」。
+   *
+   * 过渡回退创建的内部会话若起观看端失败，**回滚它**（best-effort `stopSession`）：旧实现
+   * 建了会话就留在 PSB 里，用户会看到一条自己没有发起过的任务。
    */
   async function startStreamWithRecovery(workspaceId: string): Promise<{
     binding: ViewerBinding;
@@ -1143,74 +1692,257 @@ export function createPsbWorkspaceAdminService(
   }> {
     const binding = await ensureBinding(workspaceId);
     try {
-      return { binding, status: await remote().startStream(binding.sessionId) };
+      const status = await remote().startStream(binding.sessionId);
+      binding.viewerActive = true;
+      return { binding, status };
     } catch (error) {
-      if (!isStaleStreamSessionFailure(error)) throw error;
+      if (!isStaleStreamSessionFailure(error)) {
+        await rollbackFallbackSession(workspaceId, binding.sessionId);
+        throw error;
+      }
       const failure = toPsbRemoteFailure(error);
       deps.log.warn('psb admin: the bound viewer session is no longer usable; resubscribing once', {
         workspaceId,
         viewerSessionId: binding.sessionId,
         code: failure.code,
       });
+      binding.viewerActive = false;
       await stopStreamQuietly(binding.sessionId);
       forgetBinding(workspaceId);
       const rebuilt = await ensureBinding(workspaceId);
-      return { binding: rebuilt, status: await remote().startStream(rebuilt.sessionId) };
+      try {
+        const retryStatus = await remote().startStream(rebuilt.sessionId);
+        rebuilt.viewerActive = true;
+        return { binding: rebuilt, status: retryStatus };
+      } catch (retryError) {
+        await rollbackFallbackSession(workspaceId, rebuilt.sessionId);
+        throw retryError;
+      }
     }
   }
 
-  async function streamStart(workspaceId: string): Promise<PsbWorkspaceAdminStreamStartResult> {
-    const id = normalizedId(workspaceId);
-    if (!id) throw createIpcError('INVALID_PARAMS', 'workspaceId is required');
+  /* ------------------------------ 串流启停（串行 + 代次） ------------------------------ */
 
-    // 「这个工作区上次解析出来就是不可见 / 连不上」时**直接给可行动失败**，不再先打占用闸门：
-    // 那条路只会得到一条 404 或 20s 网络超时，用户看到的是不可行动的错误；这里明确说清
-    // 「已经看不到这个工作区」或「暂时连不上」，页面刷新出新上下文后重试即可（2026-11-26 口径）。
-    const known = lastWorkspaceState.get(id);
-    if (known && (known.availability !== 'live' || !known.workspaceIdKnown)) {
-      deps.log.info('psb admin: refusing to start streaming for an unavailable workspace', {
-        workspaceId: id,
-        availability: known.availability,
-        staleReason: known.staleReason,
+  function currentGeneration(workspaceId: string): number {
+    return workspaceGeneration.get(workspaceId) ?? 0;
+  }
+
+  /** 同一工作区的 start / stop 串行执行；上一个任务失败不阻塞下一个。 */
+  function runWorkspaceOperation<T>(workspaceId: string, task: () => Promise<T>): Promise<T> {
+    const previous = workspaceOperationTail.get(workspaceId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    workspaceOperationTail.set(workspaceId, tail);
+    void tail.finally(() => {
+      if (workspaceOperationTail.get(workspaceId) === tail) workspaceOperationTail.delete(workspaceId);
+    });
+    return run;
+  }
+
+  /**
+   * 把 PSB **工作区级**写路径的失败吸收进「工作区能不能写」的闸门。
+   *
+   * 关键点（2026-11-26 审查）：**刚被 PSB 告知工作区不存在，不能还标成 live**。否则用户点第二次
+   * 「启动」时闸门认为一切正常，又去打一次注定 404 的占用请求，还拿不到「工作区已不可见」这种
+   * 可行动原因。只吸收明确指向工作区身份 / 可达性的失败；占用冲突 / 未就绪 / 客户端离线不是
+   * 「工作区不可见」，不改闸门。
+   *
+   * 调用点只有**工作区级**动作（`ensureWorkspaceLocked`）。观看会话级失败（`streamStart`
+   * 里带会话 id 的调用）**不得**走这里（2026-11-27 审查 s2 P1：会话 404 曾被误吸收成工作区
+   * 不可见，把下一次「启动」永久挡住）。
+   */
+  function absorbWriteFailure(workspaceId: string, error: unknown): void {
+    const failure = toPsbRemoteFailure(error);
+    if (failure.code === 'NOT_FOUND' || failure.code === 'FORBIDDEN') {
+      setWorkspaceState(workspaceId, {
+        availability: 'missing',
+        staleReason: 'workspace-missing',
+        workspaceIdKnown: true,
+        failure,
       });
-      throw staleWorkspaceActionFailure(known);
+      forgetWorkspaceLocally(workspaceId);
+      deps.log.info('psb admin: the workspace is no longer visible; re-resolve before next write', {
+        workspaceId,
+        code: failure.code,
+      });
+      return;
+    }
+    if (failure.code === 'PSB_UNREACHABLE') {
+      setWorkspaceState(workspaceId, {
+        availability: 'unavailable',
+        staleReason: 'list-failed',
+        workspaceIdKnown: true,
+        failure,
+      });
+    }
+  }
+
+  async function startStreamLocked(
+    workspaceId: string,
+    localSessionId: string | null,
+    generationAtEntry: number,
+  ): Promise<PsbWorkspaceAdminStreamStartResult> {
+    // 「这个工作区上次解析出来就是不可见 / 连不上」时**直接给可行动失败**，不再先打占用闸门：
+    // 那条路只会得到一条 404 或 20s 网络超时，用户看到的是不可行动的错误。但结论必须够新：
+    // 超过信任窗口就先重新解析一次（服务器恢复了，用户点「启动」就该能用）。
+    const known = lastWorkspaceState.get(workspaceId);
+    if (known && !workspaceStateIsWritable(known)) {
+      if (clock() - known.checkedAt <= WORKSPACE_STATE_TRUST_MS) {
+        deps.log.info('psb admin: refusing to start streaming for an unavailable workspace', {
+          workspaceId,
+          availability: known.availability,
+          staleReason: known.staleReason,
+        });
+        throw staleWorkspaceActionFailure(known);
+      }
+      deps.log.info('psb admin: the cached workspace state is stale; re-resolving before starting', {
+        workspaceId,
+        availability: known.availability,
+        ageMs: clock() - known.checkedAt,
+      });
+      const revalidated = await resolveKnownWorkspaceId(workspaceId);
+      const current = lastWorkspaceState.get(workspaceId) ?? known;
+      if (!revalidated.resolved || !workspaceStateIsWritable(current)) {
+        throw staleWorkspaceActionFailure(current);
+      }
+    }
+
+    // **多窗口复用已有健康连接**（2026-11-27 复审 P1「多窗口误杀」）：
+    // 进程内只有一个观看端实例，`remote().startStream` 的语义是**原子替换**该会话的旧连接并
+    // 补发 `closed(superseded)`。第二个窗口点「启动」若直接再调一次，第一个窗口的连接就被换掉：
+    // 它收到 superseded 回 idle 后再也不会发 `adminStreamStop`（已不在观看态）→ owner 引用计数
+    // 永远不归零 → 最后一个窗口停止时流不停。所以「已经有健康连接」时这一次启动只表示**多一个
+    // 观看者**：返回当前状态，连接不动（owner +1 由 ipc 层在成功返回后登记）。
+    const reusable = bindings.get(workspaceId);
+    if (reusable?.viewerActive === true) {
+      deps.log.debug('psb admin: reusing the healthy viewer connection for another window', {
+        workspaceId,
+        viewerSessionId: reusable.sessionId,
+      });
+      return {
+        status: reusable.status ?? lastStatusByWorkspace.get(workspaceId) ?? psbAdminStreamStatusFallback(),
+        workspaceId,
+        viewerSessionId: reusable.sessionId,
+      };
     }
 
     // 串流 = 工作区写操作（订阅当前桌面访问会话 / 过渡回退建内部会话）：PSB 会对未锁定者拒绝，
     // 所以先确保工作区由自己占用（未占用则自动占用）。失败在这里就给出可行动原因，不建立订阅。
     // 读状态（`streamStatus`）不受此限。
-    await remote().ensureWorkspaceLocked(id);
+    try {
+      await remote().ensureWorkspaceLocked(workspaceId);
+    } catch (error) {
+      absorbWriteFailure(workspaceId, error);
+      throw await enrichStartFailureWithAccessReason(workspaceId, error);
+    }
 
     // 占用成功 = 又确认了一次工作区固定信息（名称 / 模板 / 机器不会变）：落盘快照，
     // 下次 PSB 读不到时页面还能显示。值不变 0 次写。
-    const observed = lastWorkspaceRowById.get(id);
+    const observed = lastWorkspaceRowById.get(workspaceId)?.row;
     if (observed) rememberSnapshotFor(observed);
 
-    const started = await startStreamWithRecovery(id);
+    let started: { binding: ViewerBinding; status: PsbSessionStreamStatus };
+    try {
+      started = await startStreamWithRecovery(workspaceId);
+    } catch (error) {
+      // **归因修正**（2026-11-27 审查 s2 P1）：走到这里时工作区已经在这一轮
+      // `ensureWorkspaceLocked` 里被 PSB 确认「可见 / 就绪 / 由我锁定」，失败只可能来自
+      // 观看会话本身（`stream/subscribe` 的会话、`startStream(<sessionId>)` 的会话），
+      // 端点路径里带的是会话 id —— 这里出现的 `NOT_FOUND` 是**会话级**的，把它吸收成
+      // 「工作区不可见」会让下一次点「启动」被错误的 stale 闸门永久挡住。工作区级失败
+      // 仍由上面的 `ensureWorkspaceLocked` catch 吸收，不丢诊断。
+      deps.log.info('psb admin: starting the viewer stream failed (session-scoped failure, not workspace-missing)', {
+        workspaceId,
+        code: toPsbRemoteFailure(error).code,
+        status: error instanceof PsbClientError ? error.status : null,
+      });
+      throw await enrichStartFailureWithAccessReason(workspaceId, error);
+    }
+
+    const binding = started.binding;
     const status = psbAdminStreamStatusFromPsb(started.status);
-    started.binding.status = status;
-    rememberBounded(lastStatusByWorkspace, id, status);
-    deps.store.rememberWorkspace(id);
-    // 上下文可能随这次动作变化（绑定出现、桌面会话状态变了）：重读一次并推送。
-    await refreshContextNow();
+    const generationNow = currentGeneration(workspaceId);
+    if (generationNow !== generationAtEntry) {
+      // 用户在「启动」落定前已经点了「停止」：不能把刚起的串流留在远端（旧实现的竞态）。
+      deps.log.info(
+        'psb admin: a stop request superseded this stream start; stopping the new stream',
+        { workspaceId, viewerSessionId: binding.sessionId },
+      );
+      await stopStreamQuietly(binding.sessionId);
+      binding.viewerActive = false;
+      selfStoppedGeneration.set(workspaceId, generationNow);
+      binding.status = { ...status, active: false };
+      rememberBounded(lastStatusByWorkspace, workspaceId, binding.status);
+      await refreshContextNow({ workspaceId, localSessionId });
+      return {
+        status: binding.status,
+        workspaceId,
+        viewerSessionId: binding.sessionId,
+      };
+    }
+
+    binding.status = status;
+    rememberBounded(lastStatusByWorkspace, workspaceId, status);
+    deps.store.rememberWorkspace(workspaceId);
+    // 上下文可能随这次动作变化（绑定出现、桌面会话状态变了）：重读并发起动作的桶 + 同工作区桶。
+    await refreshContextNow({ workspaceId, localSessionId });
     return {
       status,
-      workspaceId: id,
-      viewerSessionId: started.binding.sessionId,
+      workspaceId,
+      viewerSessionId: binding.sessionId,
     };
   }
 
-  async function streamStop(workspaceId: string): Promise<void> {
+  async function streamStart(
+    workspaceId: string,
+    input?: PsbAdminActionInput,
+  ): Promise<PsbWorkspaceAdminStreamStartResult> {
     const id = normalizedId(workspaceId);
-    if (!id) return;
-    const binding = bindings.get(id);
+    if (!id) throw createIpcError('INVALID_PARAMS', 'workspaceId is required');
+    const localSessionId = normalizedId(input?.localSessionId);
+    const generationAtEntry = currentGeneration(id);
+    // 代次在**入队时**取：若 stop 在排队期间推进了它，start 落定后会自停。
+    return runWorkspaceOperation(id, () =>
+      startStreamLocked(id, localSessionId, generationAtEntry),
+    );
+  }
+
+  async function stopStreamLocked(
+    workspaceId: string,
+    localSessionId: string | null,
+    generation: number,
+  ): Promise<void> {
+    // 启动落定时已经因为这次 stop 自动停过：不重复停一次（也不会多一次写上下文）。
+    // 记录只对**产生它的那一次** stop 有效，入口已经清过不匹配的旧记录（见 `streamStop`）。
+    if (selfStoppedGeneration.get(workspaceId) === generation) {
+      selfStoppedGeneration.delete(workspaceId);
+      return;
+    }
+    const binding = bindings.get(workspaceId);
     if (!binding) return;
     // 只停**观看**：绑定保留（下一次启动直接复用同一条桌面访问会话，不重复订阅）。
     await remote().stopStream(binding.sessionId);
+    binding.viewerActive = false;
     const previous = binding.status ?? psbAdminStreamStatusFallback();
     binding.status = { ...previous, active: false };
-    rememberBounded(lastStatusByWorkspace, id, binding.status);
-    await refreshContextNow();
+    rememberBounded(lastStatusByWorkspace, workspaceId, binding.status);
+    await refreshContextNow({ workspaceId, localSessionId });
+  }
+
+  async function streamStop(workspaceId: string, input?: PsbAdminActionInput): Promise<void> {
+    const id = normalizedId(workspaceId);
+    if (!id) return;
+    const localSessionId = normalizedId(input?.localSessionId);
+    // **入队前**推进代次：已经在路上的 start 落定后会发现自己被取代，从而自停。
+    const generation = currentGeneration(id) + 1;
+    workspaceGeneration.set(id, generation);
+    // 上一轮「自停」记录只对产生它的那次 stop 有效：代次单调递增，未来任何一次 stop 的
+    // generation 都不等于旧值，留着只会让这张表随工作区数量无界残留（2026-11-27 复审 P2）。
+    if (selfStoppedGeneration.get(id) !== generation) selfStoppedGeneration.delete(id);
+    await runWorkspaceOperation(id, () => stopStreamLocked(id, localSessionId, generation));
   }
 
   /**
@@ -1233,20 +1965,24 @@ export function createPsbWorkspaceAdminService(
    *
    * `stream/status` 挂在会话路径上，所以必须有一条会话 id 当读口。来源只有两个：
    *   1. 内存里的观看端绑定（本进程启动过观看）；
-   *   2. 本机记录里的绑定 id（应用重启后的主路径，只读 HTTP，不订阅、不占名额）。
+   *   2. 本机记录里的绑定 id（应用重启后的主路径，只读 HTTP，不占名额）。
    *
    * 两者都没有就返回 `status: null`（未知）—— 页面进入时不建立绑定，等用户显式「启动」。
    * `null` 仍**不等于** `capable:false`；返回值额外带 `viewerSessionId`（只来自内存绑定 /
    * 本机记录），让渲染层能过滤 `STREAM_EVENT` / 判断输入是否可发。
    */
-  async function streamStatus(workspaceId: string): Promise<PsbWorkspaceAdminStreamStatusResult> {
+  async function streamStatus(
+    workspaceId: string,
+    input?: PsbAdminActionInput,
+  ): Promise<PsbWorkspaceAdminStreamStatusResult> {
     const id = normalizedId(workspaceId);
     if (!id) return { status: null, viewerSessionId: null };
+    const localSessionId = normalizedId(input?.localSessionId);
 
     // 已知 stale（工作区不可见 / PSB 读不到）：别再拿一条可能已死的绑定去打一次网络。
     // 返回 `status: null`（无法获取）而不是 `capable:false`，页面在 stale 态下不乱判能力位。
     const known = lastWorkspaceState.get(id);
-    if (known && (known.availability !== 'live' || !known.workspaceIdKnown)) {
+    if (known && !workspaceStateIsWritable(known)) {
       return { status: null, viewerSessionId: null };
     }
 
@@ -1262,7 +1998,7 @@ export function createPsbWorkspaceAdminService(
         // 记录里的绑定还能读：复用成内存绑定（不是新建会话）。`viewerSessionId` 从 null 变为
         // 有值是 `CONTEXT_CHANGED` 的新事实，让已打开页面马上拿到。
         binding = adoptBinding(id, sessionId);
-        refreshContextQuietly();
+        scheduleContextRefresh({ workspaceId: id, localSessionId });
       }
       binding.status = probe.status;
       return { status: probe.status, viewerSessionId: binding.sessionId };
@@ -1272,7 +2008,7 @@ export function createPsbWorkspaceAdminService(
       // 绑定已经失效（桌面访问被重建 / 内部会话已结束）→ 丢掉内存绑定与本机记录（下次启动
       // 重新订阅），并刷新上下文让页面看到 `viewerSessionId` 变回 null。
       forgetBinding(id);
-      refreshContextQuietly();
+      scheduleContextRefresh({ workspaceId: id, localSessionId });
     }
     // 读不到 PSB 状态 ≠ 客户端不支持：优先返回最后一次已知状态（带最新失败原话），否则 null。
     const viewerSessionId = probe.kind === 'dead' ? null : sessionId;
@@ -1332,7 +2068,7 @@ export function createPsbWorkspaceAdminService(
    *   - `title` / `templateTitle` / `clientName` / `directoryName` 来自快照，**照常显示**；
    *   - `occupancy` 是**未知**（结构上必须给值 → 全空），`desktopSession` / `reasonCode` 未知
    *     （`null`），渲染层在 stale 时显示「无法获取」；
-   *   - `lastErrorZh` 只放 PSB 原文做诊断，可读原因由 `availability` 选本地化文案。
+   *   - `lastErrorZh` 只放 PSB 原文做诊断，可读原因由 `availability` / `staleReason` 选本地化文案。
    */
   function buildStaleContext(
     resolved: ResolvedWorkspaceStale,
@@ -1341,12 +2077,12 @@ export function createPsbWorkspaceAdminService(
     return {
       workspaceId: resolved.workspaceId,
       clientName: resolved.clientName,
-      // 快照里的在线状态只作诊断保存；stale 时**不**把它当事实（渲染层不展示）。
-      clientOnline: resolved.clientOnline ?? false,
+      // 快照不再保存在线状态（易变）；stale 时**不**把它当事实。
+      clientOnline: false,
       title: resolved.title,
       templateTitle: resolved.templateTitle?.trim() || null,
       directoryName: resolved.directoryName ?? '',
-      state: resolved.state ?? '',
+      state: resolved.state,
       // 占用未知：不猜占用人，也不猜「无人占用」。
       occupancy: { occupied: false, byMe: false, personName: '' },
       desktopSession: null,
@@ -1363,28 +2099,14 @@ export function createPsbWorkspaceAdminService(
     };
   }
 
-  /**
-   * 值没变不发推送；第一次只建立基线（invoke 的返回值本身就是这一次的事实）。
-   *
-   * 载荷带上解析这次上下文用的 `localSessionId`：这是广播，多窗口各自打开不同任务时，
-   * 渲染层靠它判断「这条推送是不是我这次读取的结果」，不匹配就丢弃（见共享契约
-   * `PsbWorkspaceAdminContextChangedEvent`）。
-   */
-  function emitIfChanged(context: PsbWorkspaceAdminContext | null): void {
-    const serialized = JSON.stringify(context);
-    const previous = lastEmitted;
-    lastEmitted = serialized;
-    if (previous === undefined || previous === serialized) return;
-    deps.emitContextChanged({ context, localSessionId: lastLocalSessionId });
-  }
-
   async function context(input: {
     localSessionId?: string | null;
   }): Promise<PsbWorkspaceAdminContextResult> {
-    lastLocalSessionId = normalizedId(input.localSessionId);
-    const resolved = await resolveWorkspace(lastLocalSessionId);
+    // 入参固化到局部：全局「最近 id」正是多窗口串工作区的根因（见文件头）。
+    const localSessionId = normalizedId(input.localSessionId);
+    const resolved = await resolveWorkspace(localSessionId);
     if (!resolved) {
-      emitIfChanged(null);
+      emitIfChanged(null, localSessionId, null);
       return { context: null };
     }
 
@@ -1392,7 +2114,11 @@ export function createPsbWorkspaceAdminService(
     // 读不到，多打一次只会多等一次超时），也不推进「最近使用」——工作区事实不是这次读到的。
     if (resolved.kind === 'stale') {
       const built = buildStaleContext(resolved, resolved.failureMessageZh);
-      emitIfChanged(built);
+      emitIfChanged(
+        built,
+        localSessionId,
+        resolved.workspaceIdKnown ? resolved.workspaceId : null,
+      );
       return { context: built };
     }
 
@@ -1428,8 +2154,9 @@ export function createPsbWorkspaceAdminService(
     }
 
     // 「最近使用」只在值变化时落盘（见 `adminRecentStore` 的写纪律）；固定信息快照已在
-    // `liveResolved` 写入（值不变 0 次写）。
-    deps.store.rememberWorkspace(workspaceId);
+    // `liveResolved` 写入（值不变 0 次写）。启发式匹配不推进「最近使用」：猜错会让下次
+    // 打开页面默认落到别人的工作区（见文件头）。
+    if (!resolved.inferred) deps.store.rememberWorkspace(workspaceId);
 
     const built = buildLiveContext({
       workspace: resolved.workspace,
@@ -1438,7 +2165,7 @@ export function createPsbWorkspaceAdminService(
       desktop,
       failureMessageZh,
     });
-    emitIfChanged(built);
+    emitIfChanged(built, localSessionId, workspaceId);
     return { context: built };
   }
 
@@ -1465,19 +2192,25 @@ export function createPsbWorkspaceAdminService(
   function handleStreamEvent(event: PsbStreamEvent): void {
     const binding = bindingForSession(event.sessionId);
     if (!binding) return;
-    deps.emitStreamEvent(event);
+    // 本端内部收尸（重建旧连接 / 代次竞态自停）补发的 `closed(client-stopped)` 不是用户动作，
+    // 也不该让别的窗口以为「自己正在看的串流被关闭」：只更新本端状态，不转发（见
+    // `quietStreamStops`）。用户显式停止的那条 `closed` 走正常路径（此时没有内部标记）。
+    const internallyStopped = event.type === 'closed' && quietStreamStops.has(event.sessionId);
+    if (!internallyStopped) deps.emitStreamEvent(event);
     const workspaceId = binding.workspaceId;
 
     if (event.type === 'status') {
       const next = psbAdminStreamStatusFromPsb(event.status);
       binding.status = next;
       rememberBounded(lastStatusByWorkspace, workspaceId, next);
-      // 桌面会话状态可能随之变化（例如 PSB 推送「采集已开始」）：重读上下文并按需推送。
-      refreshContextQuietly();
+      // 桌面会话状态可能随之变化（例如 PSB 推送「采集已开始」）：重读该工作区的所有窗口桶。
+      scheduleContextRefresh({ workspaceId });
       return;
     }
 
     if (event.type === 'closed') {
+      // 连接已经结束（远端关闭 / 本端收尸）：下次「启动」必须真的重新订阅串流，不能复用标记。
+      binding.viewerActive = false;
       const previous = binding.status ?? psbAdminStreamStatusFallback();
       binding.status = {
         ...previous,
@@ -1494,11 +2227,13 @@ export function createPsbWorkspaceAdminService(
         // 当前未启用，加性处理）。留着记录中的死 id 会让下一次启动先白读一次。
         forgetBinding(workspaceId);
       }
-      refreshContextQuietly();
+      scheduleContextRefresh({ workspaceId });
       return;
     }
 
     if (event.type === 'error') {
+      // 错误断开后这条连接不再可用：下一次启动必须重新 `startStream`（不能复用）。
+      binding.viewerActive = false;
       const previous = binding.status ?? psbAdminStreamStatusFallback();
       binding.status = {
         ...previous,
@@ -1511,13 +2246,21 @@ export function createPsbWorkspaceAdminService(
 
   /* ------------------------------ 上下文刷新（合并窗口） ------------------------------ */
 
-  async function refreshContextNow(): Promise<void> {
-    try {
-      await context({ localSessionId: lastLocalSessionId });
-    } catch (error) {
-      deps.log.debug('psb admin: refreshing the page context failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+  /**
+   * 按显式目标重读上下文（不再读全局「最近 id」）。
+   *
+   * 目标是「发起这次动作的窗口桶 + 所有上次解析到该工作区的桶」：单窗口时两者通常是同一个；
+   * 多窗口同时看同一工作区时每个窗口都能拿到新事实；只开了别的任务/工作区的窗口不受打扰。
+   */
+  async function refreshContextNow(target: AdminRefreshTarget = {}): Promise<void> {
+    for (const bucket of collectRefreshBuckets(target)) {
+      try {
+        await context({ localSessionId: bucket.localSessionId });
+      } catch (error) {
+        deps.log.debug('psb admin: refreshing the page context failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -1527,14 +2270,25 @@ export function createPsbWorkspaceAdminService(
    * 不做合并的后果是每条 `status` 事件都触发一次 `listWorkspaces` + `stream/status`，
    * 而 PSB 的压力与回包字节都会随事件密度增长（工程约定 §8.6）。
    */
-  function refreshContextQuietly(): void {
-    refreshPending = true;
-    if (refreshInFlight) return;
+  function scheduleContextRefresh(target: AdminRefreshTarget): void {
+    for (const bucket of collectRefreshBuckets(target)) {
+      refreshPending.set(bucket.key, bucket.localSessionId);
+    }
+    if (refreshPending.size === 0 || refreshInFlight) return;
     refreshInFlight = (async () => {
       try {
-        while (refreshPending) {
-          refreshPending = false;
-          await refreshContextNow();
+        while (refreshPending.size > 0) {
+          const batch = [...refreshPending];
+          refreshPending.clear();
+          for (const [, localSessionId] of batch) {
+            try {
+              await context({ localSessionId });
+            } catch (error) {
+              deps.log.debug('psb admin: refreshing the page context failed', {
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
         }
       } finally {
         refreshInFlight = null;

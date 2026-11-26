@@ -21,7 +21,55 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 
 import { makeServerError } from './server.js';
-import type { PiListEntry } from './protocol.js';
+import type { PiEnsureCwdPolicy, PiListEntry } from './protocol.js';
+
+/**
+ * 把 `pi/ensure` 的显式 cwd 契约解析成「传给 spawn 的目录」。
+ *
+ * 这是 cwd 归属的**唯一判定点**（daemon 侧）。以前它藏在 registry 的
+ * `defaultChildCwd` 里：pi 在哪个目录跑取决于 daemon 被谁、在哪个进程 cwd 拉起，
+ * 客户端无法表达「这个会话的 cwd 归宿主」。现在由 `cwdPolicy` 说明：
+ *
+ *   - `'host'`：用宿主传进来的 daemon **启动工作区**（PSB 远程工作区）；
+ *   - `'command'`：`cmd` 自带 `cd`，不指定 spawn cwd；
+ *   - `'explicit'`：用请求里的 `cwd`（必须是存在的绝对目录，否则拒绝 —— 不静默跑到 `/`）；
+ *   - 缺省（老客户端）：等价 `'host'`，保持兼容语义。
+ */
+export function resolvePiEnsureChildCwd(input: {
+  policy: PiEnsureCwdPolicy | undefined;
+  cwd: string | undefined;
+  /** `runDaemon` 在 `chdir('/')` 之前捕获的启动工作区。 */
+  hostLaunchCwd: string | undefined;
+}): string | undefined {
+  const policy = input.policy ?? 'host';
+  switch (policy) {
+    case 'host':
+      return input.hostLaunchCwd;
+    case 'command':
+      return undefined;
+    case 'explicit': {
+      const explicit = input.cwd?.trim();
+      if (!explicit || !path.isAbsolute(explicit)) {
+        throw makeServerError(
+          'INVALID_PARAMS',
+          `pi/ensure cwdPolicy=explicit requires an absolute cwd (got ${JSON.stringify(input.cwd ?? null)})`,
+        );
+      }
+      if (!fs.existsSync(explicit)) {
+        throw makeServerError(
+          'INVALID_PARAMS',
+          `pi/ensure cwdPolicy=explicit directory does not exist: ${explicit}`,
+        );
+      }
+      return explicit;
+    }
+    default:
+      throw makeServerError(
+        'INVALID_PARAMS',
+        `pi/ensure unknown cwdPolicy ${JSON.stringify(policy as string)}`,
+      );
+  }
+}
 
 export interface PiSessionState {
   sessionId: string;
@@ -54,19 +102,6 @@ export interface PiSessionRegistryOptions {
   idleTimeoutMs?: number;
   /** Called when a session closes (pi exited / killed / recycled). */
   onSessionClosed?: (sessionId: string, reason: 'completed' | 'killed' | 'idle_timeout' | 'error', detail?: string) => void;
-  /**
-   * pi 子进程的默认 cwd（daemon **被 spawn 时**的工作目录，由 `runDaemon` 在 `chdir('/')`
-   * 之前抓取）。
-   *
-   * 为什么需要它：daemon 自己会 `chdir('/')`（脱离 SSH 会话 cwd，见 `bin/pi-manager.ts`），
-   * 而 `spawn('bash', ['-c', cmd])` 默认继承 daemon 的 **当前** cwd —— 不传本字段时 pi 子进程
-   * 就在 `/` 启动。PSB 远程工作区的宿主按会话记录里的工作区 spawn daemon（`cwd=<workspace>`）
-   * 但不在 `cmd` 里写 `cd`，于是 pi 的 cwd 变成 `/`（真机缺陷）。把 spawn cwd 显式钉在 daemon
-   * 的**启动 cwd** 上，宿主给的目录才会真正生效；SSH / MCPR 的 `cmd` 里本来就有 `cd`，行为不变。
-   *
-   * 目录在 ensure 时已被删除 → 不传（退回继承 `/` 的旧行为，绝不因残留 cwd 让会话起不来）。
-   */
-  defaultChildCwd?: string;
   /** Optional logger. Defaults to console. */
   logger?: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
 }
@@ -105,8 +140,6 @@ export class PiSessionRegistry {
   private readonly envDir: string;
   private readonly idleTimeoutMs: number;
   private readonly onSessionClosed?: PiSessionRegistryOptions['onSessionClosed'];
-  /** daemon 启动 cwd；pi 子进程默认在它里面 spawn（见选项注释）。 */
-  private readonly defaultChildCwd: string | undefined;
   private readonly logger: Required<PiSessionRegistryOptions>['logger'];
   private readonly idleTimer: NodeJS.Timeout | null = null;
   /** 关停中:拒绝新 ensure, 防孤儿子进程(自审轮 2 HIGH)。 */
@@ -119,7 +152,6 @@ export class PiSessionRegistry {
     this.envDir = opts.envDir;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? 1_800_000;
     this.onSessionClosed = opts.onSessionClosed;
-    this.defaultChildCwd = opts.defaultChildCwd;
     this.logger = opts.logger ?? console;
     // 目录显式 0700 —— 默认 0755(umask 022)会让同机其他用户看到 sessionId
     // 文件名(自审轮 5 HIGH-2)。
@@ -171,6 +203,14 @@ export class PiSessionRegistry {
     env: Record<string, string>,
     envHash: string,
     restart: boolean,
+    /**
+     * 已解析好的子进程工作目录（`resolvePiEnsureChildCwd` 的输出）。
+     *
+     * 缺省 = spawn 不指定 cwd（继承 daemon 当前 cwd）。**registry 自己不做任何 cwd
+     * 推断**：谁决定 pi 在哪个目录跑由 `pi/ensure` 的 `cwdPolicy` 契约说明，daemon 入口
+     * 解析后显式传进来。
+     */
+    childCwd?: string,
   ): Promise<{ sessionId: string; sockPath: string; isReattach: boolean }> {
     if (!SESSION_ID_RE.test(sessionId)) {
       throw makeServerError('INVALID_PARAMS', `unsafe sessionId ${JSON.stringify(sessionId)} — only [A-Za-z0-9_-] allowed`);
@@ -273,7 +313,7 @@ export class PiSessionRegistry {
         `session limit reached (${MAX_SESSIONS}) — refusing to spawn more`,
       );
     }
-    const promise = this.spawnSession(sessionId, cmd, env, envHash)
+    const promise = this.spawnSession(sessionId, cmd, env, envHash, childCwd)
       .finally(() => this.pendingSpawns.delete(sessionId));
     this.pendingSpawns.set(sessionId, promise);
     return promise;
@@ -408,6 +448,7 @@ export class PiSessionRegistry {
     cmd: string,
     env: Record<string, string>,
     envHash: string,
+    childCwd: string | undefined,
   ): Promise<{ sessionId: string; sockPath: string; isReattach: boolean }> {
     // 1) Write env-file (0600 from birth — Node mode applies at open, no
     //    TOCTOU window like chmod-after-write). pi reads it at spawn.
@@ -491,16 +532,14 @@ export class PiSessionRegistry {
     // stdio 显式 ['pipe','pipe','pipe'] → spawn 返回 ChildProcessWithoutNullStreams,
     // 保持 child.stdout/stderr 非空类型(显式注解 ChildProcess 会让它们变 nullable)。
     let child: ChildProcessWithoutNullStreams;
-    // 子进程 cwd：daemon 被 spawn 时的工作目录（见 PiSessionRegistryOptions.defaultChildCwd）。
-    // 目录已被删除时不传，退回继承 daemon 当前 cwd（`/`）的旧行为。
-    const childCwd = this.defaultChildCwd !== undefined && fs.existsSync(this.defaultChildCwd)
-      ? this.defaultChildCwd
-      : undefined;
+    // 子进程 cwd：由 `pi/ensure` 的 `cwdPolicy` 契约解析后显式传入（见
+    // `resolvePiEnsureChildCwd`），registry 不推断、不读自己的进程 cwd。
+    const resolvedChildCwd = childCwd !== undefined && fs.existsSync(childCwd) ? childCwd : undefined;
     try {
       child = spawn('bash', ['-c', cmd], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: childEnv,
-        ...(childCwd === undefined ? {} : { cwd: childCwd }),
+        ...(resolvedChildCwd === undefined ? {} : { cwd: resolvedChildCwd }),
       });
     } catch (err) {
       this.logger.warn?.('pi spawn threw synchronously — cleaning up env-file', {

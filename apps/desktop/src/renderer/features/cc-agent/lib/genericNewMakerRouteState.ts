@@ -58,9 +58,10 @@ export function makeGenericNewMakerRouteState(pathname: string): NewMakerRouteSt
   return {
     ...state,
     workspacePrompt: 'generic',
-    dialogueTargetRequest: {
-      ...state.dialogueTargetRequest,
-      preserveWorkspaceIfSameDevice: true,
-    },
+    // 通用新建只继承「任务所在电脑」，同机时保留用户已选的草稿项目：意图仍是一次性导航，
+    // 但语义是「泛新建」而不是「打开对话」。新格式下把它写进同一个 intent。
+    newMakerIntent: state.newMakerIntent.kind === 'dialogue'
+      ? { ...state.newMakerIntent, preserveWorkspaceIfSameDevice: true }
+      : state.newMakerIntent,
   };
 }

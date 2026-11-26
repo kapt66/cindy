@@ -120,7 +120,9 @@ describe('PSB 远程工作区目标', () => {
     // 还没发首条消息：没有 PSB 会话，也就不该有 psb: 身份与虚拟工作目录。
     expect(before.remoteHostId).toBeNull();
     expect(before.workingDir).toBeNull();
-    expect(before.explicitNoProject).toBe(true);
+    // `explicitNoProject` **只**表示用户显式选了「对话」，不再被借用成「远程目标没有本地
+    // 项目目录」。远程目标靠目标自身/渠道状态识别默认目录预填，不靠这个标记。
+    expect(before.explicitNoProject).toBe(false);
     expect(before.remoteProjectName).toBe('SAGA2 设计');
     expect(before.remoteInstanceName).toBe('设计机-01');
     expect(before.psbTarget).toEqual(workspaceTarget);

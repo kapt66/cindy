@@ -229,6 +229,60 @@ describe('占用闸门：状态机', () => {
     });
   });
 
+  it('PSB 的权威 usable/unusableReason 被采信（不是只看在线 + state）', async () => {
+    // 旧实现完全不读 `usable`：PSB 说「不能开新会话」时 Cindy 仍放行。四种原因各自成可行动结果。
+    const occupied = createHarness({
+      workspaces: async () => [
+        workspaceRow({
+          usable: false,
+          unusableReason: 'occupied-by-other',
+          occupancy: {
+            occupied: true,
+            byMe: false,
+            personId: '9',
+            personName: '李四',
+            occupiedAt: 2,
+          },
+        }),
+      ],
+    });
+    expect(await occupied.lock.ensure(WORKSPACE_ID)).toEqual({
+      ok: false,
+      reason: 'occupied-by-other',
+      personName: '李四',
+    });
+
+    const offline = createHarness({
+      workspaces: async () => [
+        workspaceRow({ usable: false, unusableReason: 'client-offline' }),
+      ],
+    });
+    expect(await offline.lock.ensure(WORKSPACE_ID)).toEqual({ ok: false, reason: 'offline' });
+
+    const notReady = createHarness({
+      workspaces: async () => [
+        workspaceRow({ usable: false, unusableReason: 'workspace-not-ready' }),
+      ],
+    });
+    expect(await notReady.lock.ensure(WORKSPACE_ID)).toMatchObject({
+      ok: false,
+      reason: 'workspace-unavailable',
+      missing: false,
+    });
+  });
+
+  it('agent-unsupported 只否定「开新会话」：工作区级写入口（占用闸门）不被无关原因锁死', async () => {
+    const harness = createHarness({
+      workspaces: async () => [
+        workspaceRow({ usable: false, unusableReason: 'agent-unsupported' }),
+      ],
+    });
+    // 占用闸门服务建会话 / 启串流 / 发送三条写入口；串流与那台机器有没有某 Harness 无关，
+    // 所以这里按 requireAgentRuntime:false 放行并自动占用。
+    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: true });
+    expect(harness.counts.occupy).toBe(1);
+  });
+
   it('调用方给出新鲜快照 → 不读列表（发送路径少一次请求）', async () => {
     const harness = createHarness({ workspaces: async () => [occupiedByMe()] });
 

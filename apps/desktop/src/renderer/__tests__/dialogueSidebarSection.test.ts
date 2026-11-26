@@ -181,7 +181,7 @@ describe('Mixed main list (sidebar-redesign D 期)', () => {
     expect(handler).toContain('state: makeDialogueNewMakerRouteState(target)');
     expect(handler).not.toContain('resetDraftWorkspaceTargets');
     expect(handler).not.toContain('patchNewMakerDraft');
-    expect(newMakerDraftRouteSource).toContain('readNewMakerDialogueTargetRequest(location.state)');
+    expect(newMakerDraftRouteSource).toContain('readNewMakerNavigationIntent(location.state)');
     expect(newMakerDraftRouteSource).toContain(
       'handledDialogueTargetRequestRef.current === dialogueTargetRequest.requestId',
     );
@@ -192,7 +192,7 @@ describe('Mixed main list (sidebar-redesign D 期)', () => {
     expect(newMakerDraftRouteSource).toContain("workspacePrompt === 'generic'");
     expect(newMakerDraftRouteSource).toContain("workspacePrompt === 'dialogue'");
     expect(newMakerDraftRouteSource).toContain(
-      'state: consumeNewMakerDialogueTargetRequest(location.state)',
+      'state: consumeNewMakerNavigationIntent(location.state, dialogueTargetRequest)',
     );
     expect(newMakerDraftRouteSource).toContain('replace: true');
     expect(handler).toContain("navigate('/cc-agent/new'");
@@ -252,3 +252,4 @@ describe('Mixed main list (sidebar-redesign D 期)', () => {
     );
   });
 });
+

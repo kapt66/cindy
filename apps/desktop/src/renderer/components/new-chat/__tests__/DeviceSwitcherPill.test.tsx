@@ -66,4 +66,32 @@ describe('DeviceSwitcherPill remote-workspace channel', () => {
       'remoteWorkspace.sidebar.title',
     );
   });
+
+  it('exposes the position channels as a single-choice radiogroup with a checked option', () => {
+    // 位置是互斥单选：读屏需要「一组里当前选的是哪一项」，而不是一串独立按钮。
+    // 最小失败输入：行上没有 role/aria-checked 时，用户（读屏）无法知道当前跑在哪台设备上。
+    renderPill({
+      devices: [{ deviceId: 'device-a', name: 'Device A', platform: null, online: true }],
+      value: 'device-a',
+    });
+    const group = screen.getByRole('radiogroup');
+    expect(group.getAttribute('aria-label')).toBe('newChat.deviceSwitcher.label');
+    const options = screen.getAllByRole('radio');
+    expect(options).toHaveLength(4);
+    expect(options.filter((option) => option.getAttribute('aria-checked') === 'true')).toHaveLength(1);
+    const selected = options.find((option) => option.getAttribute('aria-checked') === 'true');
+    expect(selected?.textContent).toContain('Device A');
+  });
+
+  it('keeps an offline device in the group but marks it aria-disabled', () => {
+    renderPill({
+      devices: [{ deviceId: 'device-a', name: 'Device A', platform: null, online: false }],
+    });
+    const offline = screen
+      .getAllByRole('radio')
+      .find((option) => option.textContent?.includes('Device A'));
+    expect(offline?.getAttribute('aria-disabled')).toBe('true');
+    expect(offline?.hasAttribute('disabled')).toBe(true);
+  });
 });
+

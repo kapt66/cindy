@@ -9,11 +9,12 @@
  *
  *   - URL：`wss://<psb>/api/cindy/remote/sessions/<sessionId>/agent-tunnel?mode=…&bundleVersion=…`
  *   - 鉴权：`Authorization: Bearer <Cindy Connection JWT>`（不是 MCPRouter 的 `cookie: session=`）
- *   - 失败分类：把 PSB 的 HTTP 状态/关闭码收敛成**可归因**的 Cindy 错误码（`[PSB_*]` 前缀），
- *     上层（maker-host 的 lazy create / send 失败）才能给出"哪一边不对"的提示，而不是一句
+ *   - 失败分类：把 PSB 的 HTTP 状态/关闭码收敛成**可归因**的结构化错误（`PsbTunnelError`：
+ *     `code ∈ PSB_TUNNEL_FAILURE_CODES` + `detail` + 可选的 `PsbRemoteFailure`），上层
+ *     （maker-host 的 lazy create / send 失败）才能给出"哪一边不对"的提示，而不是一句
  *     `LAZY_CREATE_FAILED`。
  *
- * ## 三条不变式
+ * ## 四条不变式
  *
  * 1. **`bundleVersion` 只在 cc-mgr / codex-appserver 上携带**（与 MCPR 同口径）：pi / exec 不消费
  *    cc-mgr 产物，声明版本只会让服务端白做一次物化。取值一律来自 `CC_MGR_BUNDLE_VERSION`，
@@ -23,11 +24,23 @@
  *    `pi-mcpr-remote.ts` 里那套阶段切换逻辑可以原样接在这条流上。
  * 3. **失败不静默**：握手失败、鉴权被拒、会话终态、工作区被他人占用分别是不同的码——
  *    renderer 要用它们决定"重试 / 去占用 / 换客户端"，而不是一律"连接失败"。
+ *    `message` 仍保持 `[CODE] detail` 的形状（既有调用方靠前缀判断），同时 `code` 是结构化事实。
+ * 4. **就绪前的业务字节不能丢**：服务端在 `agent-tunnel.ready` 之后可能立即发首帧（cc-mgr 的
+ *    hello、pi 的 RPC 输出）。旧实现从 `open` 到 ready 之间只监听控制帧，binary 帧直接丢弃；
+ *    现在先挂接收、有界排队，句柄交给调用方后**在首个订阅者出现时按序回放**（见 `wsFrames.ts`）。
+ *
+ * ## ready 帧的能力探测（为什么不再固定等 5s）
+ *
+ * `readyFrame=1` 是 PSB 0.1.160+ 的 opt-in：老服务端不认这个参数、也就永远不发 ready 帧。
+ * 旧实现对老服务端每条长连接都固定等满 5s（exec 1.2s），远程任务启动会累计多等十几秒。
+ * 现在按**进程级能力探测**：第一次等到 ready → `supported`；第一次超时 → 判 `unsupported`
+ * 并跳过后续等待（老服务端的兜底行为本来就是「收到就发，服务端有 1MiB 缓冲」）。
+ * 探测结果在同一个 PSB 站点进程生命周期内复用；单测用
+ * {@link resetPsbTunnelReadyFrameProbeForTest} 复位。
  */
 
-import { EventEmitter } from 'node:events';
+import WebSocket from 'ws';
 
-import WebSocket, { type RawData } from 'ws';
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { CC_MGR_BUNDLE_VERSION } from '@cindy/maker-cc-manager';
@@ -35,35 +48,20 @@ import { CC_MGR_BUNDLE_VERSION } from '@cindy/maker-cc-manager';
 import {
   parsePsbRemoteHostId,
   psbTunnelNeedsBundleVersion,
+  type PsbRemoteFailure,
+  type PsbTunnelFailureCode,
   type PsbTunnelMode,
 } from '../../shared/psb-remote-workspace.js';
-import { psbWebSocketUrl } from './psbEndpoint.js';
+import type { PsbAuthFailureKind } from './psbAuth.js';
+import { psbAuthFailure } from './psbAuth.js';
 import { psbAgentTunnelPath } from './psbClient.js';
-
-type WebSocketLike = {
-  readyState: number;
-  binaryType?: string;
-  send(data: string | Buffer, callback?: (error?: Error) => void): void;
-  close(code?: number, reason?: string): void;
-  terminate?: () => void;
-  on(event: 'open', callback: () => void): unknown;
-  on(event: 'message', callback: (data: RawData, isBinary: boolean) => void): unknown;
-  on(event: 'close', callback: (code: number, reason: Buffer) => void): unknown;
-  on(event: 'error', callback: (error: Error) => void): unknown;
-  on(
-    event: 'unexpected-response',
-    callback: (
-      _request: unknown,
-      response: {
-        statusCode?: number;
-        resume(): void;
-        on(event: 'data', callback: (chunk: Buffer | string) => void): unknown;
-        on(event: 'end', callback: () => void): unknown;
-        on(event: 'error', callback: () => void): unknown;
-      },
-    ) => void,
-  ): unknown;
-};
+import { assertPsbIdentifier, psbWebSocketUrl } from './psbEndpoint.js';
+import {
+  EXEC_STREAM_BUFFERED_BYTES,
+  createExecByteStream,
+  toBuffer,
+  type PsbWebSocketLike,
+} from './wsFrames.js';
 
 /** Upgrade 被拒时读 body 的上限与兜底超时（只为拿到 PSB 的那句原因，不做重试）。 */
 const PSB_TUNNEL_UPGRADE_BODY_LIMIT = 2048;
@@ -73,8 +71,6 @@ const PSB_TUNNEL_UPGRADE_BODY_TIMEOUT_MS = 2000;
  * 就绪帧（PSB 0.1.159+）：Upgrade 成功后、业务字节之前的一条**文本帧**。
  *
  * PSB 的说明（协作需求 §14.1）：收到它再发首帧；`mode`/`sessionId`/`waitMs` 只作诊断。
- * 兼容：老服务端不发这条帧，所以等待是有超时的——超时后按老行为继续（新版服务端另有 1 MiB
- * 缓冲兜底，早发一首帧不会被拒）。
  */
 const PSB_TUNNEL_READY_TYPE = 'agent-tunnel.ready';
 /** 长连接会话（cc-mgr / codex-appserver / pi）给足客户端出站隧道建立的时间。 */
@@ -82,11 +78,43 @@ const PSB_TUNNEL_READY_TIMEOUT_MS = 5000;
 /** 一次性 exec（文件操作/探针）要快：等不到就按老行为直接发。 */
 const PSB_TUNNEL_READY_TIMEOUT_EXEC_MS = 1200;
 
+/** 就绪能力探测状态（进程级；见文件头「ready 帧的能力探测」）。 */
+export type PsbReadyFrameCapability = 'unknown' | 'supported' | 'unsupported';
+
+let readyFrameCapability: PsbReadyFrameCapability = 'unknown';
+
+/** 单测：复位能力探测（生产只在进程启动时为 `unknown`）。 */
+export function resetPsbTunnelReadyFrameProbeForTest(): void {
+  readyFrameCapability = 'unknown';
+}
+
+/** 单测 / 诊断：读当前探测结果。 */
+export function readPsbTunnelReadyFrameCapability(): PsbReadyFrameCapability {
+  return readyFrameCapability;
+}
+
+/**
+ * 隧道失败（结构化；`message` 仍是 `[CODE] detail`，兼容既有按前缀判断的调用方）。
+ *
+ * `failure` 是给上层做 IPC / 文案映射用的统一失败形状（`code` + `messageKey`）：
+ * 隧道错误最终会进入用户可见的回合错误，码与文案键必须与 HTTP 侧同表。
+ */
+export class PsbTunnelError extends Error {
+  constructor(
+    readonly code: PsbTunnelFailureCode,
+    readonly detail: string,
+    readonly failure: PsbRemoteFailure | null = null,
+  ) {
+    super(detail.length > 0 ? `[${code}] ${detail}` : `[${code}]`);
+    this.name = 'PsbTunnelError';
+  }
+}
+
 /** 把 PSB 的拒绝原因附在分类错误后面（单行、截断；没有 body 就返回原错误）。 */
-function withUpgradeDetail(error: Error, body: string): Error {
+function withUpgradeDetail(error: PsbTunnelError, body: string): PsbTunnelError {
   const detail = body.replace(/\s+/g, ' ').trim().slice(0, 300);
   if (!detail) return error;
-  return new Error(`${error.message}: ${detail}`);
+  return new PsbTunnelError(error.code, `${error.detail}: ${detail}`, error.failure);
 }
 
 /** 4004 的排队期原因（纯 JSON，PSB 0.1.159+）：`{reasonCode, cause, waitMs, bufferedBytes, limitBytes}`。 */
@@ -111,19 +139,53 @@ function parseNotReadyReason(reason: Buffer): PsbTunnelNotReadyReason | null {
   }
 }
 
-
-
 type WebSocketConstructor = new (
   url: string,
   options: {
     headers: Record<string, string>;
     agent?: unknown;
   },
-) => WebSocketLike;
+) => PsbTunnelSocket;
+
+/** `ws` 非 101 响应体（Node `http.IncomingMessage` 的最小面）。 */
+interface PsbTunnelUpgradeResponse {
+  statusCode?: number;
+  resume(): void;
+  on(event: 'data', callback: (chunk: Buffer | string) => void): unknown;
+  on(event: 'end', callback: () => void): unknown;
+  on(event: 'error', callback: () => void): unknown;
+}
+
+/**
+ * 隧道 socket 面：`PsbWebSocketLike`（与字节工具共用）+ `unexpected-response`。
+ *
+ * 后者是 `ws` 在 Upgrade 被拒时才发的事件，类型不在共用结构里（字节工具用不到它）。
+ */
+type PsbTunnelSocket = PsbWebSocketLike & {
+  on(
+    event: 'unexpected-response',
+    callback: (_request: unknown, response: PsbTunnelUpgradeResponse) => void,
+  ): unknown;
+};
+
+/**
+ * 取 token 的结果（隧道自己的最小依赖面）。
+ *
+ * **`kind` 必填**是推荐的形状；旧装配只给 `reasonKey` 时按 reasonKey 归因
+ * （`needOrg` / `needLogin` / 其余 = 签发通道失败），因此不会把「网络抖动」误报成「请重新登录」。
+ */
+export type PsbTunnelTokenResult =
+  | { readonly ok: true; readonly token: string }
+  | {
+      readonly ok: false;
+      readonly reasonKey: string;
+      readonly detail?: string | null;
+      readonly kind?: PsbAuthFailureKind;
+    };
 
 export interface PsbTunnelDeps {
   /** 取当前身份的 PSB Connection JWT（生产 = `getPsbConnectionToken(deps)` 的结果）。 */
-  getToken?: () => Promise<{ ok: true; token: string } | { ok: false; reasonKey: string }>;
+  getToken?: () => Promise<PsbTunnelTokenResult>;
   WebSocketCtor?: WebSocketConstructor;
   /**
    * 按目标 URL 取 `ws` 的出站 agent（生产 = `createOutboundHttpAgent`，吃系统代理）。
@@ -141,6 +203,16 @@ export interface PsbTunnelDeps {
    * 单测用它把「超时按老行为继续」压到几毫秒。
    */
   readyTimeoutMs?: number;
+  /**
+   * main 侧日志面（可选；生产 = `createLogger('psb-tunnel')`，单测不注入）。
+   *
+   * 目前只用于一条告警：就绪前到达的 binary 帧超过 {@link EXEC_STREAM_BUFFERED_BYTES} 被丢弃。
+   * 静默丢业务字节会让「隧道连上了但首帧丢失」在现场无法归因（服务端出站缓冲也有 1MiB 上限，
+   * 超限说明对端在握手期就灌数据了）；只 warn 一次，避免坏流把日志刷满。
+   */
+  logger?: {
+    warn(message: string, fields?: Record<string, unknown>): void;
+  };
 }
 
 /**
@@ -158,6 +230,10 @@ export interface PsbTunnelDeps {
  * 超时兜底（老服务端不发 ready）仍保留在 `openPsbTunnel`，两者互不替代。
  */
 export function buildPsbTunnelUrl(sessionId: string, mode: PsbTunnelMode): string {
+  // 会话 id 会被编进路径：含 `/` `\` `%` 空白等字符时 `encodeURIComponent` 会产出 `%2F` / `%5C`
+  // 这类编码分隔符，而路径校验（2026-11-27 复审 P2）拒绝它们 —— 那是协议违约的 id，不是要放行的
+  // 合法形态，所以在拼 URL 前明确拒绝（真实 PSB 会话 id 是 UUID / 短标识）。
+  assertPsbIdentifier(sessionId);
   const url = new URL(psbWebSocketUrl(psbAgentTunnelPath(sessionId)));
   const params = new URLSearchParams();
   params.set('mode', mode);
@@ -167,6 +243,74 @@ export function buildPsbTunnelUrl(sessionId: string, mode: PsbTunnelMode): strin
   url.search = params.toString();
   url.hash = '';
   return url.toString();
+}
+
+/**
+ * 取 token 失败 → 可归因的隧道错误（HTTP 与隧道共用 `psbAuthFailure` 的映射）。
+ *
+ * 未登录 / 非企业组织 → `PSB_AUTH_REQUIRED`（带身份原因键）；签发通道失败 → 网络类码。
+ * **这里不失效 token 缓存**：取不到 token 不等于缓存里那条坏了（失效只发生在 PSB 明确拒绝后）。
+ */
+function tokenFailureError(auth: PsbTunnelTokenResult | null): PsbTunnelError {
+  const kind: PsbAuthFailureKind =
+    auth?.ok === false
+      ? (auth.kind ??
+        (auth.reasonKey === 'remoteWorkspace.status.needOrg'
+          ? 'need-org'
+          : auth.reasonKey === 'remoteWorkspace.status.needLogin'
+            ? 'signed-out'
+            : 'unreachable'))
+      : 'signed-out';
+  const failure = psbAuthFailure({
+    ok: false,
+    kind,
+    reasonKey: auth?.ok === false ? auth.reasonKey : 'remoteWorkspace.status.needLogin',
+    detail: auth?.ok === false ? (auth.detail ?? null) : null,
+  });
+  const code: PsbTunnelFailureCode =
+    TUNNEL_CODE_FOR_AUTH_FAILURE[failure.code] ?? 'PSB_TUNNEL_UNREACHABLE';
+  return new PsbTunnelError(
+    code,
+    code === 'PSB_AUTH_REQUIRED'
+      ? AUTH_REQUIRED_TUNNEL_DETAIL
+      : (failure.message ?? 'the Cindy connection token could not be issued'),
+    failure,
+  );
+}
+
+/**
+ * HTTP 侧鉴权失败码 → 隧道的可归因失败码（单表）。
+ *
+ * 取 token 失败只有两种结局：身份问题（未登录 / 非企业组织 → `AUTH_REQUIRED`）与签发通道
+ * 不可达（网络类）。之前 `tokenFailureError` 在码与文案两处各 `=== 'AUTH_REQUIRED'` 判一次；
+ * 改成查表后新增一种身份失败只改这里，不会出现「码改了、文案没改」的漂移（2026-11-27 复审
+ * P2 单表整理）。
+ */
+const TUNNEL_CODE_FOR_AUTH_FAILURE: Readonly<
+  Partial<Record<PsbRemoteFailure['code'], PsbTunnelFailureCode>>
+> = {
+  AUTH_REQUIRED: 'PSB_AUTH_REQUIRED',
+  PSB_UNREACHABLE: 'PSB_TUNNEL_UNREACHABLE',
+};
+
+/** 身份缺失（未登录 / 非企业组织）时的隧道失败原文（与 HTTP 侧 `psbAuthFailure` 同口径）。 */
+const AUTH_REQUIRED_TUNNEL_DETAIL = 'a Cindy connection token is required for the PSB tunnel';
+
+/** 文本帧是否是 `agent-tunnel.ready`（JSON 优先；保留 `includes` 兜底以兼容历史形状）。 */
+function isReadyTextFrame(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (typeof parsed === 'object' && parsed !== null) {
+        return (parsed as Record<string, unknown>)['type'] === PSB_TUNNEL_READY_TYPE;
+      }
+    } catch {
+      /* 落到 includes 兜底 */
+    }
+  }
+  return trimmed.includes(PSB_TUNNEL_READY_TYPE);
 }
 
 /**
@@ -181,28 +325,52 @@ export async function openPsbTunnel(
 ): Promise<ExecStreamHandle> {
   const sessionId = parsePsbRemoteHostId(remoteHostId);
   if (!sessionId) {
-    throw new Error(
-      `[PSB_SESSION_INVALID] invalid PSB remote host id (expected psb:<sessionId>): ${remoteHostId}`,
+    throw new PsbTunnelError(
+      'PSB_SESSION_INVALID',
+      `invalid PSB remote host id (expected psb:<sessionId>): ${remoteHostId}`,
     );
   }
   const mode = deps.mode ?? 'cc-mgr';
   const auth = deps.getToken ? await deps.getToken() : null;
-  if (!auth || !auth.ok) {
-    throw new Error('[PSB_AUTH_REQUIRED] a Cindy connection token is required for the PSB tunnel');
-  }
+  if (!auth || !auth.ok) throw tokenFailureError(auth);
   const Ctor = deps.WebSocketCtor ?? (WebSocket as unknown as WebSocketConstructor);
   const url = buildPsbTunnelUrl(sessionId, mode);
   const agent = deps.agentForUrl ? await deps.agentForUrl(url) : deps.agent?.();
   const socket = new Ctor(url, {
     headers: { authorization: `Bearer ${auth.token}` },
     ...(agent === undefined ? {} : { agent }),
-  });
+  }) as PsbTunnelSocket;
   socket.binaryType = 'nodebuffer';
 
   return new Promise<ExecStreamHandle>((resolve, reject) => {
     let settled = false;
     let opened = false;
     let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    /**
+     * 就绪前到达的 binary 帧（业务字节）：有界排队，句柄交给调用方后回放。
+     * 旧实现直接丢弃，表现为「隧道连上了但首帧丢了」。
+     */
+    const pendingFrames: Buffer[] = [];
+    let pendingBytes = 0;
+    let droppedPreReadyFrames = 0;
+    let warnedPreReadyOverflow = false;
+    /**
+     * 就绪前缓冲溢出（> {@link EXEC_STREAM_BUFFERED_BYTES}）的告警。
+     *
+     * 只 warn 一次：丢的是业务字节，必须留下证据（否则表现为「连上了但首帧丢了」）；但一条
+     * 灌数据的连接会持续丢帧，逐帧 warn 会把 main 日志刷满。
+     */
+    const reportPreReadyDrop = (frames: number): void => {
+      droppedPreReadyFrames += frames;
+      if (warnedPreReadyOverflow) return;
+      warnedPreReadyOverflow = true;
+      deps.logger?.warn('psb tunnel dropped pre-ready frames beyond the buffer budget', {
+        sessionId,
+        mode,
+        frames: droppedPreReadyFrames,
+        limitBytes: EXEC_STREAM_BUFFERED_BYTES,
+      });
+    };
     const clearReadyTimer = (): void => {
       if (readyTimer !== null) {
         clearTimeout(readyTimer);
@@ -225,21 +393,64 @@ export async function openPsbTunnel(
       if (settled || !opened) return;
       settled = true;
       clearReadyTimer();
-      resolve(toByteStream(socket));
+      resolve(
+        createExecByteStream(socket, {
+          classifyError: classifyPsbError,
+          classifyClose: classifyPsbClose,
+          closedErrorCodes: [4003, 4004],
+          // 文本帧是控制面（`agent-tunnel.ready`），绝不能混进 JSONL/exec 输出。
+          binaryOnly: true,
+          initialFrames: pendingFrames,
+          bufferUntilSubscribed: true,
+          onBufferedOverflow: (dropped) => {
+            reportPreReadyDrop(dropped.frames);
+          },
+        }),
+      );
+      // `initialFrames` 已按引用交给句柄：这里只清账，不要再把同一批帧 emit 两次。
+      pendingFrames.length = 0;
+      pendingBytes = 0;
     };
     socket.on('open', () => {
       if (settled || opened) return;
       opened = true;
+      if (readyFrameCapability === 'unsupported') {
+        // 老服务端从不发 ready 帧：探测已经判过，别让每条连接都白等。
+        proceed();
+        return;
+      }
       const timeoutMs =
         mode === 'exec' ? PSB_TUNNEL_READY_TIMEOUT_EXEC_MS : PSB_TUNNEL_READY_TIMEOUT_MS;
-      readyTimer = setTimeout(proceed, Math.max(0, deps.readyTimeoutMs ?? timeoutMs));
+      readyTimer = setTimeout(() => {
+        if (readyFrameCapability === 'unknown') {
+          // 一次探测：等不到就记「这个服务端不支持 ready 帧」，后续连接不再等待。
+          readyFrameCapability = 'unsupported';
+        }
+        proceed();
+      }, Math.max(0, deps.readyTimeoutMs ?? timeoutMs));
       readyTimer.unref?.();
     });
-    // 文本帧 = 控制面（PSB 0.1.159+ 的 `agent-tunnel.ready`）；业务字节必须是 binary。
+    // 文本帧 = 控制面；binary 帧 = 业务字节，就绪前先排队（见上）。
     socket.on('message', (data, isBinary) => {
-      if (isBinary) return;
-      const text = toBuffer(data).toString('utf8').trim();
-      if (text.startsWith('{') && text.includes(PSB_TUNNEL_READY_TYPE)) {
+      if (isBinary !== false) {
+        if (settled) return; // 句柄已接管（它自己的监听器负责转发）
+        const chunk = toBuffer(data);
+        if (chunk.byteLength === 0) return;
+        pendingFrames.push(chunk);
+        pendingBytes += chunk.byteLength;
+        let droppedNow = 0;
+        while (pendingBytes > EXEC_STREAM_BUFFERED_BYTES && pendingFrames.length > 0) {
+          const dropped = pendingFrames.shift();
+          if (!dropped) break;
+          pendingBytes -= dropped.byteLength;
+          droppedNow += 1;
+        }
+        if (droppedNow > 0) reportPreReadyDrop(droppedNow);
+        return;
+      }
+      const text = toBuffer(data).toString('utf8');
+      if (isReadyTextFrame(text)) {
+        if (readyFrameCapability !== 'supported') readyFrameCapability = 'supported';
         clearReadyTimer();
         proceed();
       }
@@ -283,27 +494,54 @@ export async function openPsbTunnel(
  * 409 是"会话/工作区此刻不能开隧道"（离线、非就绪、被他人占用、终态）。归因错了用户就会去做
  * 无效动作（重新登录一次解决不了"工作区被占用"）。
  */
-export function classifyPsbHandshakeStatus(statusCode: number | undefined): Error {
+export function classifyPsbHandshakeStatus(statusCode: number | undefined): PsbTunnelError {
   switch (statusCode) {
     case 401:
     case 403:
-      return new Error(`[PSB_TUNNEL_AUTH] authentication rejected (${statusCode})`);
+      return new PsbTunnelError(
+        'PSB_TUNNEL_AUTH',
+        `authentication rejected (${statusCode})`,
+        {
+          code: 'AUTH_INVALID',
+          messageKey: 'remoteWorkspace.error.auth',
+          message: null,
+        },
+      );
     case 404:
-      return new Error('[PSB_SESSION_NOT_FOUND] session is not visible to this account');
+      return new PsbTunnelError(
+        'PSB_SESSION_NOT_FOUND',
+        'session is not visible to this account',
+        { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.admin.staleMissingTitle', message: null },
+      );
     case 409:
-      return new Error('[PSB_SESSION_NOT_READY] session or workspace is not ready for a tunnel');
+      return new PsbTunnelError(
+        'PSB_SESSION_NOT_READY',
+        'session or workspace is not ready for a tunnel',
+        {
+          code: 'PSB_STREAM_NOT_READY',
+          messageKey: 'remoteWorkspace.error.unknown',
+          message: null,
+        },
+      );
     case 429:
-      return new Error('[PSB_RATE_LIMITED] too many tunnel attempts');
+      return new PsbTunnelError('PSB_RATE_LIMITED', 'too many tunnel attempts', null);
     default:
-      return new Error(`[PSB_TUNNEL_UNREACHABLE] handshake failed (${statusCode ?? 0})`);
+      return new PsbTunnelError(
+        'PSB_TUNNEL_UNREACHABLE',
+        `handshake failed (${statusCode ?? 0})`,
+      );
   }
 }
 
 /** 关闭码 → 可归因错误。约定见 PSB 协作需求 §4.4.1（与 MCPR 口径一致）。 */
-export function classifyPsbClose(code: number, reason: Buffer): Error {
+export function classifyPsbClose(code: number, reason: Buffer): PsbTunnelError {
   if (code === 4003) {
     const detail = reason.length > 0 ? `: ${reason.toString('utf8')}` : '';
-    return new Error(`[PSB_TUNNEL_AUTH] authentication rejected${detail}`);
+    return new PsbTunnelError('PSB_TUNNEL_AUTH', `authentication rejected${detail}`, {
+      code: 'AUTH_INVALID',
+      messageKey: 'remoteWorkspace.error.auth',
+      message: null,
+    });
   }
   if (code === 4004) {
     const parsed = parseNotReadyReason(reason);
@@ -311,10 +549,18 @@ export function classifyPsbClose(code: number, reason: Buffer): Error {
       const cause = typeof parsed.cause === 'string' ? parsed.cause : '';
       // 终态 / 离线不是"重试能好"的：给独立码，调用方（与用户文案）才能区分处置方式。
       if (cause === 'SESSION_STOPPED') {
-        return new Error('[PSB_SESSION_STOPPED] session runtime stopped');
+        return new PsbTunnelError('PSB_SESSION_STOPPED', 'session runtime stopped', {
+          code: 'PSB_SESSION_STOPPED',
+          messageKey: 'remoteWorkspace.session.streamIdle',
+          message: null,
+        });
       }
       if (cause === 'CLIENT_OFFLINE') {
-        return new Error('[PSB_CLIENT_OFFLINE] remote client is offline');
+        return new PsbTunnelError('PSB_CLIENT_OFFLINE', 'remote client is offline', {
+          code: 'CLIENT_OFFLINE',
+          messageKey: 'remoteWorkspace.error.clientOffline',
+          message: null,
+        });
       }
       const pieces = [
         cause || (typeof parsed.reasonCode === 'string' ? parsed.reasonCode : ''),
@@ -322,88 +568,38 @@ export function classifyPsbClose(code: number, reason: Buffer): Error {
         typeof parsed.bufferedBytes === 'number' ? `buffered=${parsed.bufferedBytes}` : '',
         typeof parsed.limitBytes === 'number' ? `limit=${parsed.limitBytes}` : '',
       ].filter((piece) => piece !== '');
-      return new Error(
-        `[PSB_SESSION_NOT_READY] tunnel not ready${pieces.length > 0 ? `: ${pieces.join(' ')}` : ''}`,
+      return new PsbTunnelError(
+        'PSB_SESSION_NOT_READY',
+        `tunnel not ready${pieces.length > 0 ? `: ${pieces.join(' ')}` : ''}`,
+        {
+          code: 'PSB_STREAM_NOT_READY',
+          messageKey: 'remoteWorkspace.error.unknown',
+          message: null,
+        },
       );
     }
     const detail = reason.length > 0 ? `: ${reason.toString('utf8')}` : '';
-    return new Error(`[PSB_SESSION_NOT_READY] session runtime is not ready${detail}`);
+    return new PsbTunnelError(
+      'PSB_SESSION_NOT_READY',
+      `session runtime is not ready${detail}`,
+      {
+        code: 'PSB_STREAM_NOT_READY',
+        messageKey: 'remoteWorkspace.error.unknown',
+        message: null,
+      },
+    );
   }
   const detail = reason.length > 0 ? `: ${reason.toString('utf8')}` : '';
-  return new Error(`[PSB_TUNNEL_UNREACHABLE] tunnel closed (${code})${detail}`);
+  return new PsbTunnelError('PSB_TUNNEL_UNREACHABLE', `tunnel closed (${code})${detail}`);
 }
 
-function classifyPsbError(error: Error): Error {
-  return error.message.startsWith('[PSB_')
-    ? error
-    : new Error(`[PSB_TUNNEL_UNREACHABLE] ${error.message}`);
-}
-
-function toByteStream(socket: WebSocketLike): ExecStreamHandle {
-  const events = new EventEmitter();
-  let closed = false;
-  // 只有 binary 帧是业务字节流。文本帧是控制面（`agent-tunnel.ready` 等），不能混进 JSONL/exec 输出，
-  // 否则解析层会撞到"非 JSON 帧"（PSB 协作需求 §14.1 的兼容要求）。
-  socket.on('message', (data, isBinary) => {
-    if (!isBinary) return;
-    events.emit('stdout', toBuffer(data));
-  });
-  socket.on('error', (error) => events.emit('stream-error', classifyPsbError(error)));
-  socket.on('close', (code, reason) => {
-    if (closed) return;
-    closed = true;
-    if (code === 4003 || code === 4004) events.emit('stream-error', classifyPsbClose(code, reason));
-    events.emit('close', { code, signal: reason.length > 0 ? reason.toString('utf8') : null });
-  });
-  return {
-    write(data) {
-      if (socket.readyState !== WebSocket.OPEN) {
-        throw new Error('[PSB_TUNNEL_UNREACHABLE] tunnel closed');
-      }
-      socket.send(data, (error) => {
-        if (error) events.emit('stream-error', classifyPsbError(error));
-      });
-      return true;
-    },
-    end(data) {
-      if (data !== undefined) this.write(data);
-      socket.close(1000, 'client end');
-    },
-    kill() {
-      if (socket.terminate) socket.terminate();
-      else socket.close(1000, 'client kill');
-    },
-    onStdoutBytes(callback) {
-      events.on('stdout', callback);
-      return () => events.off('stdout', callback);
-    },
-    onStdout(callback) {
-      const onBytes = (chunk: Buffer) => callback(chunk.toString('utf8'));
-      events.on('stdout', onBytes);
-      return () => events.off('stdout', onBytes);
-    },
-    onStderr(callback) {
-      events.on('stderr', callback);
-      return () => events.off('stderr', callback);
-    },
-    onDrain(callback) {
-      events.on('drain', callback);
-      return () => events.off('drain', callback);
-    },
-    onClose(callback) {
-      events.on('close', callback);
-      return () => events.off('close', callback);
-    },
-    onError(callback) {
-      events.on('stream-error', callback);
-      return () => events.off('stream-error', callback);
-    },
-  };
-}
-
-function toBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data.map(toBuffer));
-  return Buffer.from(data);
+/** 网络层错误 → 隧道可归因错误（已带 `[PSB_*]` 的 passthrough 成结构化码）。 */
+function classifyPsbError(error: Error): PsbTunnelError {
+  if (error instanceof PsbTunnelError) return error;
+  const match = /^\[(PSB_[A-Z_]+)\]\s?(.*)$/.exec(error.message);
+  if (match) {
+    const code = match[1] as PsbTunnelFailureCode;
+    return new PsbTunnelError(code, match[2] ?? '');
+  }
+  return new PsbTunnelError('PSB_TUNNEL_UNREACHABLE', error.message);
 }

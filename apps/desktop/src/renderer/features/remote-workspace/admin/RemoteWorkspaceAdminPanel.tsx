@@ -24,9 +24,14 @@
  *      - 没有可用工作区 / 读不到 / 旧 preload 没有管理桥时，内容区显示对应空态，但页头与
  *        分类导航**始终保留**（页面结构不变）。
  *
+ * **分类切换保活（2026-11-26 独立审查 r4 P1）**：切到版本控制 / 设置**不卸载**远程连接面板
+ * （只 `hidden` 起来），已建立的串流继续；只有页签不可见 / 关闭 / 换工作区才自动释放观看名额。
+ * 旧实现按分类卸载连接区并静默停播：用户看一眼「版本控制」回来就得重新点启动。
+ *
  * **stale（2026-11-26 真机事故）**：页头在 stale / 工作区不可见时仍显示名称、模板 · 机器
  * （固定信息来自本机快照 / 历史会话行），并在页头下加一条降级说明；「还没有远程工作区」空态
- * 只在 main 明确返回 `context: null`（本机完全没有线索）时出现。
+ * 只在 main 明确返回 `context: null`（本机完全没有线索）时出现。stale 时版本控制通知**只读**：
+ * 动作按钮全部禁用并给可行动原因（这时 PSB 工作区事实不可用，点下去只有 404）。
  *
  * ## 页签形态
  *
@@ -34,7 +39,7 @@
  * 打开 / 聚焦走 `openRemoteWorkspaceAdminTab()`；关闭时页面卸载，观看名额由连接区分支释放。
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   GitBranch,
   MonitorCog,
@@ -49,14 +54,20 @@ import { Button } from '@/components/ui/button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Spinner } from '@/components/ui/spinner';
 import type { TabKindBodyProps } from '@/features/right-sidebar/types';
+import { cn } from '@/lib/utils';
 import {
   PSB_ADMIN_STALE_COPY_KEYS,
+  psbAdminContextActionBlockedKey,
+  psbAdminContextCanOperate,
   psbAdminContextIsStale,
   psbAdminContextStaleCopyKind,
   type PsbWorkspaceAdminContext,
 } from '../../../../shared/psb-workspace-admin';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
-import { useWorkspaceVcsNotice } from '../vcs/vcsNoticeStore';
+import {
+  rememberWorkspaceVcsNoticeWorkspaceLabel,
+  useWorkspaceVcsNotice,
+} from '../vcs/vcsNoticeStore';
 import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 
 import { RemoteWorkspaceAdminActions } from './RemoteWorkspaceAdminActions';
@@ -265,8 +276,14 @@ export function RemoteWorkspaceAdminPanel({
    * 数据来自 main 的广播（占用 / 释放时缓存后广播）与本 hook 首次挂载 / 换工作区时的兜底读；
    * 页面**不解析也不拼** method/path/body——「查看详情 / 一键清理 / 继续」由 View 按 kind 调
    * `runWorkspaceVcsAction`。有 notice 时版本控制分类显示内联提示条，没有则保留原占位空态。
+   * 按 `context.workspaceId` 过滤：换工作区后旧工作区的提示不会串到新工作区的页面上。
    */
   const vcsNotice = useWorkspaceVcsNotice(context?.workspaceId ?? null);
+  /** 工作区显示名进 store：全局横幅也要能写清「哪个工作区」（不为此多发请求）。 */
+  useEffect(() => {
+    if (!context) return;
+    rememberWorkspaceVcsNoticeWorkspaceLabel(context.workspaceId, context.title);
+  }, [context]);
 
   const options = useMemo(
     () =>
@@ -279,7 +296,8 @@ export function RemoteWorkspaceAdminPanel({
     [t],
   );
 
-  const renderContent = () => {
+  /** 状态类空态（读不到 / 没有工作区 / 加载中）：不渲染连接面板，分类导航仍保留。 */
+  const renderContextState = (): ReactNode => {
     if (status === 'unavailable') {
       return (
         <AdminEmptyState
@@ -307,7 +325,13 @@ export function RemoteWorkspaceAdminPanel({
           title={t('remoteWorkspace.admin.emptyLoadFailedTitle')}
           hint={t('remoteWorkspace.admin.emptyLoadFailedHint')}
           action={
-            <Button size="xs" compact variant="secondary" tone="quiet" onClick={refresh}>
+            <Button
+              size="xs"
+              compact
+              variant="secondary"
+              tone="quiet"
+              onClick={() => void refresh()}
+            >
               <RefreshCw size={13} aria-hidden />
               {t('remoteWorkspace.dialog.refresh')}
             </Button>
@@ -326,59 +350,58 @@ export function RemoteWorkspaceAdminPanel({
         />
       );
     }
-    if (category === 'versionControl') {
-      // 版本控制分类的挂载点（CINDY-RW-10）：main 广播过 advisory / 旧版 409 时，展示内联
-      // 提示与处置动作；没有通知时保留统一占位空态（不放假按钮）。
-      // stale 上下文里工作区事实不可用，但通知本身来自 main 的缓存，照旧可展示与处置。
-      if (!vcsNotice) {
-        return (
-          <AdminEmptyState
-            testId="remote-workspace-admin-version-control"
-            icon={GitBranch}
-            title={t('remoteWorkspace.admin.categories.versionControl')}
-            hint={t('remoteWorkspace.admin.placeholderComingSoon')}
-          />
-        );
-      }
-      return (
-        <div
-          data-testid="remote-workspace-admin-version-control"
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2.5"
-        >
-          <WorkspaceVcsNoticeView
-            workspaceId={vcsNotice.workspaceId}
-            notice={vcsNotice.notice}
-            operation={vcsNotice.operation}
-            variant="inline"
-            onResolved={(result) => {
-              // 清理已接受（202 异步）：重新读一次工作区上下文；不猜轮询端点，具体结果由
-              // 用户点 View 里的「刷新」重新读工作区列表。
-              if (result.kind === 'clean-workspace' && result.accepted) refresh();
-            }}
-          />
-        </div>
-      );
-    }
-    if (category === 'settings') {
+    return null;
+  };
+
+  const contextState = renderContextState();
+  /** stale / 占位身份：工作区写操作不可用（版本控制通知只读）。 */
+  const vcsReadOnly = context ? !psbAdminContextCanOperate(context) : false;
+  const vcsReadOnlyHint = context
+    ? t(psbAdminContextActionBlockedKey(context) ?? 'remoteWorkspace.admin.staleUnavailableAction')
+    : null;
+
+  const versionControlContent = (): ReactNode => {
+    // 版本控制分类的挂载点（CINDY-RW-10）：main 广播过 advisory / 旧版 409 时，展示内联
+    // 提示与处置动作；没有通知时保留统一占位空态（不放假按钮）。
+    if (!vcsNotice) {
       return (
         <AdminEmptyState
-          testId="remote-workspace-admin-settings"
-          icon={Settings2}
-          title={t('remoteWorkspace.admin.categories.settings')}
+          testId="remote-workspace-admin-version-control"
+          icon={GitBranch}
+          title={t('remoteWorkspace.admin.categories.versionControl')}
           hint={t('remoteWorkspace.admin.placeholderComingSoon')}
         />
       );
     }
     return (
-      <RemoteWorkspaceAdminConnection
-        // key = 工作区 id：切到另一个工作区即重挂，串流状态重置、旧观看名额随卸载释放。
-        key={context.workspaceId}
-        context={context}
-        active={active}
-        shellVisible={shellVisible}
-      />
+      <div
+        data-testid="remote-workspace-admin-version-control"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2.5"
+      >
+        <WorkspaceVcsNoticeView
+          workspaceId={vcsNotice.workspaceId}
+          workspaceLabel={context?.title ?? vcsNotice.workspaceLabel}
+          notice={vcsNotice.notice}
+          variant="inline"
+          readOnly={vcsReadOnly}
+          readOnlyHint={vcsReadOnlyHint}
+          onResolved={async (result) => {
+            // 清理已接受（202 异步）后先刷新事实，View 会在刷新完成后再弹成功 toast。
+            if (result.kind === 'clean-workspace' && result.accepted) await refresh();
+          }}
+        />
+      </div>
     );
   };
+
+  const settingsContent = (): ReactNode => (
+    <AdminEmptyState
+      testId="remote-workspace-admin-settings"
+      icon={Settings2}
+      title={t('remoteWorkspace.admin.categories.settings')}
+      hint={t('remoteWorkspace.admin.placeholderComingSoon')}
+    />
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -392,7 +415,7 @@ export function RemoteWorkspaceAdminPanel({
       />
       {/* stale 降级说明：固定信息仍在上方页头显示，这里只解释「为什么状态读不到」+ 重试。 */}
       {status === 'ready' && context && psbAdminContextIsStale(context) ? (
-        <WorkspaceStaleNotice context={context} onRefresh={refresh} />
+        <WorkspaceStaleNotice context={context} onRefresh={() => void refresh()} />
       ) : null}
       {/* 分类导航：左对齐紧凑排列 —— inline 轨道按内容宽度排布，靠左，不拉伸铺满，
           也不参与 space-between（用户 2026-11-26 口径）。 */}
@@ -415,7 +438,29 @@ export function RemoteWorkspaceAdminPanel({
         aria-labelledby={`remote-workspace-admin-category-${category}`}
         className="flex min-h-0 flex-1 flex-col"
       >
-        {renderContent()}
+        {contextState ??
+          (category === 'versionControl' ? (
+            versionControlContent()
+          ) : category === 'settings' ? (
+            settingsContent()
+          ) : null)}
+        {/* 远程连接面板**保活**：切到别的分类只隐藏，不卸载（串流不因此中断 / 释放名额）；
+            只有页签不可见 / 关闭 / 换工作区时连接区才卸载并释放观看名额。 */}
+        {context && !contextState ? (
+          <div
+            data-testid="remote-workspace-admin-connection-panel"
+            aria-hidden={category === 'connection' ? undefined : true}
+            className={cn('min-h-0 flex-1 flex-col', category === 'connection' ? 'flex' : 'hidden')}
+          >
+            <RemoteWorkspaceAdminConnection
+              // key = 工作区 id：切到另一个工作区即重挂，串流状态重置、旧观看名额随卸载释放。
+              key={context.workspaceId}
+              context={context}
+              active={active}
+              shellVisible={shellVisible}
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );

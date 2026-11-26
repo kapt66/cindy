@@ -24,12 +24,20 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AuthState } from '../../authManager';
 import { createIpcError } from '../../../shared/ipc-errors';
 import {
+  PSB_FAILURE_DESCRIPTORS,
   psbBannerMessageKeyForIpcCode,
   psbFailureMessageKeyForIpcCode,
   psbIpcCodeForFailure,
   psbRemoteFailureFromIpcError,
+  type PsbFailureDescriptor,
 } from '../../../shared/psb-remote-workspace';
-import { createPsbApi, PsbClientError, PSB_HTTP_MAX_RESPONSE_BYTES, readWorkspaceWebUrl } from '../psbClient';
+import {
+  createPsbApi,
+  PsbClientError,
+  PSB_HTTP_MAX_RESPONSE_BYTES,
+  psbMessageKeyForErrorCode,
+  readWorkspaceWebUrl,
+} from '../psbClient';
 import type { PsbConnectionTokenPort } from '../psbAuth';
 
 const AUTH_STATE = {
@@ -108,7 +116,7 @@ describe('psbClient 请求外壳与错误映射', () => {
 
   it('响应缺少 { data } 外壳时判协议错，不静默回落默认值（2026-11-26 联调事故）', async () => {
     // 真实事故：PSB 的 `stream/status` 曾返回**裸状态对象**（少了 `{data: …}` 一层），
-    // 宽松解析器把 `undefined` 静默回落成 `{capable:false, lastError:null}`，HTTP 200 看不出
+    // 宽松解析器把 `undefined` 静默回落成 `{capability:false, lastErrorZh:null}`，HTTP 200 看不出
     // 任何异常——最终表现为「客户端明明声明支持串流，Cindy 却显示不支持」，只能人肉比对 /clients
     // 才能发现。外壳缺失是契约违约，必须响亮失败（PSB_PROTOCOL），而不是猜默认值。
     const tokens = makeTokens();
@@ -170,7 +178,7 @@ describe('psbClient 请求外壳与错误映射', () => {
 
     // 2026-11-26 加性字段：渲染层靠它们区分「去启动桌面会话」与「等首帧」，不能被解析层吞掉。
     expect(await api.getStreamStatus('session-1')).toMatchObject({
-      capable: true,
+      capability: true,
       active: false,
       desktopSession: 'none',
       reasonCode: 'NO_DESKTOP_SESSION',
@@ -179,7 +187,7 @@ describe('psbClient 请求外壳与错误映射', () => {
     // 0.1.158 之前的 PSB 不带这两个字段：解析成 null（未知），不猜 'none'、不报协议错。
     body = { data: { capability: true, active: true, encoder: 'h264', lastErrorZh: null } };
     expect(await api.getStreamStatus('session-2')).toMatchObject({
-      capable: true,
+      capability: true,
       active: true,
       desktopSession: null,
       reasonCode: null,
@@ -214,9 +222,11 @@ describe('psbClient 请求外壳与错误映射', () => {
 
     expect(error).toBeInstanceOf(PsbClientError);
     expect((error as PsbClientError).status).toBe(401);
+    // AUTH_INVALID 与 AUTH_EXPIRED 在单表里同一个 IPC 码 / 文案键（凭证失效 → 重新登录），
+    // main 的 messageKey 必须与渲染层按 IPC 码查到的键一致，否则同一条失败会出现两套文案。
     expect((error as PsbClientError).failure).toEqual({
       code: 'AUTH_INVALID',
-      messageKey: 'remoteWorkspace.error.auth',
+      messageKey: 'remoteWorkspace.error.authExpired',
       message: 'nope',
     });
     expect(tokens.tokenCalls).toHaveLength(2);
@@ -335,6 +345,24 @@ describe('PSB 失败形状 ↔ IPC 失败码', () => {
       expect(psbBannerMessageKeyForIpcCode(code)).toBe(psbFailureMessageKeyForIpcCode(code));
     }
     expect(psbBannerMessageKeyForIpcCode('PSB_SOMETHING_NEW')).toBeNull();
+  });
+
+  it('PSB 原始码 → 文案键由共享单表派生（客户端不再手写 switch / 字面键）', () => {
+    for (const [ipcCode, rawDescriptor] of Object.entries(PSB_FAILURE_DESCRIPTORS)) {
+      const descriptor = rawDescriptor as PsbFailureDescriptor;
+      // 串流访问三档与组织鉴别条目有自己的入口，跳过其原始码的默认反查。
+      if (descriptor.state !== null || descriptor.whenMessageKey !== undefined) continue;
+      expect(psbMessageKeyForErrorCode(descriptor.psbCode), `${ipcCode} 的 PSB 码没映射`).toBe(
+        descriptor.messageKey,
+      );
+      for (const alias of descriptor.alsoPsbCodes ?? []) {
+        expect(psbMessageKeyForErrorCode(alias), `${ipcCode} 的别名 ${alias} 没映射`).toBe(
+          descriptor.messageKey,
+        );
+      }
+    }
+    // 未知码仍回落通用文案（原始码保留在 failure.code，诊断用）。
+    expect(psbMessageKeyForErrorCode('NOT_A_PSB_CODE')).toBe('remoteWorkspace.error.unknown');
   });
 
   it('渲染层从 IPC 错误里取回失败形状；不是 PSB 码的失败返回 null', () => {    // Electron 跨进程后只保留 message：渲染层拿到的就是 `[CODE] message` 这一串。
@@ -857,5 +885,152 @@ describe('ensureWorkspaceAccess：幂等拉起 + 轮询，入口未开放时非�
       failure: { code: 'PSB_UNREACHABLE' },
     });
     expect(requests).toHaveLength(1);
+  });
+
+  it('总预算是 deadline：单次请求超时被压到剩余预算内（不再「每次 20s × 次数」）', async () => {
+    const tokens = makeTokens();
+    const requests: string[] = [];
+    // 模拟 PSB 一直不回：只有 `AbortSignal` 结束这次请求。旧实现会等满 20s；总预算是 30ms。
+    const api = makeApi(
+      async (input, init) => {
+        requests.push(input);
+        return await new Promise<Response>((_resolve, reject) => {
+          const signal = init.signal as AbortSignal | undefined;
+          const onAbort = () => reject(new Error('aborted'));
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+      tokens.port,
+      { accessPoll: { attempts: 5, intervalMs: 0, totalMs: 30 }, timeoutMs: 20_000 },
+    );
+
+    const startedAt = Date.now();
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+    const elapsed = Date.now() - startedAt;
+
+    expect(outcome).toMatchObject({ ok: false, reason: 'failed' });
+    // 总预算 30ms：必须远小于单次默认超时（20s），也远小于旧实现的最坏值。
+    expect(elapsed).toBeLessThan(1_000);
+    expect(requests).toHaveLength(1);
+  });
+});
+
+/* ==================== 归一化 URL 白名单 / 列表契约 / 创建-查询语义分离 ==================== */
+
+describe('resolvePsbUrl 与 readArray：外部路径与列表契约的安全边界', () => {
+  it('action 路径的 encoded dot（%2e%2e）在发请求前被拒绝（INVALID_PARAMS）', async () => {
+    const tokens = makeTokens();
+    const calls: string[] = [];
+    const api = makeApi(async (input) => {
+      calls.push(input);
+      return jsonResponse(200, { data: null });
+    }, tokens.port);
+
+    for (const path of [
+      '/api/cindy/remote/workspaces/ws-1/%2e%2e/%2e%2e/evil',
+      '/api/cindy/remote/workspaces/ws-1/../evil',
+    ]) {
+      const error = await api
+        .runRemoteAction({ method: 'GET', path })
+        .catch((cause: unknown) => cause);
+      expect((error as { code?: string }).code).toBe('INVALID_PARAMS');
+    }
+    // 一个越界路径都不该真的发出去。
+    expect(calls).toEqual([]);
+  });
+
+  it('列表响应缺键是协议错，而不是静默的空列表（2026-11-26 联调事故类）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () => jsonResponse(200, { data: { items: [] } }),
+      tokens.port,
+    );
+
+    const error = await api.listWorkspaces().catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect((error as PsbClientError).failure.code).toBe('PSB_PROTOCOL');
+    // 合法空数组仍必须是「真的没有」。
+    const empty = makeApi(async () => jsonResponse(200, { data: { workspaces: [] } }), tokens.port);
+    await expect(empty.listWorkspaces()).resolves.toEqual([]);
+  });
+
+  it('createSession 先读工作区再建会话：读失败 → 一个 POST 都不发（不产生孤儿会话）', async () => {
+    const tokens = makeTokens();
+    const methods: string[] = [];
+    const api = makeApi(async (_input, init) => {
+      methods.push(String(init.method));
+      // 列表协议违约：如果实现先建会话，这里会看到 POST。
+      return jsonResponse(200, { data: { items: [] } });
+    }, tokens.port);
+
+    const error = await api
+      .createSession({ workspaceId: 'ws-1', agentKind: 'pi', clientRequestId: 'req-1' })
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect((error as PsbClientError).failure.code).toBe('PSB_PROTOCOL');
+    expect(methods).toEqual(['GET']);
+  });
+
+  it('getSession 的真实请求数是 2（会话行 + 工作区列表，PSB 没有单工作区读口）', async () => {
+    const tokens = makeTokens();
+    const requests: Array<{ url: string; method: string }> = [];
+    const api = makeApi(async (input, init) => {
+      requests.push({ url: input, method: String(init.method) });
+      if (String(init.method) === 'GET' && input.includes('/sessions/psb-1')) {
+        return jsonResponse(200, {
+          data: { id: 'psb-1', workspaceId: 'ws-1', agentKind: 'pi', status: 'running' },
+        });
+      }
+      return jsonResponse(200, {
+        data: {
+          workspaces: [{ id: 'ws-1', title: 'saga2', state: 'ready', clientOnline: true }],
+        },
+      });
+    }, tokens.port);
+
+    const result = await api.getSession('psb-1');
+
+    expect(result.workspace.id).toBe('ws-1');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.url).toContain('/sessions/psb-1');
+    expect(requests[1]?.url).toMatch(/\/api\/cindy\/remote\/workspaces$/);
+  });
+
+  it('createSession 成功时返回创建前读到的工作区快照（列表先于 POST）', async () => {
+    const tokens = makeTokens();
+    const methods: string[] = [];
+    const api = makeApi(async (_input, init) => {
+      const method = String(init.method);
+      methods.push(method);
+      if (method === 'GET') {
+        return jsonResponse(200, {
+          data: {
+            workspaces: [
+              { id: 'ws-1', title: 'saga2', state: 'ready', clientOnline: true, usable: true },
+            ],
+          },
+        });
+      }
+      return jsonResponse(200, {
+        data: {
+          id: 'psb-1',
+          workspaceId: 'ws-1',
+          agentKind: 'pi',
+          status: 'starting',
+        },
+      });
+    }, tokens.port);
+
+    const result = await api.createSession({
+      workspaceId: 'ws-1',
+      agentKind: 'pi',
+      clientRequestId: 'req-1',
+    });
+
+    expect(methods).toEqual(['GET', 'POST']);
+    expect(result.session.id).toBe('psb-1');
+    expect(result.workspace.id).toBe('ws-1');
   });
 });

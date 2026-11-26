@@ -12,8 +12,17 @@
  */
 
 import { PSB_REMOTE_HOST_PREFIX } from '../../../shared/psb-remote-workspace';
+import { resolveDraftTargetKind, type DraftTargetKind } from '@/state/newMakerDraft';
 
 export interface CollabEntryTarget {
+  /**
+   * 目标类别（**唯一判据**，来自 `state/newMakerDraft.ts` 的 `resolveDraftTargetKind`）。
+   *
+   * 草稿页与会话视图都传它；缺省时按 `remoteHostId` / `deviceLinkDeviceId` / `workingDir`
+   * 推导（保持旧调用方可用）。新增一种 transport 时只改判据源，不在每个闸门里再写一遍
+   * 前缀判断 —— `psb:` / `mcpr:` / SSH 的分叉曾经就是靠各调用点自己记前缀才漏的。
+   */
+  targetKind?: DraftTargetKind;
   /**
    * 会话/草稿的 workspace 形态。**必须由调用方显式给出,这里不从 workingDir 反推** ——
    * dialogue 会话也有 workingDir(main 按 workspaceKind='dialogue' 自动分配
@@ -71,6 +80,18 @@ function isCollabUnsupportedRemote(remoteHostId: string | null): boolean {
   return remoteHostId !== null && remoteHostId.startsWith(PSB_REMOTE_HOST_PREFIX);
 }
 
+/** 目标类别：优先用调用方传入的权威判据，否则从事实字段推导（同一份 pure 函数）。 */
+function targetKindOf(target: CollabEntryTarget): DraftTargetKind {
+  if (target.targetKind) return target.targetKind;
+  return resolveDraftTargetKind({
+    remoteHostId: target.remoteHostId,
+    deviceLinkDeviceId: target.deviceLinkDeviceId,
+    workingDir: target.workingDir,
+    explicitNoProject:
+      target.workspaceKind === 'dialogue' && !nonEmpty(target.workingDir),
+  });
+}
+
 /**
  * 五类场景一次说清:
  *
@@ -93,7 +114,12 @@ export function resolveCollabEntryPolicy(target: CollabEntryTarget): CollabEntry
   if (target.workspaceKind !== 'project' && target.workspaceKind !== 'dialogue') {
     return NOT_ELIGIBLE;
   }
-  if (isCollabUnsupportedRemote(nonEmpty(target.remoteHostId))) return NOT_ELIGIBLE;
+  const remoteHostId = nonEmpty(target.remoteHostId);
+  // 判据 = 目标类别（唯一来源）+ 畸形 `psb:` 前缀的防御：类别推导对「只有前缀」的脏值会
+  // 退回 SSH，但那份脏值同样不能挂协同入口（下游只会把它当 SSH host 去 preflight）。
+  if (targetKindOf(target) === 'psb' || isCollabUnsupportedRemote(remoteHostId)) {
+    return NOT_ELIGIBLE;
+  }
   const workingDir = nonEmpty(target.workingDir);
   if (target.workspaceKind === 'project' && workingDir === null) {
     return NOT_ELIGIBLE;
@@ -104,7 +130,7 @@ export function resolveCollabEntryPolicy(target: CollabEntryTarget): CollabEntry
     eligible: true,
     ...(deviceId ? { policyDeviceId: deviceId } : {}),
     skipProjectQuery:
-      nonEmpty(target.remoteHostId) !== null ||
+      remoteHostId !== null ||
       (target.workspaceKind === 'dialogue' && workingDir === null),
   };
 }

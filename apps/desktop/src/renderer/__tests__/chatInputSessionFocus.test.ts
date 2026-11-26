@@ -106,7 +106,7 @@ describe('ChatInput session switch focus contract', () => {
     expect(mainLayoutSource).toContain(
       "navigate('/cc-agent/new', { state: makeFolderPickerNewMakerRouteState() })",
     );
-    expect(newMakerDraftRouteSource).toContain('readNewMakerFolderPickerRequest(location.state)');
+    expect(newMakerDraftRouteSource).toContain('readNewMakerNavigationIntent(location.state)');
     expect(newMakerDraftRouteSource).toContain('setFolderPickerOpen(true)');
     expect(sidebarUpperSource).toContain('catalogEligible: false');
     expect(sidebarUpperSource).toContain(
@@ -488,3 +488,4 @@ function extractBetween(sourceBlock: string, startNeedle: string, endNeedle: str
   expect(end).toBeGreaterThan(start);
   return sourceBlock.slice(start, end);
 }
+

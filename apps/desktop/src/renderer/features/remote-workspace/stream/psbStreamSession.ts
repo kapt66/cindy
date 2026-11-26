@@ -1,18 +1,17 @@
 /**
- * 「远程工作区」入口 / 页面的身份判定（纯函数）。
+ * 「远程工作区」页签入口的判定（会话页标题行是否出现该按钮）。
  *
- * 远程工作区会话的唯一判据是 `remoteHostId` 以 `psb:` 开头（产品正本
- * `docs/product-rules/psb-remote-workspace-sessions.md` §6），完整值形如
- * `psb:<PSB sessionId>`。这些 helper 不碰 IPC / DOM，便于单测覆盖
- * 「哪些会话出现「远程工作区」按钮」「页面该用哪个 PSB 会话 id」。
+ * ## 身份解析只有一份
+ *
+ * `psb:` 前缀的判定与 PSB 会话 id 解析的唯一实现在
+ * `sidebar/isRemoteWorkspaceSession.ts`（`remoteWorkspacePsbSessionId`，内部走共享契约
+ * `parsePsbRemoteHostId`）。本文件**不再自己包一层同名解析**：2026-11-26 独立审查发现
+ * `psbStreamSessionId` 与 `remoteWorkspacePsbSessionId` 是两个行为完全相同的包装，调用方
+ * 按目录各取一个，改一处就漂一处。最后一个调用点（`cc-agent/CCAgentSessionView.tsx`）已迁移
+ * 到 `remoteWorkspacePsbSessionId`，别名 `psbStreamSessionId` **已删除**。
  */
 
-import { parsePsbRemoteHostId } from '../../../../shared/psb-remote-workspace';
-
-/** `psb:<id>` → PSB 会话 id；非 psb 或畸形值 → `null`。 */
-export function psbStreamSessionId(remoteHostId: string | null | undefined): string | null {
-  return parsePsbRemoteHostId(remoteHostId);
-}
+import { remoteWorkspacePsbSessionId } from '../sidebar/isRemoteWorkspaceSession';
 
 /**
  * 会话页标题栏是否出现「远程工作区」入口。
@@ -24,5 +23,5 @@ export function shouldShowRemoteWorkspaceAdminEntry(input: {
   readonly sessionId: string | null | undefined;
   readonly remoteHostId: string | null | undefined;
 }): boolean {
-  return Boolean(input.sessionId) && psbStreamSessionId(input.remoteHostId) !== null;
+  return Boolean(input.sessionId) && remoteWorkspacePsbSessionId(input.remoteHostId) !== null;
 }

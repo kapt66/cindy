@@ -329,6 +329,7 @@ import {
 import { useSessionHardwareTaskActions } from './lib/sessionHardwareTaskActions';
 import { useGhostCardTaskArchive } from './hooks/useGhostCardTaskArchive';
 import { isRemoteSessionWriteBlocked } from './lib/remoteSessionWriteGuard';
+import { composerIsDisabled, composerSettingsAreLocked } from './lib/composerDisableGate';
 import { getModelById, getDefaultModelForVendor } from '@/lib/modelDefinitions';
 import { resolveDisplayContextWindow } from '@/lib/contextWindow';
 import { resolveSessionContextWindow } from '../../../shared/sessionContextWindow';
@@ -382,8 +383,9 @@ import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
 import { usePsbRemoteSessionStatus } from '@/features/remote-workspace/stream/usePsbRemoteSessionStatus';
 import { usePsbSessionRebind } from '@/features/remote-workspace/stream/psbSessionRebind';
 import { RemoteSessionRebindNotice } from '@/features/remote-workspace/stream/RemoteSessionRebindNotice';
-import { psbStreamSessionId } from '@/features/remote-workspace/stream/psbStreamSession';
+import { remoteWorkspacePsbSessionId } from '@/features/remote-workspace/sidebar/isRemoteWorkspaceSession';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
+import { resolveDraftTargetKind } from '@/state/newMakerDraft';
 import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { consumePendingRemoteCollab, enableRemoteCollabForSession } from './remoteCollabHandoff';
 import {
@@ -2131,7 +2133,8 @@ function CCAgentSessionContent({
   // 会话（输入判据与串流观看端一起指向它），并给一行可关闭的淡提示 —— 不再出现
   // 「这个任务已经结束」这类死路警告条。「远程工作区」页签按工作区工作，不参与这次重绑。
   const psbRebind = usePsbSessionRebind(sessionId, session?.remoteHostId);
-  const psbSessionId = psbStreamSessionId(psbRebind.remoteHostId);
+  // 身份解析只经 `sidebar/isRemoteWorkspaceSession.ts` 一份实现（`psbStreamSessionId` 别名已删）。
+  const psbSessionId = remoteWorkspacePsbSessionId(psbRebind.remoteHostId);
   const psbRemoteStatus = usePsbRemoteSessionStatus(psbSessionId, { enabled: !readOnly });
   // 「没读到快照」时不锁输入（网络抖动不该锁死 composer）；读到过就按最后一次已知状态执行。
   // 终态不会走到这里：`psbSessionInputAllowed()` 对终态返回允许（发送时重建）。
@@ -3301,6 +3304,14 @@ function CCAgentSessionContent({
         skipProjectQuery: false,
       }
     : resolveCollabEntryPolicy({
+        // 目标类别是唯一判据：会话行上的 `psb:` / `mcpr:` / SSH / device-link 由同一份
+        // resolveDraftTargetKind 推导，不在这里手写前缀。
+        targetKind: resolveDraftTargetKind({
+          remoteHostId: session?.remoteHostId,
+          deviceLinkDeviceId: remoteDeviceId,
+          workingDir: session?.workingDir,
+          explicitNoProject: session?.workspaceKind === 'dialogue' && !session?.workingDir,
+        }),
         workspaceKind: collabWorkspaceKind,
         workingDir: session?.workingDir,
         orcaRole: session?.orcaRole,
@@ -6406,18 +6417,21 @@ function CCAgentSessionContent({
                   isAgentBusy={isAgentBusy}
                   onStop={handleStopSession}
                   pendingQueue={pendingQueue}
-                  disabled={
-                    readOnly ||
-                    remoteHandoffPreparing ||
-                    session?.source === 'review' ||
-                    psbInputBlocked
-                  }
-                  settingsLocked={
-                    readOnly ||
-                    session?.source === 'review' ||
-                    Boolean(activeQueueComposerEdit) ||
-                    psbInputBlocked
-                  }
+                  // 禁用判据唯一来源（见 lib/composerDisableGate.ts）：整段远端交接期间禁用、
+                  // PSB 外部阻断同样置灰。不变量有矩阵单测，不靠源码文本守卫。
+                  disabled={composerIsDisabled({
+                    readOnly,
+                    remoteHandoffPreparing,
+                    sessionSource: session?.source ?? null,
+                    psbInputBlocked,
+                  })}
+                  settingsLocked={composerSettingsAreLocked({
+                    readOnly,
+                    remoteHandoffPreparing,
+                    sessionSource: session?.source ?? null,
+                    psbInputBlocked,
+                    queueEditing: Boolean(activeQueueComposerEdit),
+                  })}
                   queueEditingClientId={activeQueueComposerEdit?.clientId ?? null}
                   onQueueEditSubmit={submitQueueComposerEdit}
                   onQueueEditCancel={cancelQueueComposerEdit}
@@ -7266,3 +7280,4 @@ function RunningStatusBar({
 }
 
 import { isSharedTaskPeer } from '@cindy/device-link';
+

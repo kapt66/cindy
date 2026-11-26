@@ -115,7 +115,6 @@ function createHarness(
     },
     createHttpAgent: async () => undefined,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
-    emitStreamEvent: vi.fn(),
     emitWorkspaceChanged: vi.fn(),
     emitWorkspaceVcsNotice: (event) => {
       if (event.notice) emitted.push(event);

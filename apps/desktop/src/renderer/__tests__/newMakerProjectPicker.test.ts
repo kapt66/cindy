@@ -1361,7 +1361,7 @@ describe('Shared create project picker', () => {
     expect(psbHandlerAt).toBeGreaterThan(-1);
     const psbHandler = newMakerDraftRouteSource.slice(
       psbHandlerAt,
-      newMakerDraftRouteSource.indexOf('const ensurePsbSessionForSend = useCallback(', psbHandlerAt),
+      newMakerDraftRouteSource.indexOf('const psb = usePsbDraftTarget(', psbHandlerAt),
     );
     expect(psbHandler).toContain('applyDraftTarget({');
     expect(psbHandler).toContain('psbTarget: next,');
@@ -1369,14 +1369,10 @@ describe('Shared create project picker', () => {
     expect(psbHandler).toContain('workingDir: null,');
     expect(psbHandler).toContain('remoteHostId: null,');
     expect(psbHandler).not.toContain('psb:');
-    // 首条消息懒建会话必须写回草稿目标（重试复用同一条，不建第二条）。
-    const lazyAt = newMakerDraftRouteSource.indexOf('const ensurePsbSessionForSend = useCallback(');
-    const lazyHandler = newMakerDraftRouteSource.slice(
-      lazyAt,
-      newMakerDraftRouteSource.indexOf('const handlePsbPickerCreated = useCallback(', lazyAt),
-    );
-    expect(lazyHandler).toContain('psbSessionGateRef.current!.ensure({');
-    expect(lazyHandler).toContain('patchDraft({ psbTarget: { ...current, sessionId } })');
+    // 懒建会话 / 占用释放 / 一次性交接意图已抽进 `usePsbDraftTarget`：路由只注入依赖、
+    // 发送路径调用 controller。成功 / 失败 / 已接手 / 放弃 / 同路径交接时序由
+    // `features/cc-agent/__tests__/usePsbDraftTarget.test.tsx` 用 renderHook + mock bridge
+    // 按行为覆盖 —— 这里不再 pin 调用点的源码字面量。
     // 引擎/模型不锁定：没有任何 engineLocked 使用；位置渠道 + 项目胶囊承载远程工作区
     // （2026-11-25 用户实机反馈后删掉自绘目标头，改为既有渠道控件）。
     expect(newMakerDraftRouteSource).not.toContain('remoteWorkspace.draft.engineLocked');
@@ -1597,7 +1593,7 @@ describe('Shared create project picker', () => {
     // 取整个 prop 表达式再断言「哪些条件参与门禁 + 门禁结果」,不复制 jsx 排版。
     const extraDirsGate = /onExtraDirsChange=\{([^}]*)\}/.exec(newMakerDraftRouteSource)?.[1] ?? '';
     expect(extraDirsGate).toContain('isDeviceLinkDraft');
-    expect(extraDirsGate).toContain('isPsbDraft || isPsbChannelSelected');
+    expect(extraDirsGate).toContain('isPsbChannelSelected');
     expect(extraDirsGate).toContain('? undefined');
     expect(extraDirsGate).toContain(': handleExtraDirsChange');
     // The single add entry grants write access only through the local Main picker;
@@ -1638,7 +1634,7 @@ describe('Shared create project picker', () => {
       /onWritableDirsChange=\{([^}]*)\}/.exec(newMakerDraftRouteSource)?.[1] ?? '';
     expect(writableDirsGate).toContain('isDeviceLinkDraft');
     expect(writableDirsGate).toContain('isRemoteProjectDraft');
-    expect(writableDirsGate).toContain('isPsbDraft || isPsbChannelSelected');
+    expect(writableDirsGate).toContain('isPsbChannelSelected');
     expect(writableDirsGate).toContain('? undefined');
     expect(writableDirsGate).toContain(': handleWritableDirsChange');
     expect(agentCapabilitiesHookSource).toContain('writableDirs?: CapabilityStatus;');
@@ -1976,3 +1972,4 @@ describe('New Maker 草稿的 wire model id 口径', () => {
     ).toBe(2);
   });
 });
+

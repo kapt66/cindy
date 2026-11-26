@@ -60,7 +60,7 @@ function advisory(overrides: Record<string, unknown> = {}) {
 
 describe('sanitizeWorkspaceVcsNotice：把服务端 actions 收敛成可安全执行的集合', () => {
   it('合法 action 原样保留（0.1.180 advisory：inspect / clean / continue）', () => {
-    const notice = sanitizeWorkspaceVcsNotice(WORKSPACE_ID, advisory());
+    const notice = sanitizeWorkspaceVcsNotice(WORKSPACE_ID, advisory(), 'occupy');
 
     expect(notice).not.toBeNull();
     expect(notice?.advisory).toBe(true);
@@ -92,7 +92,7 @@ describe('sanitizeWorkspaceVcsNotice：把服务端 actions 收敛成可安全�
           path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs`,
         },
       ],
-    });
+    }, 'occupy');
 
     expect(notice?.actions.map((action) => action.kind)).toEqual(['inspect-vcs']);
   });
@@ -115,6 +115,71 @@ describe('sanitizeWorkspaceVcsNotice：把服务端 actions 收敛成可安全�
     ).toBe(true);
   });
 
+  it('encoded dot 段（%2e%2e / %2E%2E）被拒绝（字面 .. 不是唯一形态）', () => {
+    for (const path of [
+      `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/%2e%2e/%2e%2e/evil`,
+      `/api/cindy/remote/workspaces/${WORKSPACE_ID}/%2E%2E/occupy`,
+      `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/..%2foccupy`,
+    ]) {
+      expect(isAllowedWorkspaceVcsActionPath(WORKSPACE_ID, path), path).toBe(false);
+    }
+  });
+
+  it('kind / method 不匹配整条丢弃（服务端形状只用于确认，不用于决定目标）', () => {
+    const cases: Array<{ kind: string; method: string; path: string }> = [
+      // inspect-vcs 必须是只读 GET。
+      { kind: 'inspect-vcs', method: 'POST', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs` },
+      // clean-workspace 必须是 POST；GET / DELETE 一律丢弃。
+      { kind: 'clean-workspace', method: 'GET', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/revert` },
+      { kind: 'clean-workspace', method: 'DELETE', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/revert` },
+      // 旧版 revert-then-release 固定 DELETE occupy；POST 不放行。
+      { kind: 'revert-then-release', method: 'POST', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/occupy` },
+      // retry 不再接受任意 method + 任意子路径（旧实现的洞）。
+      { kind: 'retry', method: 'DELETE', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/occupy` },
+      { kind: 'retry', method: 'POST', path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/check` },
+    ];
+    for (const item of cases) {
+      const notice = sanitizeWorkspaceVcsNotice(
+        WORKSPACE_ID,
+        { ...advisory(), actions: [item] },
+        'occupy',
+      );
+      expect(notice?.actions, `${item.kind}/${item.method}`).toEqual([]);
+    }
+  });
+
+  it('retry 的重试方向由产生 notice 的入口决定（occupy → POST，release → DELETE）', () => {
+    const action = {
+      kind: 'retry',
+      method: 'DELETE',
+      path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/occupy`,
+    };
+    expect(
+      sanitizeWorkspaceVcsNotice(WORKSPACE_ID, { ...advisory(), actions: [action] }, 'release')
+        ?.actions,
+    ).toMatchObject([{ kind: 'retry', method: 'DELETE' }]);
+    expect(
+      sanitizeWorkspaceVcsNotice(WORKSPACE_ID, { ...advisory(), actions: [action] }, 'occupy')
+        ?.actions,
+    ).toEqual([]);
+  });
+
+  it('执行目标用本地拼的固定路径（服务端给的同类 action 不能被替换成别的合法子路径）', () => {
+    const notice = sanitizeWorkspaceVcsNotice(WORKSPACE_ID, {
+      ...advisory(),
+      actions: [
+        {
+          kind: 'inspect-vcs',
+          method: 'GET',
+          // 路径形状合法、也属于同一工作区，但不是 inspect-vcs 的固定目标 → 丢弃（不采信）。
+          path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/sessions`,
+        },
+      ],
+    }, 'occupy');
+    expect(notice?.actions).toEqual([]);
+  });
+
+
   it('body 只接受 revert / projectIds / confirm；多余键整条 action 丢弃', () => {
     expect(sanitizeWorkspaceVcsActionBody(undefined)).toBeUndefined();
     expect(sanitizeWorkspaceVcsActionBody({ projectIds: [1], confirm: 'revert' })).toEqual({
@@ -136,7 +201,7 @@ describe('sanitizeWorkspaceVcsNotice：把服务端 actions 收敛成可安全�
           body: { projectIds: [1], force: true },
         },
       ],
-    });
+    }, 'occupy');
     expect(notice?.actions).toEqual([]);
   });
 
@@ -150,7 +215,7 @@ describe('sanitizeWorkspaceVcsNotice：把服务端 actions 收敛成可安全�
           path: `/api/cindy/remote/workspaces/${WORKSPACE_ID}/vcs/continue`,
         },
       ],
-    });
+    }, 'occupy');
     expect(notice?.actions).toEqual([]);
   });
 });

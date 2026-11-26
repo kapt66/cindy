@@ -7,14 +7,14 @@
  *   （WS 升级 URL 是否带稳定 `subscriberId`、上行是否只有 `{kind:'input'}`、连接是否真的断开）。
  * - Bug／规则依据：`docs/dev-rules/psb-remote-session-transport.md` §5（帧按原样转成
  *   `{type:'frame', payload:ArrayBuffer}`；同一会话重复 start 幂等先停旧连接；关闭必须真的断开，
- *   否则 PSB 每会话的观看名额泄漏、别人连不上）；2026-11-26 联调事故（`联动需求.md`
+ *   否则 PSB 每会话的观看名额泄漏、别人连不上）；2026-11-26 联调事故（PSB 协作需求
  *   「Cindy 串流取证结果」）：PSB 的 4004 同时表示「没有可观看画面」与「慢订阅者被断开」，
  *   此前一律归因 `slow-subscriber`，于是「该工作区没有 running 桌面会话」被误报成用户消费太慢。
  *   PSB 建议按「close reason 有无结构前缀」+「是否收到过二进制帧」区分（PSB 仓
  *   `docs/remote-workspace.md` §11.10）。同日 PSB 明确两件事：订阅靠 WS 升级、断开即退订，
  *   不要发 `{kind:'open'}` / `{kind:'close'}`（计为非法消息）；观看名额与浏览器页面共用、默认 4
  *   （部署级 `PSB_STREAM_MAX_SUBSCRIBERS`），Cindy 必须带稳定 `subscriberId` 重连（同 id 替换旧
- *   订阅、不占新名额；PSB 0.1.170 契约，`联动需求.md` PSB-RW-06 问答）。
+ *   订阅、不占新名额；PSB 0.1.170 契约，PSB 协作需求 PSB-RW-06 问答）。
  * - 现有覆盖缺口：既有用例只覆盖 4001 的纯 token 映射，没有 4004 的两种含义、也没有
  *   close reason 结构前缀的解析结果；「帧数」这个维度此前根本不存在，靠类型或人工目检
  *   无法证明归因正确。本轮另补四条此前没有运行期证据的线：上行不得出现控制帧、每个观看端
@@ -78,13 +78,13 @@ function cursorEvents(events: PsbStreamEvent[]): PsbStreamCursorShape[] {
 }
 
 const CAPABLE_STATUS: PsbSessionStreamStatus = {
-  capable: true,
+  capability: true,
   active: false,
   width: 1920,
   height: 1080,
   fps: 30,
-  codec: 'h264',
-  lastError: null,
+  encoder: 'h264',
+  lastErrorZh: null,
   desktopSession: null,
   reasonCode: null,
 };
@@ -169,6 +169,8 @@ const TEST_SUBSCRIBER_ID = 'subscriber-test-1';
 
 function createHarness(input?: {
   status?: PsbSessionStreamStatus;
+  /** 覆盖状态读取（预检失败 / 按次变化用）；优先于 `status`。 */
+  fetchStatus?: (sessionId: string) => Promise<PsbSessionStreamStatus>;
   /** 覆盖 subscriberId 工厂（用于断言「每实例只生成一次」）；默认固定返回 TEST_SUBSCRIBER_ID。 */
   createSubscriberId?: () => string;
   subscriberId?: string;
@@ -178,7 +180,7 @@ function createHarness(input?: {
   const subscriberId = input?.subscriberId ?? TEST_SUBSCRIBER_ID;
   const viewer = createPsbStreamViewer({
     getToken: async () => ({ ok: true as const, token: 'connection-token' }),
-    fetchStatus: async () => input?.status ?? CAPABLE_STATUS,
+    fetchStatus: input?.fetchStatus ?? (async () => input?.status ?? CAPABLE_STATUS),
     createHttpAgent: async () => undefined,
     emit: (event) => events.push(event),
     logger: { debug: vi.fn(), warn: vi.fn() },
@@ -209,12 +211,12 @@ describe('psbStreamViewer 串流观看端', () => {
     const status = await starting;
 
     // 上行**只有** `{kind:'input'}`：`{kind:'open'}` / `{kind:'close'}` 会被 PSB 计成非法消息
-    // （订阅靠 WS 升级、断开即退订，见 `联动需求.md` PSB-RW-06）。升级后一条文本帧都不该发。
+    // （订阅靠 WS 升级、断开即退订，见 PSB 协作需求 PSB-RW-06）。升级后一条文本帧都不该发。
     expect(socket.sent).toEqual([]);
     // 订阅成功 ≠ 有画面：`active` 是 PSB 的语义（此刻有没有可看的画面），本端不能改写它。
     // PSB 说 false（没有 running 桌面会话）时就是 false，面板据此显示「已连接，等待画面」，
     // 首帧到达后才切到 live；把它改写成 true 会让面板在零帧时谎称「串流中」。
-    expect(status).toMatchObject({ capable: true, active: false, width: 1920 });
+    expect(status).toMatchObject({ capability: true, active: false, width: 1920 });
     expect(events[0]).toMatchObject({ type: 'status', sessionId: 'session-1' });
     expect((events[0] as { status: PsbSessionStreamStatus }).status.active).toBe(false);
 
@@ -378,7 +380,7 @@ describe('psbStreamViewer 串流观看端', () => {
     },
   );
 
-  it('同一会话重复 start 先停旧连接（不发关闭事件、但真的断开，且全程不发控制帧）', async () => {
+  it('同一会话重复 start：预检通过后原子替换旧连接，补发 closed(superseded)，全程不发控制帧', async () => {
     const { viewer, events } = createHarness();
     const first = viewer.start('session-1');
     await flushMicrotasks();
@@ -391,21 +393,61 @@ describe('psbStreamViewer 串流观看端', () => {
     const firstSocket = FakeSocket.instances[0];
     const secondSocket = FakeSocket.instances[1];
 
-    // 退订靠断开本身：重启时旧连接已经被 terminate，不需要（也不允许）先发 `{kind:'close'}`。
-    expect(firstSocket.sent).toEqual([]);
-    expect(firstSocket.terminated).toBe(true);
+    // 新连接握手成功前，旧连接必须原样活着（预检/握手失败不该让画面消失）。
+    expect(firstSocket.terminated).toBe(false);
     secondSocket.openSocket();
     await restarting;
+
+    // 退订靠断开本身：替换时旧连接已被 terminate，不需要（也不允许）先发 `{kind:'close'}`。
+    expect(firstSocket.sent).toEqual([]);
+    expect(firstSocket.terminated).toBe(true);
+    // 旧连接被替换要补发 closed(superseded)：渲染层据此拆掉旧画面状态（顺序在新状态之前）。
+    const closed = events.slice(eventsBeforeRestart).filter((event) => event.type === 'closed');
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toMatchObject({ type: 'closed', sessionId: 'session-1', reason: 'superseded' });
+    const closedAt = events.indexOf(closed[0]!);
+    const statusAfterClosed = events.findIndex(
+      (event, index) => index > closedAt && event.type === 'status',
+    );
+    expect(statusAfterClosed).toBeGreaterThan(closedAt);
 
     // 重连必须复用同一个 subscriberId（PSB 0.1.170：同 id 重连 = 替换旧订阅、不占新名额；
     // 换 id 才占新名额）。这里断言两个 socket 的 query 完全一致。
     expect(new URL(secondSocket.url).searchParams.get('subscriberId')).toBe(
       new URL(firstSocket.url).searchParams.get('subscriberId'),
     );
-    // 旧连接关闭是「被替换」而不是用户可见的会话结束，重启不应该多推事件。
-    const closed = events.slice(eventsBeforeRestart).filter((event) => event.type === 'closed');
-    expect(closed).toHaveLength(0);
     expect(secondSocket.sent).toEqual([]);
+  });
+
+  it('重启预检失败时保留旧连接（不先拆后建，失败不挂空）', async () => {
+    let failPreflight = false;
+    const { viewer, events } = createHarness({
+      fetchStatus: async () => {
+        if (failPreflight) throw new PsbClientError(
+          { code: 'PSB_UNREACHABLE', messageKey: 'remoteWorkspace.error.unreachable', message: 'boom' },
+          null,
+        );
+        return CAPABLE_STATUS;
+      },
+    });
+    const first = viewer.start('session-1');
+    await flushMicrotasks();
+    const firstSocket = FakeSocket.instances[0];
+    firstSocket.openSocket();
+    await first;
+
+    failPreflight = true;
+    const restarting = viewer.start('session-1').catch((cause: unknown) => cause);
+    await flushMicrotasks();
+    const error = await restarting;
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    // 旧连接没有被拆：仍处于可用状态，且新 socket 根本没建。
+    expect(firstSocket.terminated).toBe(false);
+    expect(FakeSocket.instances).toHaveLength(1);
+    // 旧连接还能继续送帧（用户画面没有中断）。
+    firstSocket.receive(Buffer.from('still-live'), true);
+    expect(events.filter((event) => event.type === 'frame')).toHaveLength(1);
   });
 
   it('subscriberId 在观看端实例创建时生成一次：重连/多会话复用，换个观看端才换新的', async () => {
@@ -465,8 +507,8 @@ describe('psbStreamViewer 串流观看端', () => {
     );
   });
 
-  it('stop 只断开、不发 {kind:close}；客户端没有 streaming 能力时不开 socket', async () => {
-    const { viewer } = createHarness();
+  it('stop 断开并发 closed(client-stopped)；客户端没有 streaming 能力时不开 socket', async () => {
+    const { viewer, events } = createHarness();
     const starting = viewer.start('session-1');
     await flushMicrotasks();
     const socket = FakeSocket.instances[0];
@@ -478,9 +520,15 @@ describe('psbStreamViewer 串流观看端', () => {
     // 断开即退订：不再向 PSB 发送任何文本帧（旧实现会先发 `{kind:'close'}`）。
     expect(socket.sent).toEqual([]);
     expect(socket.terminated).toBe(true);
+    // 主动停止也要让渲染层收敛状态：补发稳定 token 的 closed，而不是靠 invoke 返回值猜。
+    expect(events.at(-1)).toMatchObject({
+      type: 'closed',
+      sessionId: 'session-1',
+      reason: 'client-stopped',
+    });
 
     const incapable = createHarness({
-      status: { ...CAPABLE_STATUS, capable: false, lastError: '采集未启动' },
+      status: { ...CAPABLE_STATUS, capability: false, lastErrorZh: '采集未启动' },
     });
     const error = await incapable.viewer.start('session-2').catch((cause: unknown) => cause);
 
@@ -546,7 +594,7 @@ describe('psbStreamViewer 宿主光标形状（stream.cursor 文本帧）', () =
       Buffer.from(
         JSON.stringify({
           kind: 'status',
-          status: { capable: true, active: true, width: 1280, height: 720, fps: 30 },
+          status: { capability: true, active: true, width: 1280, height: 720, fps: 30 },
         }),
       ),
       false,

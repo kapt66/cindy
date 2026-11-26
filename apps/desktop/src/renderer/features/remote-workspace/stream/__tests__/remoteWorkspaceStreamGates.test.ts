@@ -1,9 +1,10 @@
 /**
  * 测试价值
  * - 生产入口与可观察结果：`psbSessionInputAllowed()`（共享判据，会话页输入框置灰的**唯一**
- *   依据）、`shouldShowRemoteWorkspaceAdminEntry()` / `psbStreamSessionId()`
- *   （`features/remote-workspace/stream/psbStreamSession.ts`，决定「远程工作区」入口在哪些
- *   会话出现、页面访问哪个 PSB 会话）。
+ *   依据）、`shouldShowRemoteWorkspaceAdminEntry()`（`features/remote-workspace/stream/
+ *   psbStreamSession.ts`，决定「远程工作区」入口在哪些会话出现）与
+ *   `remoteWorkspacePsbSessionId()`（`sidebar/isRemoteWorkspaceSession.ts`，页面访问哪个
+ *   PSB 会话的唯一身份解析；`psbStreamSessionId` 别名已删）。
  * - Bug / 规则依据：产品正本 `docs/product-rules/psb-remote-workspace-sessions.md` §2.4
  *   （**只有**他人占用 / 客户端离线 / 工作区未就绪三种情况置灰；PSB 会话终态不锁输入，
  *   发送时透明重建）与验收第 7 条、§6（`psb:` 前缀是唯一判据）；共享契约
@@ -24,9 +25,9 @@ import {
   type PsbWorkspaceOccupancy,
 } from '../../../../../shared/psb-remote-workspace';
 import {
-  psbStreamSessionId,
   shouldShowRemoteWorkspaceAdminEntry,
 } from '../psbStreamSession';
+import { remoteWorkspacePsbSessionId } from '../../sidebar/isRemoteWorkspaceSession';
 
 const NO_OCCUPANCY: PsbWorkspaceOccupancy = {
   occupied: false,
@@ -66,7 +67,7 @@ describe('psbSessionInputAllowed', () => {
     expect(
       psbSessionInputAllowed({
         session: session({ status: 'running' }),
-        workspace: { state: 'ready', clientOnline: true, occupancy: NO_OCCUPANCY },
+        workspace: { state: 'ready', clientOnline: true, usable: true, unusableReason: null, occupancy: NO_OCCUPANCY },
       }),
     ).toEqual({ allowed: true, reason: null });
     // 自己占用 = 允许输入（自己占的工作区可以继续开第二条会话）。
@@ -76,6 +77,8 @@ describe('psbSessionInputAllowed', () => {
         workspace: {
           state: 'ready',
           clientOnline: true,
+          usable: true,
+          unusableReason: null,
           occupancy: { ...OCCUPIED_BY_OTHER, byMe: true, personId: '7' },
         },
       }),
@@ -89,7 +92,7 @@ describe('psbSessionInputAllowed', () => {
       expect(
         psbSessionInputAllowed({
           session: session({ status }),
-          workspace: { state: 'ready', clientOnline: true, occupancy: NO_OCCUPANCY },
+          workspace: { state: 'ready', clientOnline: true, usable: true, unusableReason: null, occupancy: NO_OCCUPANCY },
         }),
       ).toEqual({ allowed: true, reason: null });
     },
@@ -99,20 +102,20 @@ describe('psbSessionInputAllowed', () => {
     [
       'occupied by someone else',
       session(),
-      'remoteWorkspace.input.occupiedByOther',
-      { state: 'ready' as const, clientOnline: true, occupancy: OCCUPIED_BY_OTHER },
+      'remoteWorkspace.error.workspaceOccupied',
+      { state: 'ready' as const, clientOnline: true, usable: true, unusableReason: null, occupancy: OCCUPIED_BY_OTHER },
     ],
     [
       'client offline',
       session(),
-      'remoteWorkspace.input.clientOffline',
-      { state: 'ready' as const, clientOnline: false, occupancy: NO_OCCUPANCY },
+      'remoteWorkspace.error.clientOffline',
+      { state: 'ready' as const, clientOnline: false, usable: true, unusableReason: null, occupancy: NO_OCCUPANCY },
     ],
     [
       'workspace not ready',
       session(),
       'remoteWorkspace.input.workspaceNotReady',
-      { state: 'provisioning' as const, clientOnline: true, occupancy: NO_OCCUPANCY },
+      { state: 'provisioning' as const, clientOnline: true, usable: true, unusableReason: null, occupancy: NO_OCCUPANCY },
     ],
   ])('blocks input with a reason: %s', (_name, currentSession, expectedReason, workspace) => {
     expect(psbSessionInputAllowed({ session: currentSession, workspace })).toEqual({
@@ -121,25 +124,39 @@ describe('psbSessionInputAllowed', () => {
     });
   });
 
-  it('reports the first blocking cause in a stable order (occupied → offline → pending)', () => {
-    // 被他人占用优先于离线：用户要先看到"谁在占"。
+  it('PSB 权威字段优先：usable=false + unusableReason 决定阻断原因（本地字段看起来可用也以它为准）', () => {
     expect(
       psbSessionInputAllowed({
         session: session(),
-        workspace: { state: 'ready', clientOnline: false, occupancy: OCCUPIED_BY_OTHER },
+        workspace: {
+          state: 'ready',
+          clientOnline: true,
+          usable: false,
+          unusableReason: 'client-offline',
+          occupancy: NO_OCCUPANCY,
+        },
+      }),
+    ).toEqual({ allowed: false, reason: 'remoteWorkspace.error.clientOffline' });
+  });
+
+  it('reports the first blocking cause in a stable order (occupied → offline → pending)', () => {    // 被他人占用优先于离线：用户要先看到"谁在占"。
+    expect(
+      psbSessionInputAllowed({
+        session: session(),
+        workspace: { state: 'ready', clientOnline: false, usable: true, unusableReason: null, occupancy: OCCUPIED_BY_OTHER },
       }).reason,
-    ).toBe('remoteWorkspace.input.occupiedByOther');
+    ).toBe('remoteWorkspace.error.workspaceOccupied');
     // 离线优先于未就绪：离线时"未就绪"没有信息量。
     expect(
       psbSessionInputAllowed({
         session: session(),
-        workspace: { state: 'provisioning', clientOnline: false, occupancy: NO_OCCUPANCY },
+        workspace: { state: 'provisioning', clientOnline: false, usable: true, unusableReason: null, occupancy: NO_OCCUPANCY },
       }).reason,
-    ).toBe('remoteWorkspace.input.clientOffline');
+    ).toBe('remoteWorkspace.error.clientOffline');
   });
 });
 
-describe('shouldShowRemoteWorkspaceAdminEntry / psbStreamSessionId', () => {
+describe('shouldShowRemoteWorkspaceAdminEntry / remoteWorkspacePsbSessionId', () => {
   it.each([
     ['psb session', 'session-1', 'psb:abc123', true],
     ['mcpr remote project', 'session-1', 'mcpr:instance-1', false],
@@ -150,7 +167,7 @@ describe('shouldShowRemoteWorkspaceAdminEntry / psbStreamSessionId', () => {
   ])('renders the admin entry only for a psb session: %s', (_name, sessionId, remoteHostId, expected) => {
     expect(shouldShowRemoteWorkspaceAdminEntry({ sessionId, remoteHostId })).toBe(expected);
     if (expected) {
-      expect(psbStreamSessionId(remoteHostId)).toBe('abc123');
+      expect(remoteWorkspacePsbSessionId(remoteHostId)).toBe('abc123');
     }
   });
 });

@@ -14,7 +14,6 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-
 const { getAuthState, tokenProvider, getToken, invalidateToken, openTunnel } = vi.hoisted(() => ({
   getAuthState: vi.fn(() => ({ isAuthenticated: true })),
   tokenProvider: { getToken: vi.fn(), invalidate: vi.fn() },
@@ -35,6 +34,11 @@ vi.mock('../../remote-workspace/psbAuth.js', () => ({
 vi.mock('../../remote-workspace/psbTunnel.js', () => ({ openPsbTunnel: openTunnel }));
 
 import { openPsbAgentTunnel } from '../psb-agent-tunnel';
+import {
+  getPsbSessionStatusStore,
+  installPsbSessionStatusStore,
+  resetPsbSessionStatusStoreForTests,
+} from '../psb-session-status';
 
 /** `openPsbTunnel` 拿到的 deps（生产实现只依赖 `getToken`；其余留给隧道模块自己）。 */
 type TunnelDeps = {
@@ -67,18 +71,23 @@ describe('openPsbAgentTunnel', () => {
     expect(getToken).toHaveBeenCalledWith({ getAuthState, tokens: tokenProvider });
   });
 
-  it('token 取不到时只交出原因键（不把 detail / audience 带进 maker-host 错误串）', async () => {
+  it('token 取不到时交出类别与原因键（不把 token / audience 带进 maker-host 错误串）', async () => {
     getToken.mockResolvedValue({
       ok: false,
+      kind: 'need-org',
       reasonKey: 'remoteWorkspace.status.needOrg',
       detail: 'membership is personal',
     });
 
     await openPsbAgentTunnel('psb:session-1', 'cc-mgr');
 
+    // `kind` 决定归因（未登录 / 缺组织 / 签发通道不可达），隧道层据此给更准的失败类别；
+    // `detail` 只用于诊断，不参与用户可见文案。
     await expect(lastTunnelDeps().getToken?.()).resolves.toEqual({
       ok: false,
+      kind: 'need-org',
       reasonKey: 'remoteWorkspace.status.needOrg',
+      detail: 'membership is personal',
     });
   });
 
@@ -100,5 +109,29 @@ describe('openPsbAgentTunnel', () => {
       '[PSB_SESSION_NOT_READY]',
     );
     expect(invalidateToken).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 事件失效：隧道明确否定了这条会话（终态 / 不存在 / 未就绪）——PSB 的权威事实。
+   * 会话快照必须立刻作废，否则发送前判定会在 TTL（10s）内继续拿「还活着」放行，
+   * 下一条消息又一次撞上同一个终态失败，而不是走透明重绑。
+   */
+  it('隧道报出会话终态时失效会话快照（下一条消息立刻重绑）', async () => {
+    installPsbSessionStatusStore({
+      read: async () => {
+        throw new Error('not used in this test');
+      },
+    });
+    const store = getPsbSessionStatusStore();
+    expect(store).not.toBeNull();
+    const invalidate = vi.spyOn(store!, 'invalidate');
+    openTunnel.mockRejectedValue(new Error('[PSB_SESSION_STOPPED] session runtime stopped'));
+
+    await expect(openPsbAgentTunnel('psb:session-9', 'cc-mgr')).rejects.toThrow(
+      '[PSB_SESSION_STOPPED]',
+    );
+
+    expect(invalidate).toHaveBeenCalledWith('session-9');
+    resetPsbSessionStatusStoreForTests();
   });
 });

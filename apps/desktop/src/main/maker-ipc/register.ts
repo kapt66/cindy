@@ -607,11 +607,13 @@ import {
   getSessionRowSnapshotStrict,
   commitProvisionalSession,
   discardProvisionalSessionRow,
+  listActiveRemoteSessions,
   persistSessionFields,
   recycleSessionWorktreeForStatusChange,
   restoreArchivedSessionForSend,
   scheduleWorktreeRecycleForStatusChange,
   setSessionRuntimeCleanup,
+  setTerminalSessionStatusObserver,
 } from '../localDb/ipc/sessions.js';
 import { createSessionOptionsReconciler } from './sessionOptionsReconciler.js';
 import { readSessionSource } from '../localDb/sessionDispatchSnapshot.js';
@@ -1022,9 +1024,22 @@ import {
   type PsbSessionRebindDeps,
 } from '../remote-workspace/sessionRebind.js';
 import { getPsbRemoteService } from '../remote-workspace/index.js';
+import { getPsbAdminRecentWorkspaceStore } from '../remote-workspace/adminRecentRuntime.js';
 import { broadcastPsbSessionsRebound } from '../remote-workspace/push.js';
-import { PsbClientError, toPsbRemoteFailure } from '../remote-workspace/psbClient.js';
+import { toPsbRemoteFailure } from '../remote-workspace/psbClient.js';
 import { parsePsbRemoteHostId, psbIpcCodeForFailure } from '../../shared/psb-remote-workspace.js';
+import {
+  getPsbSessionStatusStore,
+  installPsbSessionStatusStore,
+  psbSessionStatusNeedsRebind,
+  psbStatusUnavailableFailure,
+} from '../maker-host/psb-session-status.js';
+import {
+  installPsbWorkspaceReleasePorts,
+  releasePsbWorkspaceForSession,
+} from '../maker-host/psb-workspace-session-release.js';
+import { releaseRemoteHostTransport } from '../maker-host/remoteTransportRegistry.js';
+import { commitRemoteSessionRebindWithPorts } from '../localDb/contextRebuildPersistence.js';
 import { normalizeSessionContextWindowBoundsRoute } from '../../shared/sessionContextWindowBounds.js';
 import { readWorkflowProgressForSession } from '../workflow-progress/reader.js';
 import { readSessionBackgroundTaskOutputTail } from '../background-task-output/reader.js';
@@ -18886,7 +18901,77 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
    *
    * 旧 PSB 会话终态/已不存在时，在同一工作区新建一条 PSB 会话并把本地会话行重绑过去，
    * 然后由发送事务关掉仍持旧身份的空闲 runtime、用新身份继续这一轮。
+   *
+   * ## 状态读取口径（审查 r7 P1）
+   *
+   * 「要不要重建」与「工作区占用」两个判定都读同一份**带 TTL/事件失效的会话快照**
+   * （`maker-host/psb-session-status.ts`），不再每条消息各打一次 `sessionStatus`。
+   * 读不到（控制面抖动 / 鉴权 / 协议错）时 **fail-open**：本轮照旧发送，真正的终态
+   * 由建隧道时的 `PSB_*` 码报出 —— 不能把「读不到状态」当成「会话已死」。
    */
+  installPsbSessionStatusStore({
+    read: (psbSessionId) => getPsbRemoteService().sessionStatus(psbSessionId),
+    logger: log,
+  });
+  // 会话结束（归档 / 删除）→ 释放它占用的 PSB 工作区（幂等、失败记账、不阻断状态写入）。
+  // 注册槽在 localDb/ipc/sessions.ts 的终态清理收口点；远端身份在这里解析（localDb 不认识前缀）。
+  //
+  // **这是会话结束释放的唯一权威**（二轮审查 s5/s8 P1）：归档 / 删除落库后由下面的终态
+  // observer 发起，渲染层不再对同一个动作重复上报（否则一次归档 = 两轮 PSB 请求）。渲染层
+  // 只保留「旧 main / 旧 preload 没有终态释放」的兼容账本（`psbOccupancyRelease.ts`）。
+  installPsbWorkspaceReleasePorts({
+    readSessionStatus: (psbSessionId) => getPsbRemoteService().sessionStatus(psbSessionId),
+    releaseWorkspace: async (workspaceId) => {
+      await getPsbRemoteService().releaseWorkspace(workspaceId);
+    },
+    invalidateSessionStatus: (psbSessionId) => getPsbSessionStatusStore()?.invalidate(psbSessionId),
+    releaseTransports: async ({ sessionId, remoteHostId }) => {
+      // 两种作用域都释放：cc/pi 按会话登记，psb Codex app-server 按隧道身份登记。
+      await releaseRemoteTransport(sessionId, 'session-end').catch(() => undefined);
+      await releaseRemoteHostTransport(remoteHostId, 'session-end').catch(() => undefined);
+    },
+    // 工作区锁是**工作区级**：归档一条任务时，同工作区还有活动任务就不能提前解锁
+    // （否则别人接手正在跑的工作区）。判据要同时看会话表与「会话→工作区」本机映射。
+    listActivePsbSessions: async () => {
+      const rows = await listActiveRemoteSessions();
+      const active: Array<{ sessionId: string; psbSessionId: string }> = [];
+      for (const row of rows) {
+        const psbSessionId = parsePsbRemoteHostId(row.remoteHostId);
+        if (psbSessionId) active.push({ sessionId: row.sessionId, psbSessionId });
+      }
+      return active;
+    },
+    workspaceIdForPsbSession: (psbSessionId) => {
+      try {
+        return getPsbAdminRecentWorkspaceStore().workspaceIdForSession(psbSessionId);
+      } catch {
+        return null;
+      }
+    },
+    // 账本 dataOwner 印记：切号之后新身份不能替旧账号归还工作区。
+    currentDataOwnerScope: () => activeOwnerScopeKey(),
+    log,
+  });
+  setTerminalSessionStatusObserver((sessionId, status) => {
+    void (async () => {
+      try {
+        const remoteHostId = await readSessionRemoteHostIdCached(sessionId);
+        if (!parsePsbRemoteHostId(remoteHostId)) return;
+        await releasePsbWorkspaceForSession({
+          sessionId,
+          remoteHostId,
+          reason: status === 'deleted' ? 'session-deleted' : 'session-archived',
+        });
+      } catch (error) {
+        log.warn('psb workspace release at session end skipped', {
+          sessionId,
+          status,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+
   const psbSessionRebind = createPsbSessionRebindCoordinator({
     log,
     readSessionRow: async (sessionId) => {
@@ -18920,22 +19005,26 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         return null;
       }
       if (!row) return null;
-      // workspaceId 由旧 PSB 会话行读取（PSB 是权威来源，重启后同样成立）；本地不存这一列，
-      // 见 docs/dev-rules/psb-remote-session-transport.md §6.1「工作区身份的来源」。
+      // `workspaceId` 恒为 null：本地 `sessions` 表**没有**这一列，也刻意不加（PSB 是工作区
+      // 归属的唯一权威，重启/换设备后同样成立）。协调器只用它做「本地兜底」，实际值来自
+      // 旧 PSB 会话行自带的 `workspace` 快照（见 docs/dev-rules/psb-remote-session-transport.md
+      // §6.1「工作区身份的来源」）。加列会制造一个必然过期的第二真源，所以这里保留 null。
       return { ...row, workspaceId: null };
     },
     isTurnRunning: (sessionId) => maker.getSession(sessionId)?.isTurnRunning() === true,
     readRemoteSession: async (psbSessionId) => {
-      try {
-        return { kind: 'found', result: await getPsbRemoteService().sessionStatus(psbSessionId) };
-      } catch (error) {
-        // 404/403 = PSB 明确说这条会话记录不存在/不可见：这是终态之外唯一还需要重建的
-        // 触发条件。其余失败原样上抛（网络 / 鉴权 / 协议错），不做任何重绑。
-        if (error instanceof PsbClientError && (error.status === 404 || error.status === 403)) {
-          return { kind: 'missing' };
-        }
-        return { kind: 'failed', failure: toPsbRemoteFailure(error) };
+      // 走到协调器时上一次读取已经判出「终态/不存在」：这里必须看**最新**事实
+      // （maxAgeMs: 0），不能拿 TTL 内的旧快照把刚终态的会话又判成活的。
+      const store = getPsbSessionStatusStore();
+      if (!store) {
+        return { kind: 'failed', failure: psbStatusUnavailableFailure(null) };
       }
+      const lookup = await store.read(psbSessionId, { maxAgeMs: 0 });
+      if (lookup.ok) return { kind: 'found', result: lookup.snapshot.status };
+      if (lookup.kind === 'missing') return { kind: 'missing' };
+      // 重绑判定读不到 PSB：不把抖动变成「会话终态」，也不重绑；
+      // 按「会话不可判定」上抛可行动失败，本轮不落任何远端写入。
+      return { kind: 'failed', failure: psbStatusUnavailableFailure(lookup.failure) };
     },
     listWorkspaces: async () => {
       try {
@@ -18952,33 +19041,63 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     },
     persistRebind: async (input) => {
-      const written = await getDbClient()
-        .drizzle
-        .update(sessions)
-        .set({
+      // ── 旧任务的上下文交接（与身份 CAS 同一事务，见 commitRemoteSessionRebindWithPorts）──
+      // 新 PSB 会话是全新的远端引擎会话：旧 `sdk_session_id` 在那边不存在，清掉是对的；
+      // 但**只清不交**会让 UI 看起来透明重连成功、模型却已经失忆（审查 r7 P1）。
+      // 交接文本按本地消息历史确定性拼出（同 `sharedSessionResumeRecovery` 的纪律），
+      // 由隐藏的 `context_rebuild` 标记落到 DB，下一次发送经 `agentHandoffPending` 注入。
+      let handoff: string | null = null;
+      let sourceAgentKind: 'cc' | 'codex' | 'pi' | undefined;
+      if (input.clearNativeSession) {
+        const [row] = await getDbClient()
+          .drizzle
+          .select({ agentKind: sessions.agentKind })
+          .from(sessions)
+          .where(eq(sessions.id, input.sessionId))
+          .limit(1);
+        const kind = row?.agentKind === 'codex' || row?.agentKind === 'pi' ? row.agentKind : 'cc';
+        sourceAgentKind = kind;
+        await drainPersistQueue();
+        const history = await listMessagesForAgentHandoff(input.sessionId, 400);
+        handoff = buildHandoffText(history, {
+          fromLabel: kind,
+          toLabel: kind,
+          sessionId: input.sessionId,
+          reason: 'remote-session-rebind',
+        });
+      }
+      const persisted = await commitRemoteSessionRebindWithPorts(
+        {
+          now: () => Date.now(),
+          createId: () => randomUUID(),
+          tx: (...args) => getDbClient().tx(...args),
+        },
+        {
+          sessionId: input.sessionId,
+          previousRemoteHostId: input.previousRemoteHostId,
           remoteHostId: input.remoteHostId,
-          // 新 PSB 会话是全新的远端引擎会话：旧的原生会话 id 在新会话里不存在，
-          // 留着只会让 lazy-create 去 resume 一个没有的会话而拒绝启动。
-          ...(input.clearNativeSession ? { sdkSessionId: null } : {}),
-          updatedAt: Date.now(),
-        })
-        .where(and(
-          eq(sessions.id, input.sessionId),
-          eq(sessions.remoteHostId, input.previousRemoteHostId),
-        ))
-        .returning({ id: sessions.id });
-      if (written.length === 0) return 'conflict';
+          workspaceId: input.workspaceId,
+          clearNativeSession: input.clearNativeSession,
+          handoff,
+          ...(sourceAgentKind ? { sourceAgentKind } : {}),
+        },
+      );
+      if (persisted.status === 'conflict') return 'conflict';
       // 进程内 remoteHostId 缓存假设「创建后不变」，重绑必须显式让它失效，
       // 否则后续 lazy-resume 仍会拿到已终态的旧 PSB 身份。
       readSessionRemoteHostIdCached.invalidate(input.sessionId);
+      // 旧 PSB 会话的终态快照不能留：新身份是另一条会话，下一次读取必须重新取。
+      const previousPsbSessionId = parsePsbRemoteHostId(input.previousRemoteHostId);
+      if (previousPsbSessionId) getPsbSessionStatusStore()?.invalidate(previousPsbSessionId);
       broadcastSessionPatched(input.sessionId, { remoteHostId: input.remoteHostId });
       return 'persisted';
     },
     stopRemoteSession: async (psbSessionId) => {
+      // PSB 会话被回收 / 停止：快照立刻失效（`stopSession` 之后它必然是终态）。
+      getPsbSessionStatusStore()?.invalidate(psbSessionId);
       await getPsbRemoteService().stopSession(psbSessionId);
     },
     emitRebound: (event) => broadcastPsbSessionsRebound(event),
-    createRequestId: () => randomUUID(),
   } satisfies PsbSessionRebindDeps);
 
   const {
@@ -19259,7 +19378,32 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       prepareUnhealthySessionForSend(sessionId),
     // psb: 远程工作区的旧 PSB 会话终态/已不存在时，发送前在同一工作区重建会话并重绑，
     // 用户不需要重试（见 main/remote-workspace/sessionRebind.ts）。
-    preparePsbRemoteRebind: (sessionId) => psbSessionRebind.prepareForSend(sessionId),
+    //
+    // 读口是**带 TTL/事件失效的会话快照**（`maker-host/psb-session-status.ts`）：
+    //  - 快照说「会话还活着」→ 直接放行，不进入重建协调器（常见路径零额外请求）；
+    //  - 快照说「终态/不存在」→ 交给协调器（它自己会强制刷新一次再决策）；
+    //  - **读不到 → fail-open**：本轮照常发送，真正的终态由建隧道时的 `PSB_*` 报出。
+    //    控制面抖一下不能把健康会话判成「发送失败」（审查 r7 P1）。
+    preparePsbRemoteRebind: async (sessionId) => {
+      const remoteHostId = maker.getSession(sessionId)?.remoteHostId
+        ?? (await readSessionRemoteHostIdCached(sessionId));
+      const psbSessionId = parsePsbRemoteHostId(remoteHostId ?? null);
+      if (!psbSessionId) return null;
+      const store = getPsbSessionStatusStore();
+      const lookup = await store?.read(psbSessionId);
+      if (lookup && !lookup.ok && lookup.kind === 'unavailable') {
+        log.warn('psb rebind: session status unavailable, continuing this send', {
+          sessionId,
+          psbSessionId,
+          hadStaleSnapshot: lookup.stale !== null,
+        });
+        return null;
+      }
+      if (lookup?.ok && !psbSessionStatusNeedsRebind(lookup.snapshot.status.session.status)) {
+        return null;
+      }
+      return psbSessionRebind.prepareForSend(sessionId);
+    },
     // psb: 发送前的占用闸门（PSB 服务端拒绝未锁定者的写入）。非 psb 会话在这里直接返回，
     // 不发任何请求；psb 会话按「缓存 + 足够新的 PSB 会话快照」控制请求次数。
     preparePsbWorkspaceLock: async (sessionId) => {
@@ -19267,6 +19411,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ?? (await readSessionRemoteHostIdCached(sessionId));
       const psbSessionId = parsePsbRemoteHostId(remoteHostId ?? null);
       if (!psbSessionId) return;
+      const store = getPsbSessionStatusStore();
+      const lookup = await store?.read(psbSessionId);
+      if (lookup?.ok) {
+        // 快照足够新、工作区在线且**已由我占用** → 闸门已满足，零额外请求（连续对话的常见路径）。
+        const workspace = lookup.snapshot.status.workspace;
+        if (workspace.clientOnline && workspace.state === 'ready' && workspace.occupancy.byMe) {
+          return;
+        }
+      } else if (lookup && lookup.kind === 'unavailable') {
+        // fail-open：控制面读不到时沿用「本轮继续」口径（PSB 服务端仍是最终裁判，
+        // 未锁定者的写入会被它拒绝并给出 PSB_* 码）。
+        log.warn('psb workspace lock: session snapshot unavailable, continuing this send', {
+          sessionId,
+          psbSessionId,
+        });
+        return;
+      }
       try {
         await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId);
       } catch (error) {

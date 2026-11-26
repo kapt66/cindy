@@ -45,6 +45,10 @@ import {
   isRemoteSessionActivityActive,
 } from '@/features/device-link/remoteSessionActivityStore';
 import { createLogger } from '@/lib/logger';
+import {
+  psbOccupancyReleaseRecordOfSession,
+  releasePsbOccupancyForEndedSession,
+} from '../psbOccupancyRelease';
 import type { ListStatusFilter } from '@/lib/sessionService';
 import type { Session, SessionStatus } from '@/lib/ccAgent.types';
 
@@ -146,6 +150,10 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
     ) => {
       const actionStartedAt = performance.now();
       const targetStatus: SessionStatus = action === 'delete' ? 'deleted' : 'archived';
+      // 归档 / 删除会让行离开缓存桶（含「先乐观换桶」的路径），归还需要的是**结束前的**行：
+      // PSB 远程工作区任务的 `psb:<id>` 身份只在这份行上。行不在已加载桶里时降级为 null
+      // （非 PSB 任务本来就不需要归还；PSB 任务在界面上可见，必然在某个桶里）。
+      const endedSession = sessionsStore.findById(sessionId);
       const statusWriteTarget = await sessionService.resolveStatusWriteTarget(sessionId);
       const isDeviceLinkSession = statusWriteTarget.kind === 'device-link';
       // Preflight/confirmation and write-target resolution may outlive the initial running check.
@@ -279,6 +287,33 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
       }
       const statusConvergedAt = performance.now();
 
+      // PSB 远程工作区：本地任务结束（归档 / 删除）的占用归还是 **main 单权威**
+      // （2026-11-27 审查 s5/s8 P1）：归档/删除落库后，main 的终态 observer 已经发起释放，
+      // 它同时掌握会话表、会话→工作区映射和「同一工作区还有没有别的活动任务」。
+      //
+      // 这里只保留**旧 main / 旧 preload 的兼容探测**：`releasePsbOccupancyForEndedSession`
+      // 内部先 feature-detect（新 main 直接返回 `'main-authority'`，零 IPC、零本地账本），
+      // 探测不到才把「结束事件」记进渲染层账本等下次启动补投。因此新 build 一次归档只有
+      // 一轮 PSB 请求，也不会和 main 的待释放账本双记账。
+      //
+      // 为什么调用点仍在这里：旧 build 里这是归档 / 删除的**唯一**副作用序列（侧栏右键、行内
+      // 快捷按钮、右栏 ··· 菜单都走它），兼容账本也要覆盖这些入口。
+      const endedPsbOccupancy = psbOccupancyReleaseRecordOfSession(
+        endedSession,
+        action === 'delete' ? 'session-deleted' : 'session-archived',
+      );
+      if (endedPsbOccupancy) {
+        void releasePsbOccupancyForEndedSession(endedPsbOccupancy).then((outcome) => {
+          if (outcome === 'retained' || outcome === 'pending-port') {
+            log.warn('[psb] workspace occupancy release kept in the legacy renderer ledger', {
+              sessionId,
+              reason: endedPsbOccupancy.reason,
+              outcome,
+            });
+          }
+        });
+      }
+
       if (action === 'delete' && !isDeviceLinkSession) {
         // DB 已确认删除成功后再让 sessionsStore 修正所有已加载的筛选桶。
         // 仅刷新当前桶会留下陈旧的 active / all 缓存，切换筛选时已删除会话会短暂重现；
@@ -379,3 +414,4 @@ export function useSessionLifecycleActions(options?: { includeArchived?: ListSta
 
   return { runSessionAction, unarchiveSession, archiveBlockedByRunning };
 }
+

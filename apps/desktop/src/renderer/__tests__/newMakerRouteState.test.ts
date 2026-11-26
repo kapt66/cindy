@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   consumeNewMakerDialogueTargetRequest,
   consumeNewMakerFolderPickerRequest,
+  consumeNewMakerNavigationIntent,
   makeDialogueNewMakerRouteState,
   makeFolderPickerNewMakerRouteState,
+  makePsbTargetNewMakerRouteState,
   isSameNewMakerDevice,
   readNewMakerDialogueTargetRequest,
   readNewMakerFolderPickerRequest,
+  readNewMakerNavigationIntent,
   shouldPrefillDefaultNewTaskWorkingDir,
 } from '@/features/cc-agent/lib/newMakerRouteState';
 
@@ -204,5 +207,50 @@ describe('new maker folder picker request', () => {
     expect(consumed).toEqual({ workspacePrompt: 'generic', preserved: true });
     expect(readNewMakerFolderPickerRequest(consumed)).toBeNull();
     expect(readNewMakerFolderPickerRequest(original)).toEqual({ requestId: 'picker-1' });
+  });
+});
+
+describe('new maker navigation intent union', () => {
+  it('carries a remote-workspace handover through the same one-shot intent as dialogue / picker', () => {
+    const state = makePsbTargetNewMakerRouteState({
+      workspaceId: 'ws-1',
+      clientId: 'client-1',
+      clientName: '设计机',
+      workspaceTitle: 'SAGA2',
+      directoryName: 'saga2_design',
+    });
+    const intent = readNewMakerNavigationIntent(state);
+    expect(intent).toMatchObject({
+      kind: 'psbTarget',
+      workspaceId: 'ws-1',
+      clientName: '设计机',
+      workspaceTitle: 'SAGA2',
+    });
+    // 每次交接都是新意图（同一工作区可以被再次交接，不能被 workspaceId 去重吞掉）。
+    const second = readNewMakerNavigationIntent(makePsbTargetNewMakerRouteState({
+      workspaceId: 'ws-1', clientId: 'client-1', clientName: '设计机',
+      workspaceTitle: 'SAGA2', directoryName: 'saga2_design',
+    }));
+    expect(second?.requestId).not.toBe(intent?.requestId);
+  });
+
+  it('consumes only the applied intent and preserves the other legacy payloads', () => {
+    const state = {
+      workspacePrompt: 'generic',
+      dialogueTargetRequest: { requestId: 'dialogue-1', deviceId: null, deviceName: null },
+      psbTarget: {
+        workspaceId: 'ws-1', clientId: 'c', clientName: 'n',
+        workspaceTitle: 't', directoryName: 'd',
+      },
+      preserved: true,
+    };
+    const intent = readNewMakerNavigationIntent(state);
+    // 优先级：对话意图先应用（同一 entry 里历史版本可能叠了多个旧字段）。
+    expect(intent?.kind).toBe('dialogue');
+    const consumed = consumeNewMakerNavigationIntent(state, intent!);
+    expect(readNewMakerDialogueTargetRequest(consumed)).toBeNull();
+    // 远程工作区载荷仍在，等它自己被消费；不会因为应用了对话意图被一起吞掉。
+    expect(readNewMakerNavigationIntent(consumed)).toMatchObject({ kind: 'psbTarget' });
+    expect((consumed as Record<string, unknown>).preserved).toBe(true);
   });
 });

@@ -44,6 +44,9 @@ describe('remote transport wiring (MCPRouter + PSB tunnels)', () => {
   });
 
   it('sends the host-owned cwd (`.`) for psb instead of the virtual /psb-remote path', () => {
+    // 行为断言在 `remote-session-routing.test.ts` 的 `resolveRemoteCcTunnelStartParams`
+    // 用例里（畸形 `psb:` 同样改成 `.`、`mcpr:`/SSH 不动原参数）。这里只保留接线断言：
+    // factory 必须真的经过那个纯函数，而不是自己再判一次前缀。
     const factoryStart = source.indexOf('remoteCcQueryFactory: async ({');
     const factoryEnd = source.indexOf('\n    });\n    const codexMcpProviders', factoryStart);
     const factory = source.slice(factoryStart, factoryEnd);
@@ -51,17 +54,10 @@ describe('remote transport wiring (MCPRouter + PSB tunnels)', () => {
     const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', tunnelGuard);
     const tunnel = factory.slice(tunnelGuard, sshLookup);
 
-    // Bug／规则依据：PSB 远程工作区的 cwd 由宿主拥有（宿主按服务端会话记录 spawn
-    // daemon，见 `docs/dev-rules/psb-remote-session-transport.md`），Cindy 手里的
-    // `/psb-remote/<目录>` 只是本机虚拟路径（`shared/psb-remote-workspace.ts` 硬约束 3）。
-    // 把它当远端 cwd 下发 → daemon 侧 SDK 用不存在的目录 spawn `claude` → query 在首个
-    // turn 前终止 → 本地会话被自动关闭（2026-11-26 实报：UI 只剩 `Session <id> is closed`）。
-    // 最小失败输入：`startParams.cwd = '/psb-remote/ws'` 原样进 openCcManagerSession。
-    expect(tunnel).toContain('parsePsbRemoteHostId(remoteHostId)');
-    expect(tunnel).toMatch(/cwd:\s*'\.'/);
+    expect(tunnel).toContain('resolveRemoteCcTunnelStartParams(');
     expect(tunnel).toContain('startParams: tunnelStartParams');
-    // `mcpr:` 的 workingDir 是 MCPRouter 实例上的真实路径，不得被同一改写波及。
-    expect(tunnel).toContain(': startParams;');
+    // 兼容旧写法：`parsePsbRemoteHostId` 不能作为 cwd 的第二分类器（畸形 psb: 会漏改写）。
+    expect(tunnel).not.toContain('parsePsbRemoteHostId(remoteHostId)');
   });
 
   it('routes Codex through the per-transport tunnel branches before any SSH pool lookup', () => {

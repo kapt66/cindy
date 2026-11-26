@@ -187,3 +187,59 @@ describe('i18n completeness (static keys present in all locales)', () => {
     expect(stale).toEqual([]);
   });
 });
+
+/**
+ * 本批 i18n 收敛的事实（Wave 2 → 第三轮）：删掉的冗余 key 必须在 12 个 locale 里同时消失，
+ * 「远端 / 那台电脑」这类混用不能再回到 PSB 远程工作区文案里。
+ *
+ * 只锚定 `remoteWorkspace` 子树：SSH / MCPRouter / 设备互联的「远端」是别的概念，
+ * 不在本测试范围（也不要为了过测试去改它们）。
+ */
+const DELETED_REMOTE_WORKSPACE_KEYS = [
+  'remoteWorkspace.vcs.confirm.description',
+  'remoteWorkspace.vcs.refresh',
+  'remoteWorkspace.session.stream',
+] as const;
+
+function remoteWorkspaceTree(locale: string): Record<string, unknown> {
+  const tree = JSON.parse(readFileSync(resolve(LOCALES_DIR, locale, 'common.json'), 'utf8')) as {
+    remoteWorkspace?: Record<string, unknown>;
+  };
+  return tree.remoteWorkspace ?? {};
+}
+
+function flattenStrings(value: unknown, prefix = ''): Array<[string, string]> {
+  if (typeof value === 'string') return [[prefix, value]];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+    flattenStrings(child, prefix ? `${prefix}.${key}` : key),
+  );
+}
+
+describe('PSB 远程工作区文案收敛（死 key / 术语）', () => {
+  it('已删除的冗余 key 在 12 个 locale 里 0 存在（不留半张 key 表）', () => {
+    const stillPresent = localeNames().filter((locale) => {
+      const workspace = remoteWorkspaceTree(locale);
+      return DELETED_REMOTE_WORKSPACE_KEYS.some((key) => present(workspace, key));
+    });
+    expect(stillPresent, `这些 locale 仍保留了已删除的 key`).toEqual([]);
+  });
+
+  it('zh-CN 远程工作区文案统一用「远程」，不再混入「远端」', () => {
+    const leftovers = flattenStrings(remoteWorkspaceTree('zh-CN')).filter(([, value]) =>
+      value.includes('远端'),
+    );
+    expect(leftovers, '「远端」与已裁决的「远程」术语混用').toEqual([]);
+  });
+
+  it('串流不支持的说明不再同时指「这台电脑」与「那台电脑」', () => {
+    for (const locale of ['zh-CN', 'zh-TW']) {
+      const value = flattenStrings(remoteWorkspaceTree(locale)).find(
+        ([key]) => key === 'session.streamUnsupported',
+      )?.[1];
+      expect(typeof value, `${locale} 缺 session.streamUnsupported`).toBe('string');
+      expect(value).not.toMatch(/那台(电脑|電腦)/);
+      expect(value).toMatch(/这台|這台/);
+    }
+  });
+});

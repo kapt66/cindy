@@ -28,6 +28,13 @@
  *
  * 两代共同底线：**没有 force 分支**（旧 `force-release` 已删除，收到也不执行、不渲染按钮）。
  *
+ * ## 码 / 文案键的来源（单表）
+ *
+ * 通知码、IPC 码、文案键、下一步动作都派生自 `psb-remote-workspace.ts` 的
+ * `PSB_FAILURE_DESCRIPTORS` 单表（本文件只做「VCS 家族的投影」）。新增一种 VCS 通知时
+ * 改那张表一处，`WORKSPACE_VCS_NOTICE_CODES` / `workspaceVcsNoticeMessageKey` /
+ * `psbIpcCodeForFailure` / `PSB_IPC_FAILURE_MESSAGE_KEYS` 会一起生效。
+ *
  * ## 为什么 action 要白名单 + 只消费服务端给的 method/path/body
  *
  * `actions` 里的 `method` / `path` / `body` 由 PSB 给全（形状会随服务端演进，例如
@@ -36,21 +43,48 @@
  * **同一个 workspaceId**、不含绝对地址 / `..` / `force`，body 只接受白名单键。
  */
 
-/** 版本控制检查通知码（PSB 错误外壳 `error.code`，也是 advisory `code`）。 */
-export const WORKSPACE_VCS_NOTICE_CODES = [
-  'WORKSPACE_VCS_DIRTY',
-  'WORKSPACE_VCS_UNAVAILABLE',
-  'WORKSPACE_VCS_UNSUPPORTED',
-] as const;
+import {
+  PSB_CINDY_ROUTES,
+  PSB_FAILURE_DESCRIPTORS,
+  PSB_TEXT_LIMITS,
+  readBoundedString,
+} from './psb-remote-workspace';
 
-export type WorkspaceVcsNoticeCode = (typeof WORKSPACE_VCS_NOTICE_CODES)[number];
+/** 单表里带 VCS 通知码的那些项（`noticeCode` 非空）。 */
+type PsbVcsFailureDescriptor = Extract<
+  (typeof PSB_FAILURE_DESCRIPTORS)[keyof typeof PSB_FAILURE_DESCRIPTORS],
+  { readonly noticeCode: string }
+>;
+
+/**
+ * 版本控制检查通知码（PSB 错误外壳 `error.code`，也是 advisory `code`）。
+ *
+ * 由 PSB 失败单表的 `noticeCode` 派生——不再单独手写一份码表。
+ */
+export type WorkspaceVcsNoticeCode = PsbVcsFailureDescriptor['noticeCode'];
+
+/** 全部通知码（运行期数组，供遍历 / 测试 / 穷尽断言用；与类型同源）。 */
+export const WORKSPACE_VCS_NOTICE_CODES: readonly WorkspaceVcsNoticeCode[] = Object.freeze(
+  Object.values(PSB_FAILURE_DESCRIPTORS).flatMap((descriptor) =>
+    descriptor.noticeCode === null ? [] : [descriptor.noticeCode as WorkspaceVcsNoticeCode],
+  ),
+);
+
+const WORKSPACE_VCS_NOTICE_CODE_SET: ReadonlySet<string> = new Set(WORKSPACE_VCS_NOTICE_CODES);
 
 export function isWorkspaceVcsNoticeCode(value: unknown): value is WorkspaceVcsNoticeCode {
-  return (
-    typeof value === 'string' &&
-    (WORKSPACE_VCS_NOTICE_CODES as readonly string[]).includes(value)
-  );
+  return typeof value === 'string' && WORKSPACE_VCS_NOTICE_CODE_SET.has(value);
 }
+
+/** 通知码 → 文案键（单表投影；码与键的对应关系只有一处手写）。 */
+const WORKSPACE_VCS_NOTICE_MESSAGE_KEYS: Readonly<Record<WorkspaceVcsNoticeCode, string>> =
+  Object.fromEntries(
+    Object.values(PSB_FAILURE_DESCRIPTORS).flatMap((descriptor) =>
+      descriptor.noticeCode === null
+        ? []
+        : [[descriptor.noticeCode, descriptor.messageKey] as const],
+    ),
+  ) as Readonly<Record<WorkspaceVcsNoticeCode, string>>;
 
 /**
  * 可执行的处置动作。
@@ -132,8 +166,39 @@ export function isWorkspaceVcsActionMethod(value: unknown): value is WorkspaceVc
  */
 export const WORKSPACE_VCS_ACTION_BODY_KEYS = ['revert', 'projectIds', 'confirm'] as const;
 
-/** PSB 给出的版本控制检查路径前缀（与 `psb-remote-workspace.ts` 的 `PSB_CINDY_API_PREFIX` 同源）。 */
-export const WORKSPACE_VCS_WORKSPACES_PATH_PREFIX = '/api/cindy/remote/workspaces/';
+/**
+ * PSB 给出的版本控制检查路径前缀（由 `PSB_CINDY_ROUTES.workspaces` 派生）。
+ *
+ * 与 FIX-A 的 URL 校验共用同一个路由来源：手写第二份前缀会在 PSB 改命名空间时静默错位
+ * （main 的 action 路径校验会因此拒绝一切合法动作，或放行错误前缀）。
+ */
+export const WORKSPACE_VCS_WORKSPACES_PATH_PREFIX = `${PSB_CINDY_ROUTES.workspaces}/`;
+
+/**
+ * VCS 通知里**远端输入**的长度预算（只读边界）。
+ *
+ * 这些值会随 `WORKSPACE_VCS_NOTICE` 推送进 main 的有界缓存、再进渲染层按钮与提示条；
+ * 没有上限时一个畸形 / 异常大的载荷会被整段保留在内存与 IPC 里。口径与 `PSB_TEXT_LIMITS`
+ * 一致：**标识与路径超限即整条丢弃，绝不截断**（截断会让两个不同检出撞成同一个身份，
+ * 也会把按钮指向错误的路径）；只有 PSB 的中文说明是展示文本，按 `message` 上限截断。
+ *
+ * 数字与 `main/remote-workspace/vcsNotice.ts` 的独立兜底同量级（那里是执行前的第二道校验，
+ * 这里挡的是更早的「进缓存之前」）。
+ */
+export const WORKSPACE_VCS_TEXT_LIMITS = {
+  /** 检出 id（`projectId` 的文本形态）：标识字段，超限整条检出丢弃。 */
+  projectId: 128,
+  /** 检出在工作区里的相对路径 / 项目名（`pathInWorkspace`）：超限整条检出丢弃。 */
+  projectPath: 256,
+  /** 版本控制类型（`p4` / `git`）：短码，超限按空串（仅展示用）。 */
+  projectKind: 64,
+  /** action body 里 `projectIds` 的条数上限（超出整条 action 丢弃）。 */
+  projectIds: 64,
+  /** action body 里 `confirm` 标记的长度上限（短标记，超出整条 action 丢弃）。 */
+  confirm: 64,
+  /** PSB 的动作说明（`descriptionZh`）：展示文本，超限截断。 */
+  descriptionZh: PSB_TEXT_LIMITS.message,
+} as const;
 
 /** 一个检出的未提交修改摘要。 */
 export interface WorkspaceVcsProject {
@@ -248,26 +313,41 @@ function readString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-/** 单个 notice 里最多保留多少条检出 / 动作：PSB 侧是有限集合，这里只防畸形载荷撑爆 IPC。 */
+/** 单个 notice 里最多保留多少条检出 / 动作：与 `WORKSPACE_VCS_TEXT_LIMITS` 同量级，只防畸形载荷撑爆 IPC。 */
 const MAX_PROJECTS = 64;
 const MAX_ACTIONS = 8;
 
+/**
+ * 读一个检出 id：数字（有限）或**有长度上限**的文本 id。
+ *
+ * 文本 id 超限返回 `null`（整条检出丢弃），不截断：截断会让两个不同检出共用一个 id，
+ * 后续清理会把用户没选中的检出一起还原。
+ */
 function readProjectId(value: unknown): number | string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim().length > 0) return value.trim();
-  return null;
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text.length === 0 || text.length > WORKSPACE_VCS_TEXT_LIMITS.projectId) return null;
+  return text;
 }
 
 function parseProject(value: unknown): WorkspaceVcsProject | null {
   if (!isRecord(value)) return null;
   const projectId = readProjectId(value['projectId']);
   if (projectId === null) return null;
-  const pathInWorkspace = readString(value['pathInWorkspace'])?.trim();
-  if (!pathInWorkspace) return null;
+  // 检出路径是**标识**（按钮 / 详情都按它定位），超限整条丢弃而不是截断。
+  const rawPath = readString(value['pathInWorkspace']);
+  const pathInWorkspace = rawPath?.trim();
+  if (
+    !pathInWorkspace ||
+    pathInWorkspace.length > WORKSPACE_VCS_TEXT_LIMITS.projectPath
+  ) {
+    return null;
+  }
   return {
     projectId,
     pathInWorkspace,
-    kind: readString(value['kind'])?.trim() ?? '',
+    kind: readBoundedString(value['kind'], WORKSPACE_VCS_TEXT_LIMITS.projectKind)?.trim() ?? '',
     changes:
       typeof value['changes'] === 'number' && Number.isFinite(value['changes'])
         ? Math.max(0, Math.trunc(value['changes']))
@@ -275,15 +355,57 @@ function parseProject(value: unknown): WorkspaceVcsProject | null {
   };
 }
 
+/**
+ * 读 action body，只保留白名单键，且**每个值都按形状与长度预算收敛**。
+ *
+ * body 会随 notice 一起进 main 的推送缓存、也可能被原样发给 PSB（`revert` / `projectIds`），
+ * 所以不能把远端给的任意值直接透传：
+ * - 白名单之外的键（`force` 之类）整条 action 丢弃；
+ * - `revert` 必须是布尔（字符串 `"true"` 之类宽松形态不接受）；
+ * - `projectIds` 必须是有界数组、每项是有界检出 id；
+ * - `confirm` 必须是有界短字符串。
+ *
+ * 任一值不合规 → 整条 action 丢弃（不做「认识的键保留、其余忽略」：少一个危险参数就会
+ * 悄悄改变清理范围）。
+ */
 function readActionBody(value: unknown): Readonly<Record<string, unknown>> | null {
   if (value === undefined) return {} as Readonly<Record<string, unknown>>;
   if (!isRecord(value)) return null;
-  const body: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    // 白名单之外的键（`force` 之类）整条 action 丢弃：不做「只取认识的键、静默忽略其余」，
-    // 否则服务端多给一个危险参数时 Cindy 会悄悄丢掉判断依据。
+  for (const key of Object.keys(value)) {
     if (!(WORKSPACE_VCS_ACTION_BODY_KEYS as readonly string[]).includes(key)) return null;
-    body[key] = entry;
+  }
+  const body: Record<string, unknown> = {};
+  if ('revert' in value) {
+    if (typeof value['revert'] !== 'boolean') return null;
+    body['revert'] = value['revert'];
+  }
+  if ('projectIds' in value) {
+    const list = value['projectIds'];
+    if (
+      !Array.isArray(list) ||
+      list.length === 0 ||
+      list.length > WORKSPACE_VCS_TEXT_LIMITS.projectIds
+    ) {
+      return null;
+    }
+    const ids: (number | string)[] = [];
+    for (const entry of list) {
+      const id = readProjectId(entry);
+      if (id === null) return null;
+      ids.push(id);
+    }
+    body['projectIds'] = ids;
+  }
+  if ('confirm' in value) {
+    const confirm = value['confirm'];
+    if (
+      typeof confirm !== 'string' ||
+      confirm.length === 0 ||
+      confirm.length > WORKSPACE_VCS_TEXT_LIMITS.confirm
+    ) {
+      return null;
+    }
+    body['confirm'] = confirm;
   }
   return body;
 }
@@ -303,7 +425,10 @@ export function parseWorkspaceVcsAction(value: unknown): WorkspaceVcsAction | nu
   if (!isRecord(value)) return null;
   const kind = value['kind'];
   if (!isWorkspaceVcsActionKind(kind)) return null;
-  const descriptionZh = readString(value['descriptionZh'])?.trim();
+  const descriptionZh = readBoundedString(
+    value['descriptionZh'],
+    WORKSPACE_VCS_TEXT_LIMITS.descriptionZh,
+  )?.trim();
   const base = {
     kind,
     ...(descriptionZh ? { descriptionZh } : {}),
@@ -317,7 +442,9 @@ export function parseWorkspaceVcsAction(value: unknown): WorkspaceVcsAction | nu
   }
   const method = value['method'];
   if (!isWorkspaceVcsActionMethod(method)) return null;
-  const path = readString(value['path'])?.trim();
+  // 请求路径**不接受截断**（截断会改掉目标资源）：超长视为畸形载荷，整条丢弃。
+  const rawPath = readString(value['path']);
+  const path = rawPath === null || rawPath.length > PSB_TEXT_LIMITS.url ? null : rawPath.trim();
   // 只接受绝对路径（相对路径会被拼到 PSB 站点根上，绝不接受 `http(s)://…`）。
   if (!path || !path.startsWith('/')) return null;
   const body = readActionBody(value['body']);
@@ -372,7 +499,7 @@ export function parseWorkspaceVcsNotice(value: unknown): WorkspaceVcsNotice | nu
   if (!isRecord(value)) return null;
   const code = value['code'];
   if (!isWorkspaceVcsNoticeCode(code)) return null;
-  const messageZh = readString(value['messageZh'])?.trim() ?? '';
+  const messageZh = readBoundedString(value['messageZh'], PSB_TEXT_LIMITS.message)?.trim() ?? '';
   const projects: WorkspaceVcsProject[] = [];
   if (Array.isArray(value['projects'])) {
     for (const entry of value['projects']) {
@@ -431,16 +558,9 @@ export function workspaceVcsActionMessageKey(kind: WorkspaceVcsActionKind): stri
   return `remoteWorkspace.vcs.action.${kind}`;
 }
 
-/** 通知码的本地化标题键（PSB 没给 `messageZh` 时用它）。 */
+/** 通知码的本地化标题键（PSB 没给 `messageZh` 时用它；单表投影，不再手写 switch）。 */
 export function workspaceVcsNoticeMessageKey(code: WorkspaceVcsNoticeCode): string {
-  switch (code) {
-    case 'WORKSPACE_VCS_DIRTY':
-      return 'remoteWorkspace.vcs.dirty';
-    case 'WORKSPACE_VCS_UNAVAILABLE':
-      return 'remoteWorkspace.vcs.unavailable';
-    case 'WORKSPACE_VCS_UNSUPPORTED':
-      return 'remoteWorkspace.vcs.unsupported';
-  }
+  return WORKSPACE_VCS_NOTICE_MESSAGE_KEYS[code];
 }
 
 /**

@@ -34,32 +34,36 @@
 
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
-import type { PsbTunnelMode } from '../../shared/psb-remote-workspace.js';
+import { parsePsbRemoteHostId, type PsbTunnelMode } from '../../shared/psb-remote-workspace.js';
 import { getAuthState } from '../authManager.js';
 import { getConnectionTokenProvider } from '../cindy-brain/index.js';
+import { createLogger } from '../logger.js';
 import { createOutboundHttpAgent } from './outbound-fetch.desktop.js';
 import {
   getPsbConnectionToken,
   invalidatePsbConnectionToken,
 } from '../remote-workspace/psbAuth.js';
-import { openPsbTunnel } from '../remote-workspace/psbTunnel.js';
+import { openPsbTunnel, type PsbTunnelTokenResult } from '../remote-workspace/psbTunnel.js';
+import { getPsbSessionStatusStore } from './psb-session-status.js';
+
+const log = createLogger('psb-tunnel');
 
 /**
  * 取一次 PSB Connection JWT。
  *
- * 失败时只把**原因键**交给隧道层(它自己抛 `[PSB_AUTH_REQUIRED]`),不把登录态细节带进
- * maker-host 的错误串 —— 与 `psbClient` 的凭据纪律一致:token 只留在 main 内存。
+ * 失败时把**类别 + 原因键**交给隧道层(它自己抛 `[PSB_AUTH_REQUIRED]` / 归因到 unreachable),
+ * 不把登录态细节带进 maker-host 的错误串 —— 与 `psbClient` 的凭据纪律一致:token 只留在
+ * main 内存。`kind` 决定归因(未登录 / 缺组织 / 签发通道不可达),`reasonKey` 是可直接翻译
+ * 的文案键;`detail` 保留给诊断(不进用户可见文案)。
  */
-async function getPsbTunnelToken(): Promise<
-  { ok: true; token: string } | { ok: false; reasonKey: string }
-> {
+async function getPsbTunnelToken(): Promise<PsbTunnelTokenResult> {
   const resolved = await getPsbConnectionToken({
     getAuthState,
     tokens: getConnectionTokenProvider(),
   });
   return resolved.ok
     ? { ok: true, token: resolved.token }
-    : { ok: false, reasonKey: resolved.reasonKey };
+    : { ok: false, kind: resolved.kind, reasonKey: resolved.reasonKey, detail: resolved.detail };
 }
 
 /**
@@ -68,6 +72,9 @@ async function getPsbTunnelToken(): Promise<
  * 鉴权被拒时失效内存里的 Connection JWT 缓存,让**下一次**调用重新签发一次(与 `psbClient`
  * 的「401 只重签一次」同一纪律)。不在这里自动重试:隧道是长连接,静默重连会把
  * 「工作区被占用 / 会话已终态」这类必须让用户看到的状态藏起来。
+ *
+ * **事件失效**:终态 / 不存在 / 未就绪是 PSB 的权威事实,顺手把会话快照丢掉
+ * (`psb-session-status`),让下一条消息立刻走发送前重绑,而不是在 TTL 里继续用「还活着」。
  */
 export async function openPsbAgentTunnel(
   remoteHostId: string,
@@ -78,6 +85,9 @@ export async function openPsbAgentTunnel(
       mode,
       getToken: getPsbTunnelToken,
       agentForUrl: (url) => createOutboundHttpAgent(url),
+      // 就绪前超 1MiB 丢帧要留一条证据（只 warn 一次）：静默丢业务字节在真机上表现为
+      // 「隧道连上了但首帧丢失」，没法归因。
+      logger: log,
     });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('[PSB_TUNNEL_AUTH]')) {
@@ -85,6 +95,16 @@ export async function openPsbAgentTunnel(
         getAuthState,
         tokens: getConnectionTokenProvider(),
       });
+    }
+    // 隧道已经明确否定了这条会话（终态 / 不存在 / 未就绪）：快照立刻作废。
+    if (
+      error instanceof Error
+      && (error.message.startsWith('[PSB_SESSION_STOPPED]')
+        || error.message.startsWith('[PSB_SESSION_NOT_FOUND]')
+        || error.message.startsWith('[PSB_SESSION_NOT_READY]'))
+    ) {
+      const psbSessionId = parsePsbRemoteHostId(remoteHostId);
+      if (psbSessionId) getPsbSessionStatusStore()?.invalidate(psbSessionId);
     }
     throw error;
   }

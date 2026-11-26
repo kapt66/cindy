@@ -159,6 +159,11 @@ export function DeviceSwitcherPill({
         side="bottom"
         align="end"
         sideOffset={6}
+        // 「在哪里运行」是**互斥单选**（本机 / MCPR 远程 / 远程工作区 / 某台设备），所以用
+        // radiogroup 语义：读屏会播报「N 选 1、当前选中项」，而不是一串彼此无关的按钮。
+        // 触发按钮的 `aria-expanded` 由 PopoverTrigger 维护；选中态在行上用 `aria-checked`。
+        role="radiogroup"
+        aria-label={t('newChat.deviceSwitcher.label')}
         className={cn(
           // 宽度**由内容决定 + 设上限**(2026-07-29 用户裁决),而不是写死一个值:
           // DESIGN.md §4 要求 panel 宽度绑 trigger,那条是为「宽度稳定的单行输入框式 Select」
@@ -206,7 +211,7 @@ export function DeviceSwitcherPill({
         <DeviceRow
           icon={<Server size={20} strokeWidth={2} className="shrink-0 text-[var(--folder-item-icon)]" />}
           name={t('remoteWorkspace.sidebar.title')}
-          hint={t('remoteWorkspace.dialog.subtitle')}
+          hint={t('remoteWorkspace.picker.channelHint')}
           selected={psbSelected}
           onSelect={() => {
             onPsbRemoteSelect?.();
@@ -256,6 +261,12 @@ function DeviceRow({ icon, name, hint, online, disabled, selected, onSelect }: R
   return (
     <button
       type="button"
+      // radiogroup 的选项：互斥单选，选中态用 `aria-checked`（原生 button 不支持 aria-pressed
+      // 表达「一组里只有一个」的语义，读屏会把它当独立开关）。disabled 的离线设备同样带
+      // `aria-checked`，让读屏仍能报出「当前值」而不是一条无状态的灰行。
+      role="radio"
+      aria-checked={selected}
+      aria-disabled={disabled === true}
       disabled={disabled}
       data-testid="create-agent-device-option"
       onClick={onSelect}

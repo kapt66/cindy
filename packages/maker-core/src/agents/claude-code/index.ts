@@ -1183,7 +1183,14 @@ export class ClaudeCodeAgent extends BaseAgent {
     if (opts.remoteHostId) {
       const fileOps = this.deps.getRemoteAgentFileOps?.(opts.remoteHostId);
       if (!fileOps) throw new Error('Claude Code remote Skill discovery requires remote file operations');
-      return scanRemoteClaudeSkills({ fileOps, workingDir: opts.workingDir });
+      // cwd 归远端宿主（PSB 远程工作区）时本机 `workingDir` 是虚拟路径（`/psb-remote/…`），
+      // 在远端不存在：项目级 Skill 发现改用宿主工作区（客户端不认识它）→ 只列 agent 全局
+      // Skill。绝不能把虚拟路径拼成远端目录下发，否则远端 `listDir` 只会拿到空目录，
+      // 把用户配置的项目 Skill 静默判成「不存在」。判定由宿主按 transport 能力打标。
+      return scanRemoteClaudeSkills({
+        fileOps,
+        ...(opts.remoteHostOwnsCwd ? {} : { workingDir: opts.workingDir }),
+      });
     }
     const raw = await scanClaudeSlashCommands(opts.workingDir);
     return {

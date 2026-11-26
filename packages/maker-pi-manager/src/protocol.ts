@@ -129,6 +129,19 @@ export interface HelloResult {
 }
 
 /**
+ * pi 子进程工作目录的**归属口径**（显式契约，不再靠 daemon 的进程 cwd 隐式兜底）。
+ *
+ *   - `host`：宿主拥有 cwd。daemon 在自己的**启动工作区**里 spawn pi（PSB 远程工作区的
+ *     runtime 按服务端会话记录里的工作区拉起 daemon，但客户端不认识那个路径，不能在
+ *     `cmd` 里写 `cd`）。daemon 启动目录在 `chdir('/')` 之前抓取，见 `bin/pi-manager.ts`。
+ *   - `command`：cwd 由 `cmd` 自带（`cd <绝对路径> && …`；SSH / MCPRouter 的既有形态）。
+ *     spawn 不指定 cwd —— `cmd` 里的 `cd` 才决定 pi 的工作目录。
+ *   - `explicit`：客户端给出 `cwd`，daemon 校验是绝对路径并存在后使用；不存在时**拒绝**
+ *     （不静默把 pi 跑到 `/`，那会让工具与相对路径解析全错）。
+ */
+export type PiEnsureCwdPolicy = 'host' | 'command' | 'explicit';
+
+/**
  * pi/ensure — ensure a pi session exists (spawn if missing, conditional
  * restart if env changed, pure attach if env unchanged).
  */
@@ -147,6 +160,17 @@ export interface PiEnsureParams {
    * false = return existing socket even if envHash differs (pure attach).
    */
   restart: boolean;
+  /**
+   * cwd 归属口径（见 `PiEnsureCwdPolicy`）。客户端**显式传**：
+   *  - `host`（PSB 远程工作区）/ `command`（SSH / MCPRouter）；
+   *  - `explicit` 时必须同时给 `cwd`。
+   *
+   * 缺省（老客户端）保留兼容语义：daemon 用启动目录（等价 `host`）；新客户端一律显式传，
+   * 不让「pi 在哪个目录跑」取决于 daemon 被谁、在哪拉起。
+   */
+  cwdPolicy?: PiEnsureCwdPolicy;
+  /** `cwdPolicy: 'explicit'` 时的绝对目录。 */
+  cwd?: string;
 }
 
 export interface PiEnsureResult {

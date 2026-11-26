@@ -7,7 +7,7 @@ import {
   type ProviderView,
 } from '@cindy/model-providers';
 import { deriveModelsFromProviders, filterChatBridgedCodexProviders } from '@/lib/providerModels';
-import { resolveRemoteCodexModelHostId } from '@/lib/remoteCodexModelHost';
+import { asSshRemoteHostId, type SshRemoteHostId } from '@/lib/remoteCodexModelHost';
 import type { Effort } from '@/lib/userPreferences.types';
 import { isSubscriptionDirectModel } from '../../../shared/subscriptionModels';
 import { resolveNewMakerDraftEffort } from './newMakerDraftModelPrefs';
@@ -27,22 +27,25 @@ export class SshModelSelectionError extends Error {
   }
 }
 
-/** Resolve new SSH Codex tasks from the execution host, never the controller login. */
+/**
+ * Resolve new SSH Codex tasks from the execution host, never the controller login.
+ *
+ * `hostId` 既接受 brand 过的 {@link SshRemoteHostId}（草稿页已经过 transport 分类的入口），
+ * 也接受普通字符串（设置页 / 旧调用点）：函数内部**统一**过一次 `asSshRemoteHostId`，
+ * `mcpr:` / `psb:` 隧道身份因此永远不会触发「按主机读远端 Codex 清单」——它们的模型面就是
+ * 本机 AI Gateway 目录，喂给 SSH 探针只会得到 `SSH_EXEC_FAILED` 并被渲染成假告警。
+ * 判据只有一份（`lib/remoteCodexModelHost.ts`），不在这里手写前缀。
+ */
 export async function loadSshSessionModelSelection(
-  hostId: string, args: Parameters<typeof resolveSshSessionModelSelection>[0] = {
+  hostId: SshRemoteHostId | string, args: Parameters<typeof resolveSshSessionModelSelection>[0] = {
     agentKind: 'codex', providers: [], loading: false, loadFailed: false,
   },
 ): Promise<ReturnType<typeof resolveSshSessionModelSelection>> {
   if (args.agentKind !== 'codex') return resolveSshSessionModelSelection(args);
-  // 只有真正的 SSH 执行主机才有「按主机读远端 Codex 清单」这条探针。隧道 transport
-  // （`mcpr:<instance.id>` / `psb:<sessionId>`）不在 SSH pool 里，Codex 走本机 AI Gateway，
-  // 模型面就是本机目录 —— 喂给探针只会得到 `SSH_EXEC_FAILED`，并把「无法读取远程设备模型」
-  // 当成事实。判据收在 `lib/remoteCodexModelHost.ts`，这里不重复手写前缀判断。
-  if (resolveRemoteCodexModelHostId({ remoteHostId: hostId, agentKind: args.agentKind }) === null) {
-    return resolveSshSessionModelSelection(args);
-  }
+  const sshHostId = asSshRemoteHostId(hostId);
+  if (sshHostId === null) return resolveSshSessionModelSelection(args);
   try {
-    const providers = await window.electronAPI.remoteSsh.listCodexModels(hostId);
+    const providers = await window.electronAPI.remoteSsh.listCodexModels(sshHostId);
     return resolveSshSessionModelSelection({
       ...args, providers, loading: false, loadFailed: false,
       // Callers carry controller draft preferences, not a choice for this host.

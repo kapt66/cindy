@@ -7,9 +7,14 @@
  * PSB 远端客户端采集 H.264
  *   → PSB 中继
  *   → main（本文件：wss 观看端，Bearer 鉴权）
- *   → IPC 推送 `PSB_REMOTE_CHANNELS.STREAM_EVENT`（PsbStreamEvent）
+ *   → `deps.emit`（生产 = `PsbRemoteService.onStreamEvent` 的进程内订阅者）
+ *   → `adminService` 按绑定会话过滤 → `push.broadcastPsbAdminStreamEvent`
+ *   → IPC 推送 `PSB_ADMIN_CHANNELS.STREAM_EVENT`（PsbStreamEvent）
  *   → renderer 用 WebCodecs 解码到 canvas
  * ```
+ *
+ * 会话级 `PSB_REMOTE_CHANNELS.STREAM_EVENT` 与 `broadcastPsbStreamEvent` 已删除：渲染层零消费，
+ * 会话级串流面不存在（管理页是唯一串流消费方，见 `ipc.ts` 的说明）。
  *
  * 帧是**二进制透传**：main 不解析 H.264、也不重编码，只把 WS 二进制消息原样转成
  * `{ type:'frame', payload: ArrayBuffer }`。这样渲染层能直接复用既有观看端的解包头
@@ -45,7 +50,7 @@
  *
  * PSB 的观看端订阅**由 WS 升级建立、断开即退订**（浏览器观看端就是这么做的）。Cindy 早期
  * 按「加性协议」猜测发过 `{kind:'open'}` / `{kind:'close'}`，PSB 侧把它们计入**非法消息**
- * （`联动需求.md` PSB-RW-06 问答：不要发这两个 kind）。现在本端**不再发送任何控制帧**，
+ * （PSB 协作需求 PSB-RW-06 问答：不要发这两个 kind）。现在本端**不再发送任何控制帧**，
  * 上行文本只有 `{kind:'input', event}`（`sendInput`），帧与状态的本地状态机保留在这里。
  *
  * ## 名额与稳定 `subscriberId`（PSB 0.1.170 契约）
@@ -106,9 +111,11 @@ import {
   parsePsbSessionStreamStatus,
   parsePsbStreamCloseReason,
   parsePsbStreamCursorTextFrame,
+  readPsbFailureFieldsFromText,
 } from '../../shared/psb-remote-workspace.js';
 import { PsbClientError, psbMessageKeyForErrorCode, psbStreamPath } from './psbClient.js';
-import { psbWebSocketUrl } from './psbEndpoint.js';
+import { assertPsbIdentifier, psbWebSocketUrl } from './psbEndpoint.js';
+import { toArrayBuffer, toBuffer } from './wsFrames.js';
 
 /** 观看端握手体的读取上限：PSB 的错误外壳（`{error:{code,message}}`）远小于它。 */
 const UPGRADE_BODY_LIMIT_BYTES = 8 * 1024;
@@ -168,7 +175,10 @@ export interface PsbStreamViewerDeps {
   fetchStatus(sessionId: string): Promise<PsbSessionStreamStatus>;
   /** `ws` 的出站 agent（生产 = `createOutboundHttpAgent`，吃系统代理）；直连返回 `undefined`。 */
   createHttpAgent(url: string): Promise<unknown>;
-  /** 把事件交给 IPC 推送层（生产 = `broadcastPsbStreamEvent`）。 */
+  /**
+   * 把事件交给进程内订阅者（生产 = `createPsbRemoteService` 里的 `streamListeners` fan-out，
+   * 由管理页 `adminService` 过滤后经 `push.ts` 推给渲染层）。
+   */
   emit(event: PsbStreamEvent): void;
   logger: StreamLogger;
   /** 单测注入点；生产用 `ws` 默认导出。 */
@@ -183,7 +193,10 @@ export interface PsbStreamViewerDeps {
 
 export interface PsbStreamViewer {
   /**
-   * 开始观看某会话。幂等：同一会话已有连接时先停旧连接再重连。
+   * 开始观看某会话。握手成功后**原子替换**该会话的旧连接（并补发 `closed(superseded)`）；
+   * 预检 / 握手失败时旧连接原样保留。因此调用方只在「本端没有健康连接」时调用它 —— 管理页
+   * `adminService.streamStart` 会先看自己的 `viewerActive` 标记，有健康连接就直接复用、不重连
+   * （否则多窗口第二个「启动」会把第一个窗口的连接换掉）。
    * 失败抛 `PsbClientError`（`failure.messageKey` 可翻译），不推 `error` 事件（invoke 自己会报错）。
    */
   start(sessionId: string): Promise<PsbSessionStreamStatus>;
@@ -213,6 +226,10 @@ export function createPsbStreamSubscriberId(): string {
  * 重连换新，故障表现是「观看名额被自己占满 / 别人偶尔连不上」，现场极难归因。
  */
 export function buildPsbStreamUrl(sessionId: string, subscriberId: string): string {
+  // 会话 id 会被编进路径：先按同一判据拒绝编码分隔符 / 空白等协议违约字符（见
+  // `assertPsbIdentifier`）。否则 `encodeURIComponent` 会把 `/` 变成 `%2F`，而路径校验又拒绝
+  // 编码分隔符 —— 错误形状会变成「路径越界」而不是「会话 id 非法」。
+  assertPsbIdentifier(sessionId);
   const url = new URL(psbWebSocketUrl(psbStreamPath(sessionId)));
   const params = new URLSearchParams();
   params.set('subscriberId', subscriberId);
@@ -327,9 +344,9 @@ export function classifyStreamHandshakeStatus(status: number | undefined): PsbRe
     case 403:
       // PSB 对串流的 403 同时覆盖「身份未关联通讯录」与「非归属人」两种事实；对外不泄漏
       // 会话存在性，因此按「找不到 / 没权限」呈现（与 PSB-RW-08 的 404 口径一致）。
-      return { code: 'FORBIDDEN', messageKey: 'remoteWorkspace.error.notFound', message: null };
+      return { code: 'FORBIDDEN', messageKey: 'remoteWorkspace.admin.staleMissingTitle', message: null };
     case 404:
-      return { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.error.notFound', message: null };
+      return { code: 'NOT_FOUND', messageKey: 'remoteWorkspace.admin.staleMissingTitle', message: null };
     case 409:
       // 会话非运行态 / 客户端离线 / 名额已满都落 409，没有 body 时无法进一步区分。
       return {
@@ -380,7 +397,7 @@ export function classifyStreamHandshakeClose(code: number, reason: string): PsbR
   if (code === 4404) {
     return {
       code: 'NOT_FOUND',
-      messageKey: 'remoteWorkspace.error.notFound',
+      messageKey: 'remoteWorkspace.admin.staleMissingTitle',
       message: detail,
     };
   }
@@ -424,10 +441,20 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
    */
   const generations = new Map<string, number>();
   /**
-   * 本端主动断开的 socket：它们的 close 事件不再推 `closed`。
-   * 重启（先停旧连）与用户停止都会走到这里；把「我关的」当成「远端断了」会让面板闪一下错误状态。
+   * 本端主动断开的 socket → 关闭原因。
+   *
+   * 消失（不推事件）与补发（推 `closed` + 稳定 token）是两类不同的「主动关闭」：
+   * - `superseded`：同一会话被新连接替换（重启）。新 socket 仍挂**同一个** `sessionId`，帧继续
+   *   到同一条观看端，所以对渲染层这是**非终态**提示：`useAdminStreamSession` 保留相位、不清屏、
+   *   不通知用户；它只说明旧 socket 的解码状态可以丢掉，不代表「观看结束」。
+   * - `client-stopped`：用户点「停止」（或 main 内部收尸）。渲染层要清掉画面并回到未启动状态。
+   * - `dispose` / `handshake-failed`：进程销毁 / 握手失败，没有可报的界面，**不推**。
+   *
+   * 旧实现把四者都塞进一个「不问原因就不推」的集合，于是用户停止后渲染层只能靠 invoke 的
+   * 返回值自己猜状态；补发 `closed` 后状态收敛只有一条路（事件）。
    */
-  const intentionallyClosed = new WeakSet<PsbStreamSocket>();
+  type StreamCloseIntent = 'superseded' | 'client-stopped' | 'dispose' | 'handshake-failed';
+  const closeIntents = new WeakMap<PsbStreamSocket, StreamCloseIntent>();
   let disposed = false;
 
   function bumpGeneration(sessionId: string): number {
@@ -442,14 +469,40 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
   }
 
   /**
+   * 补发一条本端主动关闭的 `closed` 事件（`reason` 是稳定 token，不是句子）。
+   *
+   * 只在真的推事件的原因（`superseded` / `client-stopped`）上调用；`dispose` 与握手失败不推。
+   */
+  function emitIntentionalClose(sessionId: string, reason: StreamCloseIntent): void {
+    if (reason !== 'superseded' && reason !== 'client-stopped') return;
+    deps.emit({
+      type: 'closed',
+      sessionId,
+      reason,
+      // 本端主动关闭没有 PSB 的机器码/中文原话：明细字段显式置空，消费方不用猜。
+      detail: { reasonCode: null, desktopSession: null, messageZh: null },
+    });
+  }
+
+  /**
    * 关掉某会话的连接。
    *
-   * **不发 `{kind:'close'}`**：PSB 的退订语义就是断开 WS（向 Cindy 的明确口径见 `联动需求.md`
-   * PSB-RW-06；浏览器观看端也是这么做的）。用 `terminate()` 而不是优雅关闭，是为了让名额
+   * **不发 `{kind:'close'}`**：PSB 的退订语义就是断开 WS（向 Cindy 的明确口径见 PSB 协作需求
+   * PSB-RW-06 问答；浏览器观看端也是这么做的）。用 `terminate()` 而不是优雅关闭，是为了让名额
    * **立刻**释放——「停止」之后马上再次启动时不该还占着旧连接。
+   *
+   * `intent` 决定这次主动断开是否对渲染层可见（见 `StreamCloseIntent`）；`closed` 在这里
+   * **同步**补发，保证「旧连接已失效」的消息先于新连接的状态到达。
    */
-  function closeSocket(socket: PsbStreamSocket): void {
-    intentionallyClosed.add(socket);
+  function closeSocket(
+    sessionId: string,
+    socket: PsbStreamSocket,
+    intent: StreamCloseIntent,
+  ): void {
+    if (!closeIntents.has(socket)) {
+      closeIntents.set(socket, intent);
+      emitIntentionalClose(sessionId, intent);
+    }
     try {
       if (socket.terminate) socket.terminate();
       else socket.close(1000, 'client stop');
@@ -471,19 +524,19 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
     const myGeneration = bumpGeneration(sessionId);
     // 新订阅不应继承上一条连接的光标去重状态（PSB 重连/采集重建后序号可能重新开始）。
     lastCursorSerial.delete(sessionId);
-    const previous = active.get(sessionId);
-    if (previous) {
-      // 幂等：重复启动先停旧连接，避免同一会话在自己这里占掉两个观看名额。
-      closeSocket(previous);
-      forget(sessionId);
-    }
+    /**
+     * 旧连接**先不拆**：预检（能力位 / token / 出站 agent）与新手势都可能在旧连接仍然可用时
+     * 失败。旧实现先 close 再预检，于是「重启时 PSB 抖动一下」会让用户从『能看到画面』直接
+     * 掉到『什么都没有』。现在只有新连接握手成功后旧连接才被替换（原子替换）。
+     */
+    const previous = active.get(sessionId) ?? null;
 
     const status = await deps.fetchStatus(sessionId);
-    if (!status.capable) {
+    if (!status.capability) {
       throw psbStreamFailure({
         code: 'PSB_STREAM_UNSUPPORTED',
         messageKey: 'remoteWorkspace.session.streamUnsupported',
-        message: status.lastError,
+        message: status.lastErrorZh,
       });
     }
 
@@ -517,7 +570,7 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
         const failHandshake = (failure: PsbRemoteFailure): void => {
           if (handshakeSettled) return;
           handshakeSettled = true;
-          intentionallyClosed.add(socket);
+          closeIntents.set(socket, 'handshake-failed');
           try {
             socket.terminate?.();
           } catch {
@@ -532,7 +585,7 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
         });
         socket.on('error', (error) => {
           deps.logger.warn('psb stream socket error', { sessionId, detail: error.message });
-          if (handshakeSettled && !intentionallyClosed.has(socket)) {
+          if (handshakeSettled && !closeIntents.has(socket)) {
             // 握手之后才出的错：invoke 早已返回，只能推 error 事件让面板显示可行动原因；
             // 同一连接只推一次（`ws` 之后还会发 close，届时再推 closed）。
             if (!streamErrorEmitted) {
@@ -572,8 +625,9 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
           if (closedHandled) return;
           closedHandled = true;
           if (active.get(sessionId) === socket) forget(sessionId);
-          // 本端主动断开（重启替换 / 用户停止 / dispose）不推事件：那不是"会话流断了"。
-          if (intentionallyClosed.has(socket)) return;
+          // 本端主动断开（替换 / 用户停止 / dispose / 握手失败）：`closed` 已在 `closeSocket`
+          // 里按原因决定是否同步补发过；这里不再按远端关闭归因，避免同一连接推两条语义不同的事件。
+          if (closeIntents.has(socket)) return;
           const classification = classifyStreamClose({
             code,
             reason: reason.toString('utf8'),
@@ -611,19 +665,25 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
         });
       });
     } catch (error) {
-      closeSocket(socket);
+      closeSocket(sessionId, socket, 'handshake-failed');
       throw error;
     }
 
     if (disposed || generations.get(sessionId) !== myGeneration) {
       // 握手期间被 stop/dispose 取代（或服务已销毁）：关掉自己，别留下没人认领的连接。
-      closeSocket(socket);
+      closeSocket(sessionId, socket, 'dispose');
       return statusById.get(sessionId) ?? { ...status, active: false };
     }
 
     // 升级完成即已订阅（PSB 侧语义：连上 = 订阅，断开 = 退订）。**不发 `{kind:'open'}`**：
     // PSB 会把这两个控制 kind 计入非法消息（见文件头「上行只有一种消息」）。
     active.set(sessionId, socket);
+    if (previous && previous !== socket) {
+      // 原子替换：新连接已经可用，这时才拆旧连接（预检/握手失败时旧连接原样保留）。
+      // 补发 `closed(superseded)`：让渲染层拆掉旧连接的画面/状态，而不是让它停在旧语义上；
+      // 新连接随后推 `status`，事件顺序固定为「旧的失效 → 新的状态」。
+      closeSocket(sessionId, previous, 'superseded');
+    }
     // `active` 属于 PSB 的语义（「此刻有没有可看的画面」，见工程契约 §7）：本端**订阅成功**
     // 不等于有画面，不能把它改写成 true，否则面板会在没有任何一帧时显示「串流中」。
     // 「已订阅」由渲染层自己记（streamStart 成功即已订阅），首帧到达时再把画面切到 live。
@@ -707,7 +767,8 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
       const socket = active.get(sessionId);
       forget(sessionId);
       if (!socket) return;
-      closeSocket(socket);
+      // 用户显式停止：补发 `closed(client-stopped)`，渲染层不必再靠 invoke 返回值猜状态。
+      closeSocket(sessionId, socket, 'client-stopped');
     },
     async sendInput(sessionId, event) {
       const socket = active.get(sessionId);
@@ -724,7 +785,8 @@ export function createPsbStreamViewer(deps: PsbStreamViewerDeps): PsbStreamViewe
       disposed = true;
       for (const [sessionId, socket] of active) {
         bumpGeneration(sessionId);
-        closeSocket(socket);
+        // 进程退出/账号边界：没有可报的界面，不推事件（`dispose` 意图被显式抑制）。
+        closeSocket(sessionId, socket, 'dispose');
         forget(sessionId);
       }
       active.clear();
@@ -744,23 +806,14 @@ async function resolveUpgradeFailure(
 ): Promise<PsbRemoteFailure> {
   const fallback = classifyStreamHandshakeStatus(response.statusCode);
   const text = await readUpgradeBody(response);
-  if (!text) return fallback;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return fallback;
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return fallback;
-  const error = (parsed as { error?: unknown }).error;
-  if (typeof error !== 'object' || error === null) return fallback;
-  const record = error as Record<string, unknown>;
-  const code = typeof record['code'] === 'string' ? record['code'] : null;
-  const message = typeof record['message'] === 'string' ? record['message'] : null;
+  // 失败外壳解析与 HTTP 侧同一份实现（`readPsbFailureFieldsFromText`）：不在这里手写
+  // `{error:{code,message}}` 的第二套解析与另一张码表。
+  const fields = readPsbFailureFieldsFromText(text);
+  if (!fields) return fallback;
   return {
-    code: code ?? fallback.code,
-    messageKey: code ? psbMessageKeyForErrorCode(code) : fallback.messageKey,
-    message: message ?? fallback.message,
+    code: fields.code ?? fallback.code,
+    messageKey: fields.code ? psbMessageKeyForErrorCode(fields.code) : fallback.messageKey,
+    message: fields.message.length > 0 ? fields.message : fallback.message,
   };
 }
 
@@ -794,17 +847,4 @@ function readUpgradeBody(response: PsbStreamUpgradeResponse): Promise<string> {
   });
 }
 
-function toArrayBuffer(data: RawData): ArrayBuffer {
-  const buffer = toBuffer(data);
-  // 拷贝而不是复用 Buffer 的底层池：跨 IPC 传递的 ArrayBuffer 不能被后续帧覆写。
-  const copy = new ArrayBuffer(buffer.byteLength);
-  new Uint8Array(copy).set(buffer);
-  return copy;
-}
 
-function toBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data.map(toBuffer));
-  return Buffer.from(data as ArrayBuffer);
-}

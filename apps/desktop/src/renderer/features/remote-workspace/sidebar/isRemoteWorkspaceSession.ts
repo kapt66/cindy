@@ -35,11 +35,16 @@ export interface RemoteWorkspaceSessionIdentityLike {
 /**
  * 取 PSB 会话 id（`psb:` 之后的部分）；非远程工作区会话返回 `null`。
  *
+ * 入参接受**会话对象**或**已取出的 `remoteHostId` 字符串**：两种调用形态在仓里都存在
+ * （侧栏行拿会话，会话页/重绑路径拿字符串），但解析只能有一份实现——2026-11-26 独立审查
+ * 发现 `stream/psbStreamSession.ts` 曾另包一个同行为函数，两处各改一半就会漂。
+ *
  * 渲染层把它当**不透明键**用（`bridge.sessionStatus({ sessionId })` 的入参），
  * 不参与任何展示文案或路径拼接。
  */
 export function remoteWorkspacePsbSessionId(
-  session: RemoteWorkspaceSessionIdentityLike | null | undefined,
+  session: RemoteWorkspaceSessionIdentityLike | string | null | undefined,
 ): string | null {
-  return parsePsbRemoteHostId(session?.remoteHostId);
+  const remoteHostId = typeof session === 'string' ? session : session?.remoteHostId;
+  return parsePsbRemoteHostId(remoteHostId);
 }

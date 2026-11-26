@@ -16,8 +16,14 @@
  * ## 不可用时的行为
  *
  * 只读页/列表在没有桥时（旧 preload、单测、非主窗口）应当渲染"不可用"而不是崩。
- * 因此 `getPsbRemoteBridge()` 在缺失时抛错（供明确的动作路径报错），
- * `tryGetPsbRemoteBridge()` 返回 `null`（供渲染与测试使用）。
+ * 因此 `tryGetPsbRemoteBridge()` 返回 `null`（供渲染与测试使用），
+ * `getPsbRemoteBridge()` 在缺失时抛错（供**用户显式动作**路径报错）。
+ *
+ * ## 会话级串流通道已删除（2026-11-26）
+ *
+ * 这里曾有一组会话级串流方法（`streamStatus` / `streamStart` / `streamStop` / `streamInput` /
+ * `onStreamEvent`），与工作区级管理页并存；渲染层对会话级零消费，两套只会让「谁启动了串流、
+ * 帧该推给谁」有两个答案。现在只保留管理页的 `adminStream*` / `onAdminStreamEvent`。
  */
 
 import type {
@@ -29,12 +35,14 @@ import type {
   PsbListTemplatesResult,
   PsbListWorkspacesResult,
   PsbOccupyWorkspaceResult,
+  PsbPendingWorkspaceReleasesResult,
+  PsbPendingWorkspaceReleasesRetryResult,
   PsbRemoteStatus,
   PsbSessionStatusResult,
-  PsbSessionStreamStatus,
+  PsbSessionWorkspaceReleaseRequest,
+  PsbSessionWorkspaceReleaseResult,
   PsbSessionsReboundEvent,
   PsbStreamEvent,
-  PsbStreamStartResult,
   PsbWorkspaceChangedEvent,
   PsbWorkspaceRefRequest,
 } from '../../../shared/psb-remote-workspace';
@@ -53,12 +61,6 @@ import type {
   PsbWorkspaceAdminStreamStartResult,
   PsbWorkspaceAdminStreamStatusResult,
 } from '../../../shared/psb-workspace-admin';
-
-/** 串流键鼠输入事件（形状由 PSB 浏览器观看端协议定义，Cindy 只转发）。 */
-export interface PsbStreamInputEvent {
-  readonly kind: 'input';
-  readonly event: Record<string, unknown>;
-}
 
 export interface PsbRemoteBridge {
   status(): Promise<PsbRemoteStatus>;
@@ -95,11 +97,6 @@ export interface PsbRemoteBridge {
   sessionStatus(input: { sessionId: string }): Promise<PsbSessionStatusResult>;
   stopSession(input: { sessionId: string }): Promise<void>;
   openWebWorkspace(input: { workspaceId: string }): Promise<void>;
-  streamStatus(input: { sessionId: string }): Promise<PsbSessionStreamStatus>;
-  streamStart(input: { sessionId: string }): Promise<PsbStreamStartResult>;
-  streamStop(input: { sessionId: string }): Promise<void>;
-  streamInput(input: { sessionId: string; event: PsbStreamInputEvent }): Promise<void>;
-  onStreamEvent(handler: (event: PsbStreamEvent) => void): () => void;
   onWorkspaceChanged(handler: (event: PsbWorkspaceChangedEvent) => void): () => void;
   /**
    * 远程会话在发送时被透明重建（本地任务不变，PSB 侧换了新会话）。
@@ -109,6 +106,33 @@ export interface PsbRemoteBridge {
    * 依赖会话行 patch 的到达顺序。
    */
   onSessionsRebound(handler: (event: PsbSessionsReboundEvent) => void): () => void;
+
+  /* ------------------ 会话结束归还工作区占用（r6/r7 跨组接线） ------------------ */
+
+  /**
+   * 报告「这条本地任务结束了」→ main 归还它占用的 PSB 工作区。
+   *
+   * 只传本地会话 id + 会话行的远端身份（`psb:<id>`）+ 终态原因；**占用者判断与账本都在
+   * main**（渲染层拿不到 workspaceId，也不该自己判「还有没有别的任务在用」）。
+   *
+   * `ok:false` 表示 main 把失败记进了它自己的待释放账本（可重试），**事件已经送达**：
+   * 调用方清掉本地待投记录即可，不要为同一件事排第二份重试。
+   */
+  releaseWorkspaceForSession(
+    input: PsbSessionWorkspaceReleaseRequest,
+  ): Promise<PsbSessionWorkspaceReleaseResult>;
+  /** 读 main 的待释放账本（常驻提示条 / 诊断；不触发任何写操作）。 */
+  pendingWorkspaceReleases(): Promise<PsbPendingWorkspaceReleasesResult>;
+  /**
+   * 显式重试 main 的待释放账本（用户点「重试解除占用」时调用一次）。
+   *
+   * 只做一次、不排后台轮询：返回值带重试后的完整账本与本次计数。
+   */
+  retryPendingWorkspaceReleases(): Promise<PsbPendingWorkspaceReleasesRetryResult>;
+  /** main 的待释放账本变了（失败入账 / 重试成功出账 / 退出前重试）→ 完整快照。 */
+  onPendingWorkspaceReleasesChanged(
+    handler: (event: PsbPendingWorkspaceReleasesResult) => void,
+  ): () => void;
 
   /* ------------------ 「远程工作区」管理页（工作区级） ------------------ */
 
@@ -175,10 +199,33 @@ export function tryGetPsbRemoteBridge(): PsbRemoteBridge | null {
 }
 
 /**
- * 取 preload 桥；不存在时抛错。
+ * 运行时探测桥上的某个方法是否存在（旧 preload / 单测替身可能只有一部分方法）。
  *
- * 只在**用户显式动作**（点新建会话、点占用）里用：那里必须给出一句可行动的失败，
- * 而不是静默什么都不发生。
+ * 管理页 / 交互串流的「此版本暂不支持」降级要逐个探方法，而不是只看对象在不在。
+ * 探测只允许走这一个函数：调用点各自 `as unknown as Record<string, unknown>` 会绕开类型、
+ * 也绕开对 `PsbRemoteBridge` 方法名的编译期约束。
+ *
+ * 返回值是**类型谓词**：`true` 时把可空桥收窄成非空（调用点因此可以写
+ * `if (!psbBridgeHasMethod(bridge, 'x')) return; await bridge.x(...)`）。
+ * 谓词只保证「桥存在且这个方法是函数」；其余方法的存在性由 `PsbRemoteBridge` 的静态契约
+ * （preload 的返回类型注解）保证——运行期探针是给「旧 preload / 测试替身」的降级路径。
+ */
+export function psbBridgeHasMethod<K extends keyof PsbRemoteBridge>(
+  bridge: PsbRemoteBridge | null | undefined,
+  method: K,
+): bridge is PsbRemoteBridge & Required<Pick<PsbRemoteBridge, K>> {
+  if (!bridge) return false;
+  return typeof (bridge as unknown as Record<string, unknown>)[method] === 'function';
+}
+
+/**
+ * 取 preload 桥；不存在时抛出**可归因**的错误。
+ *
+ * 只在**用户显式动作**（点新建会话、点占用、点版本控制处置按钮）里用：那里必须给出一句
+ * 可行动的失败，而不是静默什么都不发生。只读渲染路径用 {@link tryGetPsbRemoteBridge}。
+ *
+ * 错误文本带 `[PSB_REMOTE_BRIDGE_MISSING]` 前缀（稳定机器码，日志与错误上报可按它过滤）；
+ * 不要再在调用点手写这句字符串。
  */
 export function getPsbRemoteBridge(): PsbRemoteBridge {
   const bridge = tryGetPsbRemoteBridge();

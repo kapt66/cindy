@@ -15,7 +15,7 @@
  *      会话 id；旧 PSB 的过渡回退才有内部 agent 会话。字段名保持不变（渲染层只做等值过滤）。
  */
 
-import { tryGetPsbRemoteBridge } from '../bridge';
+import { psbBridgeHasMethod, tryGetPsbRemoteBridge } from '../bridge';
 import type {
   PsbOccupyWorkspaceResult,
   PsbStreamEvent,
@@ -32,6 +32,7 @@ import type {
 import {
   psbAdminContextAvailability,
   psbAdminContextIsStale,
+  readPsbAdminStreamStatus,
 } from '../../../../shared/psb-workspace-admin';
 
 /** 页面真正消费的管理桥方法子集（来自正式 `PsbRemoteBridge`）。 */
@@ -50,7 +51,7 @@ export interface PsbWorkspaceAdminBridge {
   openWebWorkspace(input: { workspaceId: string }): Promise<void>;
 }
 
-/** 归一化后的串流状态；`null` = 此刻读不到（不等于 `capable:false`）。 */
+/** 归一化后的串流状态；`null` = 此刻读不到（不等于 `capability:false`）。 */
 export type WorkspaceAdminStreamStatus = PsbWorkspaceAdminStreamStatus;
 
 /** 归一化后的启动结果：状态 + 观看端绑定会话 id（用于过滤串流事件）。 */
@@ -60,15 +61,34 @@ export interface WorkspaceAdminStreamStart {
 }
 
 /**
+ * 底层 preload 桥 → 管理桥子集的缓存（**引用稳定性**）。
+ *
+ * 为什么要缓存：组件每次渲染都会调 `tryGetPsbWorkspaceAdminBridge()` 取桥，再把它交给
+ * hook / effect 当依赖（`useWorkspaceAdminContext`、`useAdminStreamSession` 的事件订阅与
+ * 播放器 effect 都按 `bridge` 判等）。旧实现每次返回**新的对象字面量**，等于依赖每渲染都变
+ * → effect 反复重挂；`useWorkspaceAdminContext` 的「读上下文 → setState」因此变成无限循环
+ * （2026-11-27 集成时 `RemoteWorkspaceAdminPanel.test.tsx` 每条用例挂到超时）。
+ *
+ * 底层 preload 桥本身是单例（`window.electronAPI.psbRemote`），所以按它缓存即可：同一个底层桥
+ * 永远拿到同一个 wrapper，方法集合的探测只在首次发生。
+ */
+const adminBridgeCache = new WeakMap<object, PsbWorkspaceAdminBridge>();
+
+/**
  * 取工作区级管理桥；方法不全（旧 preload / 单测环境）返回 `null`。
  *
  * 逐个检查方法而不是只看对象存在：契约是加性落地的，旧 preload 可能已经有 `psbRemote`
- * （会话级串流那套）但还没有管理面。
+ * （会话级串流那套）但还没有管理面。方法探测统一走 `psbBridgeHasMethod`（单点断言、
+ * 方法名受编译期约束）。
+ *
+ * **返回对象的引用是稳定的**（见 `adminBridgeCache`）：调用点可以放心把它放进 effect 依赖。
+ * 方法用箭头函数转发而不是直接引用：包装层不依赖 `this`，底层桥换实现也不会因为丢失绑定而坏。
  */
 export function tryGetPsbWorkspaceAdminBridge(): PsbWorkspaceAdminBridge | null {
   const bridge = tryGetPsbRemoteBridge();
   if (!bridge) return null;
-  const candidate = bridge as unknown as Record<string, unknown>;
+  const cached = adminBridgeCache.get(bridge);
+  if (cached) return cached;
   const required = [
     'adminContext',
     'onAdminContextChanged',
@@ -82,9 +102,23 @@ export function tryGetPsbWorkspaceAdminBridge(): PsbWorkspaceAdminBridge | null 
     'openWebWorkspace',
   ] as const;
   for (const method of required) {
-    if (typeof candidate[method] !== 'function') return null;
+    if (!psbBridgeHasMethod(bridge, method)) return null;
   }
-  return bridge as unknown as PsbWorkspaceAdminBridge;
+  // 逐个显式挑选而不是 `as unknown as` 双重断言：方法集合在编译期与 `PsbRemoteBridge` 绑定，
+  // 少写一项 / 改了签名都会直接 typecheck 失败；探测已保证这些方法在运行期存在。
+  const wrapper: PsbWorkspaceAdminBridge = {
+    adminContext: (input) => bridge.adminContext(input),
+    onAdminContextChanged: (handler) => bridge.onAdminContextChanged(handler),
+    adminStreamStart: (input) => bridge.adminStreamStart(input),
+    adminStreamStop: (input) => bridge.adminStreamStop(input),
+    adminStreamStatus: (input) => bridge.adminStreamStatus(input),
+    onAdminStreamEvent: (handler) => bridge.onAdminStreamEvent(handler),
+    occupyWorkspace: (input) => bridge.occupyWorkspace(input),
+    releaseWorkspace: (input) => bridge.releaseWorkspace(input),
+    openWebWorkspace: (input) => bridge.openWebWorkspace(input),
+  };
+  adminBridgeCache.set(bridge, wrapper);
+  return wrapper;
 }
 
 /**
@@ -121,21 +155,25 @@ export function normalizeWorkspaceAdminContext(
  * `STREAM_STATUS` 结果 → 状态。
  *
  * `null` 表示**此刻读不到 PSB 状态**，调用方保留自己的最后一份快照，不把它当
- * `capable:false`（那会让「启动」永远不可用）。
+ * `capability:false`（那会让「启动」永远不可用）。形状校验统一走共享的
+ * `readPsbAdminStreamStatus`（与 `STREAM_START` 同一条读口）。
  */
 export function normalizeWorkspaceAdminStreamStatus(
   value: PsbWorkspaceAdminStreamStatusResult | null | undefined,
 ): PsbWorkspaceAdminStreamStatus | null {
-  return value?.status ?? null;
+  if (!value) return null;
+  return readPsbAdminStreamStatus(value.status);
 }
 
 /** `STREAM_START` 结果 → 状态 + 观看端会话 id；形状不认识时返回 `null`。 */
 export function normalizeWorkspaceAdminStreamStart(
   value: PsbWorkspaceAdminStreamStartResult | null | undefined,
 ): WorkspaceAdminStreamStart | null {
-  if (!value || !value.status || typeof value.status.capable !== 'boolean') return null;
+  if (!value) return null;
+  const status = readPsbAdminStreamStatus(value.status);
+  if (!status) return null;
   return {
-    status: value.status,
+    status,
     viewerSessionId:
       typeof value.viewerSessionId === 'string' && value.viewerSessionId
         ? value.viewerSessionId

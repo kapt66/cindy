@@ -40,12 +40,14 @@
  * deps，因此可以直接单测决策矩阵。
  */
 
+import { createHash } from 'node:crypto';
+
 import {
   buildPsbRemoteHostId,
   parsePsbRemoteHostId,
   psbIpcCodeForFailure,
   psbSessionNeedsRebind,
-  psbWorkspaceLockState,
+  psbWorkspaceWritable,
   type PsbCreateSessionRequest,
   type PsbCreateSessionResult,
   type PsbIpcFailureCode,
@@ -69,10 +71,13 @@ export interface PsbSessionRebindRow {
   /** 旧的原生会话 id：重绑后必须清掉，否则新 PSB 会话会去 resume 一个不存在的会话。 */
   readonly sdkSessionId: string | null;
   /**
-   * 本地**已记录**的 PSB 工作区 id。当前版本没有落库字段，恒为 `null`；
-   * 留着这个接口是为了将来加列后不必改本模块的决策逻辑（见文档「已知能力边界」）。
+   * 本地**已记录**的 PSB 工作区 id。
+   *
+   * 当前版本**没有落库字段**：类型就是 `null`（不是「可能为 null」），读库实现如实返回
+   * `null`。工作区 id 的权威来源是旧 PSB 会话行（见 `rebindOnce` 第 2 步）；保留这个字段是为了
+   * 将来加列后不必改本模块的决策逻辑（那时把类型放宽成 `string | null` 即可）。
    */
-  readonly workspaceId: string | null;
+  readonly workspaceId: null;
 }
 
 /** PSB 侧读会话的结果：`missing` 只表示 PSB 明确说没有这条记录。 */
@@ -122,8 +127,30 @@ export interface PsbSessionRebindDeps {
   stopRemoteSession(psbSessionId: string): Promise<void>;
   /** 广播 `SESSIONS_REBOUND`（落库成功之后才调）。 */
   emitRebound(event: PsbSessionsReboundEvent): void;
-  /** PSB 建会话的去重键（每次真正发起创建时新生成一个）。 */
-  createRequestId(): string;
+  /**
+   * @deprecated 不再使用：去重键由 `(localSessionId, previousPsbSessionId)` **确定性派生**
+   * （见 `deriveRebindRequestId`），重试/崩溃恢复会用同一个键，PSB 只建一条会话。
+   * 字段保留只为兼容既有装配（`register.ts` 仍传一个零参工厂），调用方可以删掉它。
+   */
+  createRequestId?(): string;
+}
+
+/**
+ * 重绑的去重键：由**本地任务 id + 旧 PSB 会话 id** 确定性派生。
+ *
+ * 为什么不能用随机值（旧实现每次 `randomUUID()`）：重绑是「新会话已建、本地行还没落库」
+ * 之间可能失败/崩溃的两步操作。随机键在重试时会变成第二条 PSB 会话（孤儿 + 双份计费）；
+ * 确定性键让 PSB 的 `clientRequestId` 去重真正生效——同一个旧身份的重试只会命中同一条会话。
+ * 旧身份一变（首轮已落库成新 id），派生值随之改变，等价于一次全新的重建。
+ */
+export function deriveRebindRequestId(
+  localSessionId: string,
+  previousPsbSessionId: string,
+): string {
+  const digest = createHash('sha256')
+    .update(`${localSessionId}\u0000${previousPsbSessionId}`)
+    .digest('hex');
+  return `psb-rebind-${digest.slice(0, 32)}`;
 }
 
 /* ============================== 2. 结果形状 ============================== */
@@ -170,35 +197,34 @@ function failureToIpcError(failure: PsbRemoteFailure): Error {
 /** 读会话失败里「PSB 说这条记录不存在/不可见」的形态（其余失败照原样上抛）。 */
 function isMissingRemoteSession(failure: PsbRemoteFailure): boolean {
   if (failure.code === 'NOT_FOUND' || failure.code === 'FORBIDDEN') return true;
-  return failure.messageKey === 'remoteWorkspace.error.notFound';
+  return failure.messageKey === 'remoteWorkspace.admin.staleMissingTitle';
 }
 
-/** 工作区此刻能不能开新会话；不能就抛三种真正阻断里的对应那一码。 */
-function assertWorkspaceStartable(workspace: PsbRemoteWorkspace): void {
-  if (psbWorkspaceLockState(workspace.occupancy) === 'other') {
-    const name = workspace.occupancy.personName.trim();
-    // 与 `psbClient` 的占用失败同口径：message 只放占用人名，渲染层回填 `{{name}}`。
-    throw createIpcError(
-      'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
-      name.length > 0 ? name : '',
-    );
-  }
-  if (!workspace.clientOnline) {
-    throw createIpcError('PSB_CLIENT_OFFLINE', '远端客户端当前离线，暂时不能发消息。');
-  }
-  if (workspace.state !== 'ready') {
-    throw createIpcError(
-      'PSB_WORKSPACE_NOT_READY',
-      `远端工作区还没有就绪（${workspace.state}），稍后重发这条消息即可。`,
-    );
-  }
-  if (workspace.unusableReason === 'agent-unsupported') {
-    // 客户端没有这个引擎的运行时：等它装好/升级客户端，重试同一条消息即可。
-    throw createIpcError(
-      'UNSUPPORTED_CAPABILITY',
-      '远端客户端还没有这个 Agent 的运行时，升级客户端后再试。',
-    );
-  }
+/**
+ * 工作区此刻能不能开新会话；不能就抛**共享判据**给出的失败码。
+ *
+ * 判据来源是 `psbWorkspaceWritable(workspace, { requireAgentRuntime: true })`（与占用闸门、
+ * 渲染层禁用态同一份）：发送前重建要新建 Agent 会话，因此「那台机器没装这个 Harness」也属于
+ * 阻断原因。`message` 只带 PSB 原文/空串——中文文案在 i18n，main 不再直出句子；跨进程的
+ * 语义由错误码携带（`PSB_*` 表）。
+ */
+function assertWorkspaceStartable(
+  workspace: PsbRemoteWorkspace,
+  log: PsbSessionRebindLogger,
+  sessionId: string,
+): void {
+  const writability = psbWorkspaceWritable(workspace, { requireAgentRuntime: true });
+  if (writability.ok) return;
+  log.warn('psb rebind: the remote workspace is not writable right now', {
+    sessionId,
+    workspaceId: workspace.id,
+    reason: writability.reason,
+    state: writability.state,
+  });
+  // 占用失败的 message 只放占用人名（与 `psbClient` 同口径，渲染层回填 `{{name}}`）；
+  // 其余原因没有可展示的 PSB 原文，留空，由码决定文案。
+  const message = writability.reason === 'occupied-by-other' ? writability.personName : '';
+  throw createIpcError(writability.ipcCode ?? 'INTERNAL', message);
 }
 
 /** DB 形态 → PSB 引擎。历史缺省（`'cc'` / 空值）一律 claude-code，与 `agentKindConversion` 同口径。 */
@@ -245,18 +271,16 @@ export function createPsbSessionRebindCoordinator(
       return { kind: 'already-current', remoteHostId: previousRemoteHostId, reason: 'remote-session-alive' };
     }
 
-    // ── 2) 解析工作区：优先用旧 PSB 会话行自己的 workspaceId ──
-    const workspaceId = (remote?.session.workspaceId ?? row.workspaceId ?? '').trim();
+    // ── 2) 解析工作区：权威来源只有旧 PSB 会话行自己的 workspaceId（本地没有这一列） ──
+    const workspaceId = (remote?.session.workspaceId ?? '').trim();
     if (!workspaceId) {
       deps.log.warn('psb rebind: cannot resolve the remote workspace for this task', {
         sessionId,
         previousRemoteHostId,
         remoteMissing,
       });
-      throw createIpcError(
-        'PSB_NOT_FOUND',
-        '远程会话记录已不存在，无法自动重建；请新建任务。',
-      );
+      // main 不直出中文：语义由码携带（`PSB_NOT_FOUND` → 渲染层 i18n 文案），message 留空。
+      throw createIpcError('PSB_NOT_FOUND', '');
     }
     let workspace: PsbRemoteWorkspace | null =
       remote && remote.workspace.id === workspaceId ? remote.workspace : null;
@@ -267,19 +291,23 @@ export function createPsbSessionRebindCoordinator(
     }
     if (!workspace) {
       // 工作区不在当前身份可见范围内：共享被取消 / 工作区被删 / 不是归属人。
-      throw createIpcError(
-        'PSB_NOT_FOUND',
-        '远程工作区已不存在或你没有访问权限，无法自动重建会话。',
-      );
+      deps.log.warn('psb rebind: the remote workspace is not visible to this account', {
+        sessionId,
+        workspaceId,
+        remoteMissing,
+      });
+      throw createIpcError('PSB_NOT_FOUND', '');
     }
-    assertWorkspaceStartable(workspace);
+    assertWorkspaceStartable(workspace, deps.log, sessionId);
 
     // ── 3) 同一工作区新建 PSB 会话（同一引擎 / 标题） ──
     const title = (row.title ?? '').trim() || (remote?.session.title ?? '').trim() || undefined;
     const created = await deps.createRemoteSession({
       workspaceId,
       agentKind: psbAgentKindFromDb(row.agentKind),
-      clientRequestId: deps.createRequestId(),
+      // 确定性去重键（见 `deriveRebindRequestId`）：同一个旧身份的重试复用同一个键，
+      // 崩溃/重试不会在 PSB 侧建出第二条孤儿会话。
+      clientRequestId: deriveRebindRequestId(sessionId, previousPsbSessionId),
       ...(title === undefined ? {} : { title }),
     });
     if (created.kind === 'failed') throw failureToIpcError(created.failure);

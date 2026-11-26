@@ -33,7 +33,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { ipcMain, app, BrowserWindow } from 'electron';
-import { eq, ne, and, desc, inArray, isNull, sql, type SQL } from 'drizzle-orm';
+import { eq, ne, and, desc, inArray, isNull, isNotNull, sql, type SQL } from 'drizzle-orm';
 
 import {
   clearPiSubagentDeletedTombstone,
@@ -479,6 +479,48 @@ let sessionStatusPatchedListener: ((sessionId: string) => void) | null = null;
 /** Archive / restore observer, set at registration so this module does not load teammate dependencies. */
 export function setSessionStatusPatchedListener(next: ((sessionId: string) => void) | null): void {
   sessionStatusPatchedListener = next;
+}
+
+/**
+ * 任务进入终态（archived / deleted）后的旁路观察者。
+ *
+ * 注册点在 `maker-ipc/register.ts`：远端会话结束时必须释放它占用的 PSB 工作区（协作锁），
+ * 而「哪些远端身份属于 PSB」是 maker-host 的知识，不该沉进 localDb 层。这里只用注册槽
+ * 把事实转出去（与 `setSessionStatusPatchedListener` 同一模式），保证**所有**状态写入路径
+ * （批量归档 / 元数据 patch / 侧聊清理 / 艺人解绑）都经过同一个收口点。
+ */
+let terminalSessionStatusObserver:
+  | ((sessionId: string, status: 'archived' | 'deleted') => void)
+  | null = null;
+
+export function setTerminalSessionStatusObserver(
+  next: ((sessionId: string, status: 'archived' | 'deleted') => void) | null,
+): void {
+  terminalSessionStatusObserver = next;
+}
+
+/**
+ * 当前仍**活动**、且带远端身份的本地任务。
+ *
+ * 用途只有一个：会话结束释放 PSB 工作区占用之前，回答「同一个工作区还有没有别的任务在用」
+ * （工作区级协作锁，不是会话级 —— 归档一条任务不能把同事还在跑的工作区解锁）。
+ * 只查 `status='active'`：归档 / 删除的任务已经结束，即使它的锁还没交还也不再算「在用」。
+ *
+ * 返回**原始** `remoteHostId` 字符串：`psb:` / `mcpr:` / SSH 的语义是 maker-host 的知识，
+ * localDb 不判前缀（与上面的终态 observer 同一分工）。
+ */
+export async function listActiveRemoteSessions(): Promise<
+  Array<{ sessionId: string; remoteHostId: string | null }>
+> {
+  const rows = await getDbClient()
+    .drizzle
+    .select({ sessionId: sessions.id, remoteHostId: sessions.remoteHostId })
+    .from(sessions)
+    .where(and(eq(sessions.status, 'active'), isNotNull(sessions.remoteHostId)));
+  return rows.map((row) => ({
+    sessionId: row.sessionId,
+    remoteHostId: row.remoteHostId ?? null,
+  }));
 }
 
 export function broadcastSessionPatched(
@@ -2939,6 +2981,17 @@ function removeImAttachmentsIfStillDeleted(sessionId: string): Promise<void> {
 
 function cleanupSessionTerminalArtifacts(sessionId: string, status: unknown): void {
   if (status !== 'deleted' && status !== 'archived') return;
+  // 任务结束 = 远端协作锁的终点：让远端会话占用的 PSB 工作区在这里释放（幂等、失败记账、
+  // 不阻断归档/删除）。口径见 maker-host/psb-workspace-session-release.ts。
+  try {
+    terminalSessionStatusObserver?.(sessionId, status);
+  } catch (error) {
+    log.warn('terminal session status observer failed', {
+      sessionId,
+      status,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   if (status === 'deleted') {
     try { removeSessionModelInterface(sessionId); } catch (error) {
       log.warn('session interface snapshot cleanup failed', { sessionId, error: String(error) });

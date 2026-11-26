@@ -17,11 +17,21 @@
 
 import { EventEmitter } from 'node:events';
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { classifyPsbClose, openPsbTunnel } from '../psbTunnel';
+import {
+  PsbTunnelError,
+  classifyPsbClose,
+  openPsbTunnel,
+  readPsbTunnelReadyFrameCapability,
+  resetPsbTunnelReadyFrameProbeForTest,
+} from '../psbTunnel';
+import type { PsbTunnelTokenResult } from '../psbTunnel';
 
 class FakeSocket extends EventEmitter {
+  /** 本次用例里真实交给隧道层的 socket（断言「失败发生在建连之前」）。 */
+  static instances: FakeSocket[] = [];
+
   readyState = 1;
   binaryType?: string;
   url = 'wss://unused';
@@ -42,6 +52,7 @@ interface SocketScript {
 function createSocketCtor(socket: FakeSocket, script: SocketScript) {
   return class {
     constructor(_url: string) {
+      FakeSocket.instances.push(socket);
       queueMicrotask(() => {
         if (script.reject) {
           const response = new EventEmitter() as EventEmitter & {
@@ -81,6 +92,12 @@ function baseDeps(socket: FakeSocket, script: SocketScript, extra: Record<string
 }
 
 describe('openPsbTunnel — 握手拒绝与就绪帧', () => {
+  beforeEach(() => {
+    // 能力探测是进程级状态：每个用例从「未知」开始，避免顺序依赖。
+    resetPsbTunnelReadyFrameProbeForTest();
+    FakeSocket.instances = [];
+  });
+
   it('Upgrade 400：错误里带 PSB 的 body 原因', async () => {
     const socket = new FakeSocket();
     await expect(
@@ -129,6 +146,124 @@ describe('openPsbTunnel — 握手拒绝与就绪帧', () => {
       baseDeps(socket, { frames: [{ data: 'early-bytes', binary: true }] }, { readyTimeoutMs: 10 }),
     );
     expect(handle).toBeTruthy();
+    // 一次探测后判定「这个服务端不发 ready 帧」：后续连接不再白等（见下一条用例）。
+    expect(readPsbTunnelReadyFrameCapability()).toBe('unsupported');
+  });
+
+  it('就绪前到达的 binary 帧不丢：句柄交给调用方、首个订阅者出现时按序回放', async () => {
+    const socket = new FakeSocket();
+    const handle = await openPsbTunnel(
+      'psb:session-1',
+      baseDeps(socket, {
+        frames: [
+          // 服务端在 ready 之前就发了业务首帧（cc-mgr hello / pi RPC 输出）。
+          { data: 'early-bytes', binary: true },
+          { data: '{"type":"agent-tunnel.ready","mode":"cc-mgr"}', binary: false },
+        ],
+      }),
+    );
+    const received: string[] = [];
+    handle.onStdout((chunk) => received.push(chunk));
+    // 回放是同步的（首个订阅者出现时按序 emit）。
+    expect(received.join('')).toBe('early-bytes');
+    expect(readPsbTunnelReadyFrameCapability()).toBe('supported');
+  });
+
+  it('探测到老服务端不支持 ready 帧后，后续连接在 open 时立即交句柄（不再固定等 5s）', async () => {
+    // 第一次：等不到 ready → 判定 unsupported。
+    const first = new FakeSocket();
+    await openPsbTunnel(
+      'psb:session-1',
+      baseDeps(first, {}, { readyTimeoutMs: 5 }),
+    );
+    expect(readPsbTunnelReadyFrameCapability()).toBe('unsupported');
+
+    // 第二次：即使把兜底超时设成 5s，也必须在 open 时立即返回（探测结果被复用）。
+    const second = new FakeSocket();
+    const opened = openPsbTunnel('psb:session-2', baseDeps(second, {}));
+    const raced = await Promise.race([
+      opened.then(() => 'opened' as const),
+      new Promise<'timeout'>((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), 60);
+        timer.unref?.();
+      }),
+    ]);
+    expect(raced).toBe('opened');
+  });
+
+  it('就绪前业务字节超过 1MiB：丢最旧的帧，且只 warn 一次（不静默丢业务字节）', async () => {
+    // 服务端出站缓冲也有 1MiB 上限：握手期就灌超过它说明对端行为异常 / 首帧丢失，必须留证据。
+    // 逐帧 warn 会被刷屏，所以只报第一次（累计帧数在 fields 里）。
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const chunk = 512 * 1024;
+    const handle = await openPsbTunnel('psb:session-1', {
+      ...baseDeps(
+        socket,
+        {
+          frames: [
+            { data: Buffer.alloc(chunk, 1), binary: true },
+            { data: Buffer.alloc(chunk, 2), binary: true },
+            { data: Buffer.alloc(chunk, 3), binary: true },
+          ],
+        },
+        { readyTimeoutMs: 40 },
+      ),
+      logger: { warn },
+    });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('pre-ready');
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({
+      sessionId: 'session-1',
+      mode: 'cc-mgr',
+      limitBytes: 1024 * 1024,
+      frames: 1,
+    });
+
+    // 句柄拿到的是「丢最旧之后」的缓冲：总字节不超过上限，且保留的是最新的两帧。
+    let total = 0;
+    handle.onStdoutBytes((bytes) => {
+      total += bytes.byteLength;
+    });
+    expect(total).toBe(2 * chunk);
+  });
+
+  it('取 token 失败按身份归因（不再一律 AUTH_REQUIRED）：未登录/非企业组织 vs 签发通道失败', async () => {
+    const cases: ReadonlyArray<{
+      readonly token: PsbTunnelTokenResult;
+      readonly code: string;
+      readonly messageKey: string;
+    }> = [
+      {
+        token: { ok: false, kind: 'signed-out', reasonKey: 'remoteWorkspace.status.needLogin' },
+        code: 'PSB_AUTH_REQUIRED',
+        messageKey: 'remoteWorkspace.status.needLogin',
+      },
+      {
+        token: { ok: false, kind: 'need-org', reasonKey: 'remoteWorkspace.status.needOrg' },
+        code: 'PSB_AUTH_REQUIRED',
+        messageKey: 'remoteWorkspace.status.needOrg',
+      },
+      {
+        // 旧装配只给 reasonKey（不带 kind）：error.auth = 签发通道失败，按网络失败归因。
+        token: { ok: false, reasonKey: 'remoteWorkspace.error.auth' },
+        code: 'PSB_TUNNEL_UNREACHABLE',
+        messageKey: 'remoteWorkspace.error.unreachable',
+      },
+    ];
+    for (const item of cases) {
+      const socket = new FakeSocket();
+      const error = await openPsbTunnel(
+        'psb:session-1',
+        baseDeps(socket, {}, { getToken: async () => item.token }),
+      ).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(PsbTunnelError);
+      expect((error as PsbTunnelError).code).toBe(item.code);
+      expect((error as PsbTunnelError).failure?.messageKey).toBe(item.messageKey);
+      // 失败发生在建连之前：socket 构造器没有被调用（没有占名额的连接）。
+      expect(FakeSocket.instances).toHaveLength(0);
+    }
   });
 });
 

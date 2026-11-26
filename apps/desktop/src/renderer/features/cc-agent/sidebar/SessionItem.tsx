@@ -84,10 +84,7 @@ import type { SessionMoveTarget } from './sessionMoveTarget';
 import type { FolderPickerOption } from '@/components/new-chat/FolderPickerPopover';
 import { RemoteProjectIcon } from './RemoteProjectIcon';
 import { isRemoteWorkspaceSession } from '@/features/remote-workspace/sidebar/isRemoteWorkspaceSession';
-import {
-  RemoteWorkspaceOpenButton,
-  RemoteWorkspaceStatusBadges,
-} from '@/features/remote-workspace/sidebar/RemoteWorkspaceRowDecor';
+import { RemoteWorkspaceRowDecor } from '@/features/remote-workspace/sidebar/RemoteWorkspaceRowDecor';
 import { BotFollowMark, useSessionFollowers } from '@/features/bots/BotFollowMark';
 import { SessionShareExportDialog } from './SessionShareExportDialog';
 import { isRemoteSessionWriteBlocked } from '../lib/remoteSessionWriteGuard';
@@ -1017,7 +1014,7 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
           条件挂载（不是组件内部 early-return）——普通行连 store 订阅都不建立,零开销;
           图标按钮/状态标签/锁各自按 workspaceId 精准订阅,行本身仍是 memo 的。 */}
       {isRemoteWorkspaceSession(session) && (
-        <RemoteWorkspaceOpenButton session={session} isActive={isActive} />
+        <RemoteWorkspaceRowDecor session={session} isActive={isActive} />
       )}
       {/* 左侧状态图标(vendor mark + 运行/需关注/草稿)——与置顶卡片共用 SessionStatusIcon,
           保证两处完全一致。
@@ -1086,11 +1083,8 @@ export const SessionItem = withSidebarNavigation<SessionItemProps>(function Sess
           ) : isAutomationGenerated ? (
             <AutomationSessionButton sessionId={session.id} size={10} activeForeground={isActive} />
           ) : null}
-          {/* 远程工作区:状态标签(在线/离线/使用中/准备中/失败/不支持 Agent)+ 占用锁。
-              标题之前 —— 用户先看「这条能不能用」,再看任务名。 */}
-          {isRemoteWorkspaceSession(session) && (
-            <RemoteWorkspaceStatusBadges session={session} />
-          )}
+          {/* 远程工作区状态标签/占用锁已并入行首的 `RemoteWorkspaceRowDecor`：一次解析
+              传给「外链按钮 + 状态标签」，不再在同一行里解析两遍工作区归属。 */}
           <SidebarTitleMarquee
             title={displayTitle}
             className={isActive ? 'text-sidebar-item-active-foreground' : 'text-foreground'}
@@ -1392,3 +1386,4 @@ function SessionAction({
   );
 }
 import { isSharedTaskPeer } from '@cindy/device-link';
+

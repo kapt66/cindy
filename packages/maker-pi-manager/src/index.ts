@@ -28,6 +28,7 @@ export {
   type HelloResult,
   type PiEnsureParams,
   type PiEnsureResult,
+  type PiEnsureCwdPolicy,
   type PiKillParams,
   type PiListEntry,
   type PiListResult,
@@ -49,6 +50,7 @@ export {
 
 export {
   PiSessionRegistry,
+  resolvePiEnsureChildCwd,
   type PiSessionState,
   type PiSessionRegistryOptions,
 } from './session-registry.js';

@@ -357,3 +357,30 @@ daemon 的原文是
 > **仍未做**：把新 manifest/对象发布到 CDN、重建并部署 MCPRouter 镜像。因此**线上行为此刻
 > 仍是「版本错配 = 会话不可用」**，只是失败可诊断 + 代码侧已具备按版本交付能力。
 > 完整方案、落地顺序与部署阶段验证见 MCPRouter 仓 `docs/cc-mgr-cdn-delivery.md`。
+
+## 5. r7 修复同步：transport 能力表 / mode 单表 / 归因码（2026-11-26 夜，实现事实）
+
+本文件的 §2/§3（先分类再动作）不变；补三条本批落地的实现事实（PSB 正本见
+`docs/dev-rules/psb-remote-session-transport.md` §16）：
+
+- **能力描述符唯一表**：`maker-host/remote-session-routing.ts` 的
+  `resolveRemoteTransportCapabilities(remoteHostId)` 一次给出
+  `{ transport, tag, ownsCwd, tunnelModeByAgent, fileOpsMode, codexCredentialMode }`；
+  `remoteSessionHostOwnsCwd` / `isTunnelRemoteSessionTransport` /
+  `resolveRemoteCodexCredentialMode` 都只是它的投影。MCPR 条目：`tag='MCPR'`、
+  `ownsCwd=false`、`fileOpsMode='tunnel-exec'`、`codexCredentialMode='gateway-key'`、
+  `tunnelModeByAgent` = 共享 `psbTunnelModeForAgent` 映射（cc-mgr / codex-appserver / pi）。
+- **mode 只有一份**：`McprTunnelMode` 改为共享 `PsbTunnelMode` 的类型别名（原先第二份字面量
+  联合）；agent → mode 映射只有能力表里的那一份，`psbTunnelModeForAgent` 不再是零调用函数。
+  新增 mode 只改 `shared/psb-remote-workspace.ts`。
+- **归因码跟着 transport 走**：隧道侧的错误前缀用
+  `remoteTransportErrorCode(remoteHostId, code)`（`[MCPR_*]` / `[PSB_*]` / 中性 `[REMOTE_*]`），
+  不再在 MCPR 命名的实现文件里写死前缀；MCPR 与 PSB 共用的客户端（pi / codex）因此不会把
+  失败指向另一套系统。
+- **隧道登记**：两种作用域同表（`remoteTransportRegistry`）——cc / pi 按 Maker 会话登记，
+  `psb:` Codex app-server 按隧道身份登记；会话结束 / 应用退出 / agent close 都走单一释放入口。
+- **cwd 判定只有一处**：`remoteSessionHostOwnsCwd`（能力表）。不要再写第二个分类器（例如
+  `parsePsbRemoteHostId`）判 cwd —— 畸形 `psb:` 在分类器里仍是 psb，但在解析器里是 null，
+  曾把虚拟路径下发到远端（2026-11-26 实报）。
+- **验证**：`maker-host/__tests__/remote-session-routing.test.ts`（分类 / 能力表 / mode 表 /
+  归因码 / cc cwd 行为断言）、`remoteTransportRegistry.test.ts`、`remoteTransportProbeWiring.guard.test.ts`。

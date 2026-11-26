@@ -41,6 +41,7 @@ import {
   buildPsbVirtualWorkingDir,
   parsePsbRemoteHostId,
 } from '../../shared/psb-remote-workspace';
+import { parseMcprRemoteHostId } from '../../shared/meka-router';
 
 const STORAGE_KEY = 'xdt:newMakerDraft:v1';
 let activeDataOwnerId: string | null = null;
@@ -410,6 +411,200 @@ function psbTargetIdentity(target: NewMakerDraftPsbTarget): {
   };
 }
 
+/* ============================ 草稿目标（DraftTarget） ============================ */
+
+/**
+ * 「这份草稿要跑在哪」的类别 —— 所有闸门（协作资格、SSH-only 探针、设备/工作区选择器、
+ * 远程工作区渠道、新建按钮的禁用条件）的**唯一判据**。
+ *
+ * 与 `remoteHostId` 的前缀分类同源：`psb:` = 远程工作区、`mcpr:` = MCPRouter 隧道、
+ * 其余非空主机 = SSH 执行主机。`local` 是「还没决定」的干净草稿（会由默认目录预填），
+ * `dialogue` 是用户**显式**选过「对话（不在项目中）」。
+ *
+ * 闸门不要各自手写 `isPsbDraft || isPsbChannelSelected` / 手写前缀：新增一种目标时，
+ * 漏掉一处不会有编译错误，只会让某个入口被错误地当成本地/SSH。用
+ * {@link resolveDraftTargetKind} 与 {@link draftTargetIsRemote}，新增类别只改这里。
+ */
+export type DraftTargetKind =
+  | 'local'
+  | 'dialogue'
+  | 'localProject'
+  | 'ssh'
+  | 'mcpr'
+  | 'deviceLink'
+  | 'psb';
+
+/** 目标维度的事实子集：store 行、草稿、会话行都可以用它判定。 */
+export interface DraftTargetFacts {
+  psbTarget?: NewMakerDraftPsbTarget | null;
+  /** 位置渠道 UI 已经停在「远程工作区」，但还没选具体工作区（仅草稿页有）。 */
+  psbChannelSelected?: boolean;
+  workingDir?: string | null;
+  remoteHostId?: string | null;
+  deviceLinkDeviceId?: string | null;
+  explicitNoProject?: boolean;
+}
+
+/** 从草稿事实推导目标类别；纯函数，闸门与派生都读它。 */
+export function resolveDraftTargetKind(draft: DraftTargetFacts): DraftTargetKind {
+  if (draft.psbTarget) return 'psb';
+  // 渠道已选但目标还没落地：后续动作（发送 / 换目标）要按「远程工作区」拦截，不能当成对话。
+  if (draft.psbChannelSelected) return 'psb';
+  const remoteHostId = draft.remoteHostId?.trim() || null;
+  if (remoteHostId) {
+    if (parsePsbRemoteHostId(remoteHostId)) return 'psb';
+    if (parseMcprRemoteHostId(remoteHostId)) return 'mcpr';
+    return 'ssh';
+  }
+  if (draft.deviceLinkDeviceId) return 'deviceLink';
+  if (draft.workingDir) return 'localProject';
+  if (draft.explicitNoProject === true) return 'dialogue';
+  return 'local';
+}
+
+/** 目标是否跑在本机之外（含被控设备；不含「Agent 在另一台电脑运行」这一维度）。 */
+export function draftTargetIsRemote(kind: DraftTargetKind): boolean {
+  return kind === 'ssh' || kind === 'mcpr' || kind === 'deviceLink' || kind === 'psb';
+}
+
+/**
+ * 目标声明：**所有目标维度的唯一写入口**。
+ *
+ * `deriveDraftTargetFields()` 把它归约成 store 里那组互相约束的字段，互斥规则只写一处：
+ *   · PSB 目标带自己的会话/虚拟目录身份，且与 device-link / agentDevice / SSH 互斥；
+ *   · SSH / MCPR 要求同时有远程工作目录（没有目录的远程身份无法工作）；
+ *   · device-link 可以没有项目目录（被控端对话），但不能再带远程主机；
+ *   · 对话 = 显式无项目；`explicitNoProject` **只**表示这个用户意图，
+ *     不再被借用成「远端目标没有本地目录」。
+ */
+export interface DraftTarget {
+  kind: DraftTargetKind;
+  workingDir?: string | null;
+  remoteHostId?: string | null;
+  remoteProjectName?: string | null;
+  remoteInstanceName?: string | null;
+  deviceLinkDeviceId?: string | null;
+  deviceLinkDeviceName?: string | null;
+  psbTarget?: NewMakerDraftPsbTarget | null;
+  /** 仅 device-link / dialogue 有意义：用户显式选择「不在项目中」。 */
+  explicitNoProject?: boolean;
+}
+
+/** 目标声明 → store 字段（唯一派生点）。 */
+export function deriveDraftTargetFields(target: DraftTarget): {
+  workingDir: string | null;
+  remoteHostId: string | null;
+  remoteProjectName: string | null;
+  remoteInstanceName: string | null;
+  psbTarget: NewMakerDraftPsbTarget | null;
+  deviceLinkDeviceId: string | null;
+  deviceLinkDeviceName: string | null;
+  explicitNoProject: boolean;
+} {
+  const cleared = {
+    workingDir: null,
+    remoteHostId: null,
+    remoteProjectName: null,
+    remoteInstanceName: null,
+    psbTarget: null,
+    deviceLinkDeviceId: null,
+    deviceLinkDeviceName: null,
+    explicitNoProject: false,
+  };
+  const text = (value: string | null | undefined): string | null =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
+  switch (target.kind) {
+    case 'psb': {
+      const psbTarget = target.psbTarget ? normalizePsbTarget(target.psbTarget) : null;
+      if (!psbTarget) return cleared;
+      const identity = psbTargetIdentity(psbTarget);
+      return {
+        ...cleared,
+        workingDir: identity?.workingDir ?? null,
+        remoteHostId: identity?.remoteHostId ?? null,
+        // 目标的工作区标题 / 客户端名是远端事实，随目标一起派生（不单独写两遍）。
+        remoteProjectName: psbTarget.workspaceTitle || null,
+        remoteInstanceName: psbTarget.clientName || null,
+        psbTarget,
+      };
+    }
+    case 'ssh':
+    case 'mcpr': {
+      const remoteHostId = text(target.remoteHostId);
+      const workingDir = normalizeDraftWorkingDir(target.workingDir);
+      // 远程身份必须和目录成对；畸形 `psb:` 前缀绝不能落到 SSH 一侧（共享契约约束 1）。
+      if (!remoteHostId || !workingDir) return cleared;
+      if (parsePsbRemoteHostId(remoteHostId)) return cleared;
+      return {
+        ...cleared,
+        workingDir,
+        remoteHostId,
+        remoteProjectName: text(target.remoteProjectName),
+        remoteInstanceName: text(target.remoteInstanceName),
+      };
+    }
+    case 'deviceLink':
+      return {
+        ...cleared,
+        deviceLinkDeviceId: text(target.deviceLinkDeviceId),
+        deviceLinkDeviceName: text(target.deviceLinkDeviceName),
+        workingDir: normalizeDraftWorkingDir(target.workingDir),
+        // 被控设备上也可以显式选择「不在项目中」；是否无项目由**用户意图**决定，
+        // 不由「目录为空」推断（目录为空可能是还没选）。
+        explicitNoProject: target.explicitNoProject === true,
+      };
+    case 'localProject':
+      return {
+        ...cleared,
+        workingDir: normalizeDraftWorkingDir(target.workingDir),
+      };
+    case 'dialogue':
+      return { ...cleared, explicitNoProject: true };
+    case 'local':
+      return cleared;
+  }
+}
+
+/**
+ * `patchDraft` 里的目标类别。
+ *
+ * 不能只看**合并后的最终状态**：`{ workingDir }`（不带设备字段）在旧状态有 deviceLink 时
+ * 必须被解读成「切到本机项目」，而不是「在被控设备上换目录」——后者由显式带
+ * `deviceLinkDeviceId` 的 patch 表示。同理 `{ remoteHostId }` / `{ psbTarget }` 是调用方
+ * 明确要切的 transport。patch 没碰目标维度时（例如只清 psbTarget 后的级联）按最终事实分类。
+ */
+function resolvePatchTargetKind(
+  patch: Partial<NewMakerDraft>,
+  next: NewMakerDraft,
+): DraftTargetKind {
+  if ('psbTarget' in patch && next.psbTarget) return 'psb';
+  if ('remoteHostId' in patch && next.remoteHostId) {
+    return parseMcprRemoteHostId(next.remoteHostId) ? 'mcpr' : 'ssh';
+  }
+  if ('deviceLinkDeviceId' in patch && next.deviceLinkDeviceId) return 'deviceLink';
+  if ('workingDir' in patch) {
+    if (next.workingDir) return 'localProject';
+    return next.explicitNoProject === true ? 'dialogue' : 'local';
+  }
+  return resolveDraftTargetKind(next);
+}
+
+/**
+ * 用目标声明重写草稿的目标字段。**互斥只在这里发生**：清掉不属于该目标的维度
+ * （PSB ↔ SSH/MCPR ↔ deviceLink），并按最新目标重新派生身份三件。
+ */
+function applyDraftTargetFields(next: NewMakerDraft, target: DraftTarget): void {
+  const fields = deriveDraftTargetFields(target);
+  next.workingDir = fields.workingDir;
+  next.remoteHostId = fields.remoteHostId;
+  next.remoteProjectName = fields.remoteProjectName;
+  next.remoteInstanceName = fields.remoteInstanceName;
+  next.psbTarget = fields.psbTarget;
+  next.deviceLinkDeviceId = fields.deviceLinkDeviceId;
+  next.deviceLinkDeviceName = fields.deviceLinkDeviceName;
+  next.explicitNoProject = fields.explicitNoProject;
+}
+
 /** 严格校验 + 缺字段补齐——schema 损坏(老版本 / 手改 localStorage)时静默回退默认。 */
 function sanitize(raw: unknown): NewMakerDraft {
   const def = makeDefault();
@@ -458,29 +653,26 @@ function sanitize(raw: unknown): NewMakerDraft {
     }
     return psbTargetRaw;
   })();
-  const psbIdentity = psbTarget ? psbTargetIdentity(psbTarget) : null;
-  const effectiveWorkingDir = psbTarget
-    ? (psbIdentity?.workingDir ?? null)
+  // 恢复目标走**同一份**归约：目标 → 身份三件的派生不在 sanitize 里另写一遍。
+  const restoredTarget: DraftTarget = psbTarget
+    ? { kind: 'psb', psbTarget }
     : psbHostSessionId !== null
-      ? null
-      : workingDir;
-  const effectiveRemoteHostId = psbTarget
-    ? (psbIdentity?.remoteHostId ?? null)
-    : psbHostSessionId !== null
-      ? null
-      : workingDir == null
-        ? null
-        : remoteHostId;
-  const effectiveRemoteProjectName = psbTarget
-    ? psbTarget.workspaceTitle || null
-    : effectiveWorkingDir == null
-      ? null
-      : remoteProjectName;
-  const effectiveRemoteInstanceName = psbTarget
-    ? psbTarget.clientName || null
-    : effectiveWorkingDir == null
-      ? null
-      : remoteInstanceName;
+      // 半截 `psb:` 身份（目标元数据已丢）整块回退，绝不留成 SSH 主机。
+      ? { kind: 'local' }
+      : remoteHostId
+        ? {
+            kind: parseMcprRemoteHostId(remoteHostId) ? 'mcpr' : 'ssh',
+            remoteHostId,
+            workingDir,
+            remoteProjectName,
+            remoteInstanceName,
+          }
+        : workingDir
+          ? { kind: 'localProject', workingDir }
+          : r.explicitNoProject === true
+            ? { kind: 'dialogue' }
+            : { kind: 'local' };
+  const restored = deriveDraftTargetFields(restoredTarget);
   const lastByVendorRaw = (r.lastByVendor ?? {}) as Partial<NewMakerDraft['lastByVendor']>;
   const fastModeByModelRaw =
     r.fastModeByModel && typeof r.fastModeByModel === 'object'
@@ -663,17 +855,15 @@ function sanitize(raw: unknown): NewMakerDraft {
     : DEFAULT_WORKTREE_ENABLED;
   return {
     vendor,
-    workingDir: effectiveWorkingDir,
-    // PSB 目标没有本地项目目录：按「明确无项目」处理，避免下一次通用新建的默认目录
-    // 预填把远程目标盖掉。
-    explicitNoProject: psbTarget != null
-      ? true
-      : effectiveWorkingDir == null && r.explicitNoProject === true,
-    remoteHostId: effectiveRemoteHostId,
+    workingDir: restored.workingDir,
+    // `explicitNoProject` 只表示用户显式选了「对话」；远程目标没有本地目录是目标本身的
+    // 事实，不再借用这个标记（远端目标会让它为 false）。
+    explicitNoProject: restored.explicitNoProject,
+    remoteHostId: restored.remoteHostId,
     // 展示名与 remoteHostId 同生共死:没有目标就没有名字,有目标才持久化。
-    remoteProjectName: effectiveRemoteProjectName,
-    remoteInstanceName: effectiveRemoteInstanceName,
-    psbTarget,
+    remoteProjectName: restored.remoteProjectName,
+    remoteInstanceName: restored.remoteInstanceName,
+    psbTarget: restored.psbTarget,
     // device-link 目标**不跨重启恢复**:绑定的是活动设备,重启后可能已离线 → 一律置 null。
     deviceLinkDeviceId: null,
     deviceLinkDeviceName: null,
@@ -1108,98 +1298,41 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
     normalizedPatch.psbTarget = normalizePsbTarget(normalizedPatch.psbTarget);
   }
   const next: NewMakerDraft = { ...currentDraft, ...normalizedPatch };
-  if ('workingDir' in normalizedPatch && next.workingDir != null) {
-    next.explicitNoProject = false;
+  // ── 目标维度：**单次归约** ──────────────────────────────────────────────────────────
+  // 目标声明 → 互斥清场 + 身份派生，只走 `deriveDraftTargetFields`。历史上这一段是
+  // 「workingDir 级联 / remoteHostId 级联 / PSB 目标两遍 / 各 transport 手写互斥」几块拼起来
+  // 的，同一个不变量要改四处；新增一种目标时漏改某一块不会有编译错误。
+  const targetTouched = (
+    ['workingDir', 'remoteHostId', 'deviceLinkDeviceId', 'psbTarget'] as const
+  ).some((key) => key in patch);
+  if (targetTouched) {
+    // 展示名属于目标本身，不随草稿漂移：换了远程主机而这次没带新名字 → 旧名字丢掉，
+    // 否则新目标会显示上一个项目的名称。PSB 的名字由目标自己派生（不需外部传）。
+    const hostChanged = next.remoteHostId !== currentDraft.remoteHostId;
+    const remoteProjectName = 'remoteProjectName' in normalizedPatch
+      ? next.remoteProjectName
+      : hostChanged ? null : next.remoteProjectName;
+    const remoteInstanceName = 'remoteInstanceName' in normalizedPatch
+      ? next.remoteInstanceName
+      : hostChanged ? null : next.remoteInstanceName;
+    applyDraftTargetFields(next, {
+      kind: resolvePatchTargetKind(patch, next),
+      workingDir: next.workingDir,
+      remoteHostId: next.remoteHostId,
+      remoteProjectName,
+      remoteInstanceName,
+      deviceLinkDeviceId: next.deviceLinkDeviceId,
+      deviceLinkDeviceName: next.deviceLinkDeviceName,
+      psbTarget: next.psbTarget,
+      explicitNoProject: next.explicitNoProject,
+    });
   }
-  if ('workingDir' in patch && next.workingDir == null) {
-    next.remoteHostId = null;
-  } else if ('workingDir' in patch && !('remoteHostId' in patch)) {
-    next.remoteHostId = null;
-  }
-  // 展示名属于远程目标本身，不能跟着草稿漂移：目标被清空、或换成了另一个 remoteHostId 而
-  // 同一 patch 没带新名字时，旧名字必须丢掉（否则新目标会显示上一个项目的名称）。
-  // 这两条只在下游消费 `next.remoteHostId` 之前生效，和上面的级联保持同一顺序。
-  if (next.remoteHostId == null) {
-    next.remoteProjectName = null;
-    next.remoteInstanceName = null;
-  } else if (
-    'remoteHostId' in normalizedPatch
-    && normalizedPatch.remoteHostId !== currentDraft.remoteHostId
-    && !('remoteProjectName' in normalizedPatch)
-    && !('remoteInstanceName' in normalizedPatch)
-  ) {
-    next.remoteProjectName = null;
-    next.remoteInstanceName = null;
-  }
-  // PSB 远程工作区目标（`remoteHostId = psb:<id>` + 虚拟 `workingDir`）是第三种 transport，
-  // 三件必须同源：
-  //   · patch 显式带目标 → 以目标为准重算身份三件（前端只声明目标，不各写一遍拼装）；
-  //   · patch 换了其它目标维度却没带目标 → 旧目标元数据必须丢掉，不能跟着草稿漂移；
-  //   · 目标与身份不一致（例如只剩 `psb:<id>`）→ 整块丢弃并清掉身份，
-  //     绝不能把 `psb:` 留给下游当 SSH 主机（见 shared/psb-remote-workspace.ts 约束 1）。
-  // PSB 远程工作区目标（第三种 transport）：
-  //   · patch 显式带目标 → 以目标为准写/清身份三件；没有 sessionId（首条消息还没发）
-  //     时只留工作区级目标，不产生任何 `psb:` / 虚拟目录；
-  //   · patch 换了其它目标维度却没带目标 → 旧目标元数据必须丢掉，不能跟着草稿漂移；
-  //   · 目标与身份不一致（例如只剩 `psb:<id>`）→ 整块丢弃并清掉身份，
-  //     绝不能把 `psb:` 留给下游当 SSH 主机（见 shared/psb-remote-workspace.ts 约束 1）。
-  const psbTargetInPatch = 'psbTarget' in normalizedPatch;
-  if (psbTargetInPatch && next.psbTarget) {
-    const identity = psbTargetIdentity(next.psbTarget);
-    // 有 sessionId 才派生远程身份；没有就保持「无远程身份 + 无工作目录」的纯目标态。
-    next.remoteHostId = identity?.remoteHostId ?? null;
-    next.workingDir = identity?.workingDir ?? null;
-    // 远程工作区目标没有本地项目目录；按「明确无项目」处理，避免默认目录预填覆盖目标。
-    next.explicitNoProject = true;
-    next.remoteProjectName = next.psbTarget.workspaceTitle || null;
-    next.remoteInstanceName = next.psbTarget.clientName || null;
-    // PSB 与 device-link / 「Agent 在另一台电脑运行」互斥（它本身就是一个远端执行目标）。
+  // PSB 与 device-link / 「Agent 在另一台电脑运行」互斥（它本身就是一个远端执行目标）。
+  if (next.psbTarget) {
     next.deviceLinkDeviceId = null;
     next.deviceLinkDeviceName = null;
     next.agentDeviceId = null;
     next.agentDeviceName = null;
-  } else if (!psbTargetInPatch && (
-    'workingDir' in patch
-    || 'remoteHostId' in patch
-    || 'deviceLinkDeviceId' in patch
-    || 'agentDeviceId' in patch
-  )) {
-    // 目标维度变了但这次 patch 没带新目标：旧 PSB 目标不再描述当前草稿。
-    next.psbTarget = null;
-  }
-  if (next.psbTarget) {
-    const identity = psbTargetIdentity(next.psbTarget);
-    if (identity) {
-      // 有会话 id：身份只由目标推导，外部改写一律以目标为准。
-      next.remoteHostId = identity.remoteHostId;
-      next.workingDir = identity.workingDir;
-      next.explicitNoProject = true;
-    } else if (next.remoteHostId != null) {
-      // 没有会话 id 却被塞进了远程身份（SSH / MCPR / 半截 psb）→ 目标让位给那个显式目标。
-      next.psbTarget = null;
-    } else {
-      next.workingDir = null;
-      next.explicitNoProject = true;
-    }
-  }
-  if (!next.psbTarget && parsePsbRemoteHostId(next.remoteHostId) !== null) {
-    next.remoteHostId = null;
-    next.remoteProjectName = null;
-    next.remoteInstanceName = null;
-    if (next.deviceLinkDeviceId == null) next.workingDir = null;
-  }
-  // 改 workingDir 但**没有显式带** deviceLink 字段 → 清除远程目标,避免把本地项目误当成
-  // 远程设备项目。
-  //
-  // #807:原来这里还有一条「workingDir 变 null 就无条件清设备」的分支(即使同一个 patch
-  // 显式提供了 deviceLinkDeviceId 也清)。那是「远程草稿必带项目目录」时代的不变量;设备
-  // 提成一级维度后它直接把新流程打死 —— 选设备时传的正是
-  // `{ deviceLinkDeviceId, workingDir: null }`,设备刚设上就被清成 null,选设备完全不生效。
-  // 现在只保留「未显式带设备字段」这一条:显式指定设备的 patch 一律尊重,
-  // 而 resetDraftWorkspaceAfterSend 之类不带设备字段的清空路径行为不变。
-  if ('workingDir' in patch && !('deviceLinkDeviceId' in patch)) {
-    next.deviceLinkDeviceId = null;
-    next.deviceLinkDeviceName = null;
   }
   // 「Agent 在另一台电脑运行」：本机任务，或远程控制下建到被控电脑的任务(被控电脑是否支持由草稿页
   // 判定)。任务建到 SSH 主机时不成立；换了任务所在电脑(本机 ↔ 被控电脑、被控电脑之间)时上一台的

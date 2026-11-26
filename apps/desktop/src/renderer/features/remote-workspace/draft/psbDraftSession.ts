@@ -11,8 +11,19 @@
  *   · 重试复用同一个 `clientRequestId`（PSB 侧去重），成功后把 `sessionId` 回写草稿目标，
  *     后续重试/重发直接复用，不会产生第二条 PSB 会话。
  *
+ * ## 孤儿会话（2026-11-26 独立审查修复）
+ *
+ * 「建会话成功」不等于「这条草稿接手了它」：从 createSession 落地到调用方把 `sessionId` 写回
+ * 草稿之间，目标可能被换掉/提交。旧实现在 gate 判过之后就清掉去重键、回调静默 return，
+ * 结果远端留下一条**没人引用的 PSB 会话**，而重试因为去重键已清会再建第二条。
+ * 现在：
+ *   · `onSessionCreated` 返回**是否采纳**（真正写进草稿才返回 true）；
+ *   · 未采纳 → 尽力 `stopSession`，并**保留去重键**（重试时 PSB 按同一键拿回同一条会话，
+ *     不会多建一条；用户彻底放弃则 `reset()` 清键）；
+ *   · 目标在等待期间被换掉（`isCurrentTarget()` 为 false）同样保留去重键。
+ *
  * 这一层不依赖 React/Electron：bridge 与当前目标检查都由调用方注入，单测可以直接钉住
- * 「成功 / 失败 / 在途合并 / 目标已变」四条分支。
+ * 「成功 / 失败 / 在途合并 / 目标已变 / 回调不采纳」五条分支。
  */
 
 import type { NewMakerDraftPsbTarget } from '@/state/newMakerDraft';
@@ -23,11 +34,9 @@ import {
   type PsbAgentKind,
 } from '../../../../shared/psb-remote-workspace';
 import type { PsbRemoteBridge } from '../bridge';
-import {
-  createPsbClientRequestId,
-  readPsbFailure,
-  type PsbFailureInfo,
-} from '../dialog/psbDialogModel';
+import { readPsbFailure, type PsbFailureInfo } from '../dialog/psbFailure';
+import { createPsbClientRequestId } from '../dialog/psbSessionIdentity';
+import { releasePsbWorkspaceOccupancy } from './psbPendingReleaseLedger';
 
 /** 一个已确定身份的 PSB 会话（本地会话行要用它做 remoteHostId / 虚拟 workingDir）。 */
 export interface PsbDraftSession {
@@ -56,13 +65,16 @@ export function psbSessionOfTarget(
 
 export type PsbEnsureFailure =
   | { reason: 'failed'; failure: PsbFailureInfo }
-  /** 在途期间草稿目标已被换掉：刚建出的会话已尽力停掉，调用方直接放弃这次发送。 */
+  /**
+   * 在途期间草稿目标已被换掉 / 调用方拒绝了这条会话：刚建出的会话已尽力停掉（或保留给
+   * 同去重键的重试复用），调用方直接放弃这次发送。
+   */
   | { reason: 'stale' }
   /** 没有 PSB 桥（旧 preload / 非主窗口）：无法建远端会话。 */
   | { reason: 'unavailable' };
 
 export type PsbEnsureResult =
-  | { ok: true; session: PsbDraftSession; reused: boolean }
+  | { ok: true; session: PsbDraftSession }
   | ({ ok: false } & PsbEnsureFailure);
 
 export interface PsbSessionEnsureInput {
@@ -73,16 +85,19 @@ export interface PsbSessionEnsureInput {
   getBridge: () => PsbRemoteBridge | null;
   /** 结果落地前重新读草稿，确认仍指向同一个工作区（用户可能在等待期间换了目标）。 */
   isCurrentTarget: () => boolean;
-  /** 会话建出后立刻回写草稿（持久化 sessionId，供重试复用）。 */
-  onSessionCreated: (sessionId: string) => void;
+  /**
+   * 会话建出后立刻回写草稿（持久化 sessionId，供重试复用）。
+   *
+   * **必须返回是否真的采纳**：返回 false（例如目标在回调这一帧已经变了）时本层会停掉这条
+   * 会话并保留去重键，避免远端留下没人引用的会话。
+   */
+  onSessionCreated: (sessionId: string) => boolean;
 }
 
 export interface PsbSessionGate {
   ensure(input: PsbSessionEnsureInput): Promise<PsbEnsureResult>;
   /** 目标变化 / 放弃草稿时清掉在途缓存与去重键。 */
   reset(): void;
-  /** 当前这次发送尝试沿用的去重键（重试不变；成功后清空）。 */
-  getClientRequestId(): string | null;
 }
 
 export function createPsbSessionGate(): PsbSessionGate {
@@ -101,7 +116,7 @@ export function createPsbSessionGate(): PsbSessionGate {
       const { target, agentKind, title, getBridge, isCurrentTarget, onSessionCreated } = input;
       // 已经建过（首条消息失败后重试 / 重新发送）：直接用同一条 PSB 会话，不再请求。
       if (target.sessionId) {
-        return { ok: true, reused: true, session: psbSessionOfTarget(target, target.sessionId) };
+        return { ok: true, session: psbSessionOfTarget(target, target.sessionId) };
       }
       // 双击/并发：共享第一次请求的结果，避免建出两条 PSB 会话。
       if (inFlight) return inFlight;
@@ -123,12 +138,18 @@ export function createPsbSessionGate(): PsbSessionGate {
           const sessionId = created.session.id;
           if (!isCurrentTarget()) {
             // 目标已被换掉：这条会话没人接手，尽力停掉避免远端残留无名进程。
+            // **不去重键**：重试仍用同一个键，PSB 会拿回同一条会话而不是再建一条。
+            void bridge.stopSession({ sessionId }).catch(() => undefined);
+            return { ok: false, reason: 'stale' };
+          }
+          // 回调可能在这之间发现目标已经不可写（React 状态/草稿被换掉）：只有真正采纳才清键。
+          const adopted = onSessionCreated(sessionId) !== false;
+          if (!adopted) {
             void bridge.stopSession({ sessionId }).catch(() => undefined);
             return { ok: false, reason: 'stale' };
           }
           clientRequestId = null;
-          onSessionCreated(sessionId);
-          return { ok: true, reused: false, session: psbSessionOfTarget(target, sessionId) };
+          return { ok: true, session: psbSessionOfTarget(target, sessionId) };
         } catch (error) {
           return { ok: false, reason: 'failed', failure: readPsbFailure(error) };
         } finally {
@@ -146,19 +167,19 @@ export function createPsbSessionGate(): PsbSessionGate {
       inFlight = null;
       clientRequestId = null;
     },
-    getClientRequestId() {
-      return clientRequestId;
-    },
   };
 }
 
 /**
- * 放弃草稿 / 换目标时归还远端资源（尽力而为，失败只记日志，不阻塞离开）。
+ * 放弃草稿 / 换目标时归还远端资源（尽力而为，失败不阻塞离开，但**不静默**）。
  *
  * 顺序是**先停会话、再释放占用**：PSB 的协作锁在语义上是「工作区正在被我使用」，
  * 如果并发发出 `release` 与 `stop`，服务端可能先看到「仍有运行中会话」而拒绝释放，
  * 结果是锁留在用户名下（占用没有 TTL，只能去 PSB 网页手动解）。stop 最多等 3s，
  * 避免远端卡住时把「离开草稿」也拖住。
+ *
+ * stop 超时/失败之后仍然会释放（远端可能已在收尸）；release 仍失败则记进
+ * `draft/psbPendingReleaseLedger.ts` 的账本——旧实现只 `log.warn`，用户完全不知道锁还留着。
  */
 export function releasePsbDraftTarget(
   target: Pick<NewMakerDraftPsbTarget, 'workspaceId' | 'sessionId'> | null,
@@ -182,8 +203,7 @@ export function releasePsbDraftTarget(
       ])
     : Promise.resolve();
   void stopSettled.then(() =>
-    bridge.releaseWorkspace({ workspaceId: target.workspaceId }).catch((error) => {
-      warn('[psb] release workspace on draft abandon failed (ignored)', error);
-    }),
+    // 释放失败由账本记账（可被常驻提示条 / 重试入口消费），不再只是一行日志。
+    releasePsbWorkspaceOccupancy(bridge, target.workspaceId, 'abandon draft'),
   );
 }

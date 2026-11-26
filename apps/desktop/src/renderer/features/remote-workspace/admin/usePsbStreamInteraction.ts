@@ -72,6 +72,11 @@ export interface PsbStreamInteractionInput {
   readonly remoteSize: { readonly width: number | null; readonly height: number | null };
   /** 浏览器是否把 stage 全屏（`document.fullscreenElement === stage`）。 */
   readonly fullscreen: boolean;
+  /**
+   * 输入上行失败（IPC reject）：通常意味着观看端已断。调用方据此节流提示并让串流回到
+   * 未启动态（r4 P2：旧实现静默吞掉，用户看到的是「鼠标不动了」）。
+   */
+  readonly onSendError?: (error: unknown) => void;
 }
 
 export interface PsbStreamInteraction {
@@ -127,6 +132,9 @@ export function usePsbStreamInteraction(input: PsbStreamInteractionInput): PsbSt
   const captureBridge = tryGetAdminStreamCaptureBridge();
   const platform = rendererPlatform();
   const interactive = streaming && inputBridge !== null;
+  /** 失败回调经 ref 取最新：发送器不因父组件重渲染重建（那会打断串行链）。 */
+  const onSendErrorRef = useRef(input.onSendError);
+  onSendErrorRef.current = input.onSendError;
 
   const [keyboardLock, setKeyboardLock] = useState<PsbKeyboardLockState>('off');
   const aliveRef = useRef(true);
@@ -158,6 +166,8 @@ export function usePsbStreamInteraction(input: PsbStreamInteractionInput): PsbSt
     const sender = createPsbStreamInputSender({
       workspaceId,
       send: (payload) => inputBridge.adminStreamInput(payload),
+      // 失败回调取 ref：发送器 effect 不因父组件回调身份变化重建（重建会丢已排队的释放事件）。
+      onSendError: (error) => onSendErrorRef.current?.(error),
     });
     senderRef.current = sender;
     const pump = new PsbStreamInputPump({ send: (event) => sender.send(event) });

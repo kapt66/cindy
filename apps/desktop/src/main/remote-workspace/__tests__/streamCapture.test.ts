@@ -6,7 +6,7 @@
  *   全屏/画面聚焦时让宿主快捷键让路的唯一状态机（生产接线在 `streamCaptureRuntime.ts`）。
  *   可观察结果是：`setIgnoreMenuShortcuts` 的开关、`before-input-event` 里哪些按键被
  *   `preventDefault()`、以及失焦/页面消失后是否**恢复原状**。
- * - Bug／规则依据：用户要求「全屏时键鼠事件不允许透传到宿主」（`联动需求.md` 2026-11-26
+ * - Bug／规则依据：用户要求「全屏时键鼠事件不允许透传到宿主」（PSB 协作需求 2026-11-26
  *   12:5xZ 新需求 1）。Electron 里菜单 accelerator 在 renderer 收到按键之前分发，只能在 main
  *   拦；保留键（Esc / F5 / F11 / F12 / 开发者工具）与渲染层共用共享判定
  *   `psbStreamCaptureIsPassthroughInput`（产品口径见 `docs/product-rules/psb-remote-workspace-sessions.md`

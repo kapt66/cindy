@@ -40,6 +40,7 @@ import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 import { FindInPageBar } from '@/components/find-in-page/FindInPageBar';
 import { ProjectAutomationNotifyBridge } from '@/features/scheduler/components/ProjectAutomationNotifyBridge';
 import { WorkspaceVcsNoticeHost } from '@/features/remote-workspace/vcs/WorkspaceVcsNoticeHost';
+import { PsbPendingReleaseNotice } from '@/features/remote-workspace/release/PsbPendingReleaseNotice';
 import { GhostConfirmDialogHost } from '@/cindy-brain/GhostConfirmDialogHost';
 import { PluginModelPickerHost } from '@/cindy-brain/PluginModelPickerHost';
 import { LocalAgentConfirmationHost } from '@/components/LocalAgentConfirmationHost';
@@ -51,6 +52,10 @@ import { SetupMigrationHost } from '@/features/setup-migration/SetupMigrationHos
 import { PluginPublisherConfirmHost } from '@/features/plugin/PluginPublisherConfirmHost';
 import { GithubSetupRequestHost } from '@/features/cc-agent/GithubSetupRequestHost';
 import { makerChatStore } from '@/lib/makerChatStore';
+import {
+  flushPsbSessionReleases,
+  refreshPendingWorkspaceReleases,
+} from '@/features/cc-agent/psbOccupancyRelease';
 import { schedulePreviewLightboxPreload } from '@/components/chat/lazyPreviewLightboxes';
 import {
   initializePromptRecommendationStore,
@@ -306,6 +311,32 @@ export function App() {
     return subscribeDraft(syncNewMakerPrefs);
   }, []);
 
+  // 远程工作区占用归还：把上次运行里没送达 main 的「本地任务结束」事件在启动 / 页面重新可见
+  // 时补投一次。为什么在渲染层留这一层：退出应用时 IPC 结果不可依赖（页面正在拆），
+  // 归档/删除成功的触发点在 `useSessionLifecycleActions`，失败事件落本地账本后在这里重投；
+  // main 的 `releasePsbWorkspaceForSession` 按本地会话 id 幂等，重复投递无副作用。
+  // 只在主窗做（副窗/侧栏窗没有会话生命周期，重复投递也没有意义）。
+  // main 待释放账本的推送订阅归常驻提示条自己（`PsbPendingReleaseNotice` 的宿主 effect），
+  // 这里只负责启动 / 可见 / pagehide 时的补投与「读一次账本」——避免同一推送被订阅两次。
+  useEffect(() => {
+    if (isSecondaryWindow() || isSidebarWindow()) return;
+    const flush = () => {
+      void flushPsbSessionReleases().catch(() => undefined);
+      // 页面重新可见时把 main 账本也读一次：推送可能在窗口隐藏期间没能送达。
+      void refreshPendingWorkspaceReleases().catch(() => undefined);
+    };
+    flush();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') flush();
+    };
+    window.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
+
   // 文本／Mermaid 预览弹窗不进首屏;窗口可见、首帧稳定后空闲预取,首次点开不必等加载。
   useEffect(() => schedulePreviewLightboxPreload(), []);
 
@@ -517,6 +548,14 @@ export function App() {
                               useConfirmDialog 二次确认);只挂主窗,副窗/侧栏窗不重复弹。 */}
                               {!isSecondaryWindow() && !isSidebarWindow() && (
                                 <WorkspaceVcsNoticeHost />
+                              )}
+                              {/* PSB 待释放占用（会话结束 / 放弃草稿释放失败）的常驻提示条：
+                              数据源是 main 账本 + 工作区级账本（两套账本存储/重试独立，
+                              展示按 workspaceId 跨源去重、main 优先），给「重试 / 关闭」；
+                              非阻塞、不弹模态。只挂主窗（副窗 / 侧栏窗
+                              没有会话生命周期，同一账本会在每窗各渲染一份）。 */}
+                              {!isSecondaryWindow() && !isSidebarWindow() && (
+                                <PsbPendingReleaseNotice />
                               )}
                               <ProjectAutomationNotifyBridge />
                               {/* confirm 槽:插件请主机弹确认框。必须在 ConfirmDialogProvider

@@ -8,10 +8,11 @@
  *      而不是 SSH pool;
  *   2. 需要字节流时调本模块,而不是自己认前缀。
  *
- * 这样新增一种隧道 transport(例如将来的其它账号隧道)只需要在这里加一个 case:
- * 钩子、三种 Harness 的客户端实现、`remoteTransportRegistry` 都不变。
- * 分派判据与 SSH-only 分类器是**同一个纯函数**(`remote-session-routing.ts`),不存在第二套
- * `startsWith` 判断(见 `docs/dev-rules/psb-remote-session-transport.md` §7.2)。
+ * 这样新增一种隧道 transport(例如将来的其它账号隧道)只需要在能力表
+ * (`remote-session-routing.ts`)与这里的 case 加一条:钩子、三种 Harness 的客户端实现、
+ * `remoteTransportRegistry` 都不变。分派判据与 SSH-only 分类器是**同一个纯函数**
+ * (`remote-session-routing.ts`),不存在第二套 `startsWith` 判断
+ * (见 `docs/dev-rules/psb-remote-session-transport.md` §7.2)。
  */
 
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
@@ -19,7 +20,11 @@ import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 import type { PsbTunnelMode } from '../../shared/psb-remote-workspace.js';
 import { openMcprTunnel } from './mcpr-tunnel.js';
 import { openPsbAgentTunnel } from './psb-agent-tunnel.js';
-import { classifyRemoteSessionTransport } from './remote-session-routing.js';
+import {
+  classifyRemoteSessionTransport,
+  resolveRemoteTransportCapabilities,
+  type RemoteAgentKind,
+} from './remote-session-routing.js';
 
 /**
  * 隧道的用途，与 MCPRouter `agent-tunnel` 的 `mode` 逐字相同（PSB 是同一份帧契约）：
@@ -37,6 +42,19 @@ export type RemoteTunnelOpener = (
   remoteHostId: string,
   mode: RemoteTunnelMode,
 ) => Promise<ExecStreamHandle>;
+
+/**
+ * 这个 transport 上某引擎的数据面 mode（`null` = 这个 transport 不走隧道）。
+ *
+ * 唯一映射表在能力描述符里（→ 共享契约的 `psbTunnelModeForAgent`）；调用点不要自己
+ * 按引擎拼 mode 字面量，否则「表里改了、钩子里没改」不会报错。
+ */
+export function remoteTunnelModeForAgent(
+  remoteHostId: string | null | undefined,
+  agentKind: RemoteAgentKind,
+): RemoteTunnelMode | null {
+  return resolveRemoteTransportCapabilities(remoteHostId).tunnelModeByAgent?.[agentKind] ?? null;
+}
 
 /**
  * 打开一条远端隧道字节流。非隧道 transport（本地 / SSH）是**编程错误**，不回落 SSH：

@@ -33,7 +33,10 @@ import {
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { mcprExec, openMcprTunnel, type McprTunnelMode } from './mcpr-tunnel.js';
-import { remoteSessionHostOwnsCwd } from './remote-session-routing.js';
+import {
+  remoteSessionHostOwnsCwd,
+  remoteTransportErrorCode,
+} from './remote-session-routing.js';
 import {
   buildPiLaunchCommand,
   computePiLaunchEnvHash,
@@ -120,7 +123,9 @@ export function createMcprPiFileOps(
  *   1. runtime 注入的环境变量 `CINDY_PI_AGENT_BIN`(runtime 本来就知道路径,零协议新增);
  *   2. 实例 PATH 上的 `pi`(`command -v`);
  *   3. 与 SSH 安装布局同约定的 `$HOME/.xdt-server/v1/pi/pi`。
- * 三条都取不到(不可执行)才抛 `[MCPR_PI_BINARY_MISSING]`,与 SSH 的
+ * 三条都取不到(不可执行)才抛 `[<TAG>_PI_BINARY_MISSING]`(**归因码跟着 transport 走**:
+ * `psb:` 会话报 `[PSB_PI_BINARY_MISSING]`,不把运维指向 MCPRouter),文案只描述
+ * 「远端没有暴露可执行的 pi 运行时」—— 不猜是哪套系统的问题。与 SSH 的
  * `pi not installed on remote host …` 同语义 —— 不静默回落到本机路径(那会让子代理在实例里
  * spawn 一个不存在的路径、并静默禁用 plan 模式)。
  *
@@ -147,7 +152,7 @@ export async function resolveMcprPiBinaryPath(
   const path = result.stdout.trim().split(/\r?\n/).pop() ?? '';
   if (result.exitCode !== 0 || !path || path === 'MISSING') {
     throw new Error(
-      `[MCPR_PI_BINARY_MISSING] the MCPRouter instance ${remoteHostId} did not expose an executable pi runtime `
+      `${remoteTransportErrorCode(remoteHostId, 'PI_BINARY_MISSING')} the remote host did not expose an executable pi runtime `
         + '(checked CINDY_PI_AGENT_BIN, PATH, $HOME/.xdt-server/v1/pi/pi)',
     );
   }
@@ -232,7 +237,7 @@ export async function openMcprPiSessionChannel(
       const timer = requestTimeoutMs > 0
         ? setTimeout(() => {
           pending.delete(id);
-          reject(new Error(`[MCPR_PI_RPC_TIMEOUT] ${method} timed out after ${requestTimeoutMs}ms`));
+          reject(new Error(`${remoteTransportErrorCode(opts.remoteHostId, 'PI_RPC_TIMEOUT')} ${method} timed out after ${requestTimeoutMs}ms`));
         }, requestTimeoutMs)
         : undefined;
       timer?.unref?.();
@@ -311,8 +316,8 @@ export async function openMcprPiSessionChannel(
   handle.onClose((info: { code: number | null; signal: string | null }) => {
     failAll(new Error(
       info.signal
-        ? `[MCPR_PI_TUNNEL_CLOSED] pi tunnel closed (signal=${info.signal})`
-        : `[MCPR_PI_TUNNEL_CLOSED] pi tunnel closed (exit code=${info.code ?? 'null'})`,
+        ? `${remoteTransportErrorCode(opts.remoteHostId, 'PI_TUNNEL_CLOSED')} pi tunnel closed (signal=${info.signal})`
+        : `${remoteTransportErrorCode(opts.remoteHostId, 'PI_TUNNEL_CLOSED')} pi tunnel closed (exit code=${info.code ?? 'null'})`,
     ));
   });
 
@@ -323,7 +328,7 @@ export async function openMcprPiSessionChannel(
     }).result as { protocolVersion?: number } | undefined;
     if (hello?.protocolVersion !== PROTOCOL_VERSION) {
       throw new Error(
-        `[MCPR_PI_PROTOCOL_MISMATCH] pi-manager protocol ${String(hello?.protocolVersion)} does not match client ${PROTOCOL_VERSION}`,
+        `${remoteTransportErrorCode(opts.remoteHostId, 'PI_PROTOCOL_MISMATCH')} pi-manager protocol ${String(hello?.protocolVersion)} does not match client ${PROTOCOL_VERSION}`,
       );
     }
     const ensureCall = request('pi/ensure', opts.ensure);
@@ -331,7 +336,9 @@ export async function openMcprPiSessionChannel(
     pendingEnsureId = ensureCall.id;
     const ensured = await ensureCall.result as PiEnsureResult | undefined;
     if (!ensured || typeof ensured.sockPath !== 'string') {
-      throw new Error('[MCPR_PI_ENSURE_INVALID] pi/ensure did not return a session socket');
+      throw new Error(
+        `${remoteTransportErrorCode(opts.remoteHostId, 'PI_ENSURE_INVALID')} pi/ensure did not return a session socket`,
+      );
     }
     // 兜底切换(主路径在读帧处):此刻之后写入的字节都属于 pi JSONL。
     if (!inJsonlPhase()) {
@@ -439,16 +446,18 @@ export interface McprPiTransportOptions {
 }
 
 /**
- * 建 MCPRouter 上的 Pi transport:ensure(与 SSH 同一个启动方式)→ 同一条隧道作为 JSONL
- * 字节流 → 交给共享协议核心。`hostProxyForwards` 不适用(实例没有到控制端的反向转发)。
+ * 建 MCPRouter / PSB 隧道上的 Pi transport:ensure(与 SSH 同一个启动方式)→ 同一条隧道作为
+ * JSONL 字节流 → 交给共享协议核心。`hostProxyForwards` 不适用(实例没有到控制端的反向转发)。
+ *
+ * **cwd 契约（显式，不再靠 daemon 的进程 cwd 隐式兜底）**：
+ *  - `hostOwnsCwd`（`psb:`）→ `cwdPolicy: 'host'`：daemon 在自己的**启动工作区**里 spawn pi
+ *    （宿主按 PSB 会话记录里的工作区拉起 daemon），`cmd` 里不写 `cd`；
+ *  - 否则 → `cwdPolicy: 'command'`：cwd 由 `cmd` 自带的 `cd <绝对路径> &&` 决定，spawn 不指定。
+ *
+ * 判定走唯一分类器（`remoteSessionHostOwnsCwd` → 能力表），不在钩子里手写前缀。
  */
 export function createMcprPiTransport(opts: McprPiTransportOptions): PiTransport {
   const env = sanitizePiEnsureEnv(opts.env);
-  // PSB 远程工作区的**工作目录权威在宿主**：宿主按 PSB 会话记录里的工作区 spawn，Cindy 手里的
-  // `/psb-remote/<目录>` 只是本机虚拟路径（远端不存在）。把它拼进 `cd` 会让 `bash -c` 立即
-  // `exit 1`（联调实测：`pi process exited (code=null, signal=null)`）。因此对 `psb:` 不写 `cd`，
-  // 与 codex 的 `$codexBridge` 口径一致（cwd 由服务端决定，客户端不传）。判定走唯一分类器
-  // （`remoteSessionHostOwnsCwd` → `classifyRemoteSessionTransport`），不在钩子里手写前缀。
   const hostOwnsCwd = remoteSessionHostOwnsCwd(opts.remoteHostId);
   const command = buildPiLaunchCommand({
     cwd: hostOwnsCwd ? null : opts.cwd,
@@ -474,6 +483,7 @@ export function createMcprPiTransport(opts: McprPiTransportOptions): PiTransport
           env,
           envHash,
           restart: true,
+          ...(hostOwnsCwd ? { cwdPolicy: 'host' as const } : { cwdPolicy: 'command' as const }),
         },
         logger: opts.logger,
         ...(opts.openTunnel ? { openTunnel: opts.openTunnel } : {}),
@@ -499,12 +509,12 @@ export function resolveMcprPiAgentProxyEnv(): null {
 }
 
 /**
- * MCPRouter 上不投影 Cindy 的 in-process MCP bridge。
+ * 隧道上的 Pi 不投影 Cindy 的 in-process MCP bridge。
  *
  * 原因:那批 server 是**控制端 loopback** 上的 HTTP 端点,SSH 靠 `-R` 反向转发把它送到远端,
  * 而 agent-tunnel 只有正向字节流(Claude 走的是 cc-mgr 自己的 capability MCP 回呼,Pi 没有
- * 对应通道)。**不**把 loopback URL 原样交给实例:实例上的 `127.0.0.1` 是它自己的回环,
- * 拿控制端的端口去连会打到实例上的无关服务(既错又有安全面)。
+ * 对应通道)。**不**把 loopback URL 原样交给远端:远端上的 `127.0.0.1` 是它自己的回环,
+ * 拿控制端的端口去连会打到远端上的无关服务(既错又有安全面)。
  * 影响面:用户显式配置的**外部 HTTP/Streamable HTTP MCP 仍直连可用**(piEnvironment 的
  * 该分支不受影响),少的是 Cindy 自有工具投影(ghost / cindy_memory / orca / 电脑驱动等)。
  * 后续补法:runtime 侧提供 capability MCP 端点(与 cc-mgr 同形),届时改本函数即可。
@@ -513,10 +523,15 @@ export function shouldSkipMcprPiMcpBridge(): boolean {
   return true;
 }
 
-/** `rewriteRemotePiMcpBridgeUrl` 的兜底:隧道形态没有可用于改写的反向转发目标。 */
+/**
+ * `rewriteRemotePiMcpBridgeUrl` 的兜底:隧道形态没有可用于改写的反向转发目标。
+ *
+ * 归因码跟着 transport 走（`[PSB_PI_…]` / `[MCPR_PI_…]`），文案只说「远端没有暴露该能力」——
+ * PSB 会话上冒出「MCPRouter sessions do not project…」会把运维指向错误的系统。
+ */
 export function mcprPiMcpBridgeUnavailable(remoteHostId: string): never {
   throw new Error(
-    `[MCPR_PI_MCP_BRIDGE_UNAVAILABLE] MCPRouter sessions do not project the controller's in-process MCP bridge `
-      + `(remote=${remoteHostId}); external HTTP MCP servers keep working`,
+    `${remoteTransportErrorCode(remoteHostId, 'PI_MCP_BRIDGE_UNAVAILABLE')} the remote runtime does not expose `
+      + `the controller's in-process MCP bridge (remote=${remoteHostId}); external HTTP MCP servers keep working`,
   );
 }

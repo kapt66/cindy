@@ -159,6 +159,10 @@ function buildPiHook(
       releaseAll: async () => undefined,
     }),
     createSshPiDaemonTransport: () => ({ close: async () => undefined }),
+    // 隧道 transport 的统一登记 / 释放（`remoteTransportRegistry`）：钩子在隧道分支里
+    // 登记 pi 隧道，会话结束 / 应用退出时由同一张表兜底释放。这里只桩掉。
+    registerRemoteTransport: () => undefined,
+    releaseRemoteTransport: async () => false,
     desktopMakerLogger: { child: () => ({ info: () => undefined, warn: () => undefined }) },
     fs: { readFile: async () => 'local' },
     fsSync: { createReadStream: () => ({ [Symbol.asyncIterator]: async function* () { /* empty */ } }) },

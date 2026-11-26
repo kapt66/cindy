@@ -117,6 +117,32 @@ export function psbTunnelNeedsBundleVersion(mode: PsbTunnelMode): boolean {
   return mode === 'cc-mgr' || mode === 'codex-appserver';
 }
 
+/**
+ * PSB agent-tunnel 的**可归因失败码**（main 抛 `PsbTunnelError` 时 `code` 的取值集合）。
+ *
+ * 隧道错误最终会经 maker-host 的 lazy create / send 失败进入用户可见的回合错误，所以码名
+ * 必须与 HTTP 侧（`PSB_ERROR_CODES` / `PSB_CINDY_FAILURE_CODES`）同一套词：
+ * 「认证 / 会话不可见 / 会话非就绪 / 会话终态 / 客户端离线 / 限流 / 不可达」是**不同处置**，
+ * 不能都变成一句「连接失败」。与 HTTP 同名的码（`PSB_AUTH_REQUIRED` / `PSB_CLIENT_OFFLINE`
+ * 等）刻意复用同一个字符串，方便把两条传输的失败归到同一张表。
+ */
+export const PSB_TUNNEL_FAILURE_CODES = [
+  /** `psb:<sessionId>` 身份畸形。 */
+  'PSB_SESSION_INVALID',
+  /** 取不到 Cindy Connection JWT（未登录 / 非企业组织；见 `psbAuth.ts` 的 kind）。 */
+  'PSB_AUTH_REQUIRED',
+  /** PSB 拒绝 Upgrade 或 4003 关闭：token 被服务端判为无效。 */
+  'PSB_TUNNEL_AUTH',
+  'PSB_SESSION_NOT_FOUND',
+  'PSB_SESSION_NOT_READY',
+  'PSB_SESSION_STOPPED',
+  'PSB_CLIENT_OFFLINE',
+  'PSB_RATE_LIMITED',
+  'PSB_TUNNEL_UNREACHABLE',
+] as const;
+
+export type PsbTunnelFailureCode = (typeof PSB_TUNNEL_FAILURE_CODES)[number];
+
 /* ============================== 3. PSB API 路径 ============================== */
 
 /**
@@ -151,7 +177,8 @@ export const PSB_CINDY_ROUTES = {
    * main `psbClient.ensureWorkspaceAccess`）。Cindy 侧**不**用它做常规状态展示：页面上的
    * 桌面会话状态仍来自 `stream/status.desktopSession`（那是已配对的观看端会话视角）。
    *
-   * 响应形状 PSB 尚未给最终示例（`联动需求.md` 已登记），所以解析按 `state` /
+   * 响应形状 PSB 尚未给最终示例（跟进项已登记在
+ * `docs/collaboration/psb-remote-workspace-contract.md`），所以解析按 `state` /
    * `desktopSession` / `access.state` 三种同义字段宽松读取，**不猜更多路径**。
    */
   workspaceAccess: (workspaceId: string): string =>
@@ -184,7 +211,8 @@ export const PSB_CINDY_WS = {
  * ## 当前状态：Cindy Bearer **尚未**被放行（2026-11-26，PSB 0.1.180）
  *
  * PSB 的 Cindy 命名空间白名单是**精确形状**（只放行 `/api/cindy/remote/**`），所以这条路由
- * 现在对 Cindy 恒返回 **403**。PSB 台账（`联动需求.md`）记的是「Cindy 入口下一轮加」：
+ * 现在对 Cindy 恒返回 **403**。PSB 台账（`docs/collaboration/psb-remote-workspace-contract.md`）
+ * 记的是「Cindy 入口下一轮加」：
  * 要么放行 Cindy 的 `access/start`，要么在 `/api/cindy/remote/**` 下提供命名空间入口。
  *
  * 因此调用方必须把这条路径当成**可选增强**：403 / 404（旧 PSB）/ 405 都收敛成
@@ -264,7 +292,14 @@ export interface PsbRemoteWorkspace {
   readonly clientName: string;
   readonly clientOnline: boolean;
   readonly clientPlatform: string | null;
-  readonly state: PsbWorkspaceState;
+  /**
+   * PSB 工作区状态词；**`null` = PSB 下发了 Cindy 还不认识的新词**。
+   *
+   * 不能把未知值伪装成某个已知状态（旧实现在这里回落 `'failed'`：界面会显示「失败」并把
+   * 一个只是新状态的工作区当成坏的）。未知一律按「未就绪/未知」处理（不可写），
+   * 与 `desktopSession` / `reasonCode` 的 `null` 口径一致。
+   */
+  readonly state: PsbWorkspaceState | null;
   readonly templateKey: string | null;
   readonly templateTitle: string | null;
   /** 服务端分配的目录名（仅显示）。 */
@@ -355,8 +390,22 @@ export interface PsbRemoteSession {
   readonly workspaceId: string;
   readonly clientId: string;
   readonly title: string | null;
-  readonly agentKind: PsbAgentKind;
-  readonly status: PsbSessionStatus;
+  /**
+   * 引擎类型（数据面隧道 mode 由它决定）；**`null` = PSB 下发了 Cindy 不认识的引擎**。
+   *
+   * 未知值**不能**回落某个已知引擎：那会让 Cindy 用错的隧道 mode 去连这条会话。`null` 时
+   * 只能做只读展示（不可开隧道、不可据此建会话）；新增引擎要走
+   * `PSB_AGENT_KINDS` / `RemoteAgentKind` 的同一批落地。
+   */
+  readonly agentKind: PsbAgentKind | null;
+  /**
+   * 会话状态；**`null` = PSB 下发了 Cindy 不认识的新状态词**。
+   *
+   * 未知值**不能**回落 `'failed'`：终态会触发「发送时透明重建 PSB 会话」（一次远端写），
+   * 那等于用未知事实去改写用户任务。`null` 时按「未知」处理——不预热重建
+   * （`psbSessionNeedsRebind(null) === false`），界面按需显示未知。
+   */
+  readonly status: PsbSessionStatus | null;
   /** 失败/不可用时的可读原因（PSB 下发中文；Cindy 作兜底显示）。 */
   readonly statusMessage: string | null;
   readonly createdAt: string;
@@ -454,17 +503,35 @@ export function isPsbStreamReasonCode(value: unknown): value is PsbStreamReasonC
 }
 
 /** 串流状态（Cindy「启动 / 停止 / 详情」三个按钮的数据来源，PSB 仓 `协作需求.md` PSB-RW-07）。 */
+/**
+ * PSB 串流状态（`stream/status` 的 `data`，也是管理页「启动 / 停止 / 详情」的数据来源）。
+ *
+ * ## 字段名 = PSB wire 字段名（唯一一套，别再引入别名）
+ *
+ * PSB `CindyRemoteStreamStatus` 的线上拼写是 `capability` / `encoder` / `lastErrorZh`
+ * （PSB 0.1.172+，pinned 快照 2026-11-26）。2026-11-26 之前的契约**草稿**写的是
+ * `capable` / `codec` / `lastError`，解析层曾同时认两套；草稿拼写从未出现在任何已发布的
+ * PSB 版本里，所以本批删除双读兼容：
+ *
+ * - 契约版本锚点：PSB 0.1.172（工作区级订阅）/ 0.1.180（VCS advisory + 访问状态）；
+ * - 旧拼写下线点：**已下线**（2026-11-26，Cindy 侧解析只认 `capability` / `encoder` /
+ *   `lastErrorZh`）。若将来 PSB 再改字段名，按新契约版本在同一处加一次「版本化读取」，
+ *   不要保留无限期的双拼写兜底（两个来源会让「到底读到没有」永远说不清）。
+ *
+ * 管理页复用本类型（`PsbWorkspaceAdminStreamStatus` 只是它的别名），不再另抄 8 个字段。
+ */
 export interface PsbSessionStreamStatus {
-  /** 客户端是否声明 `streaming` 能力。 */
-  readonly capable: boolean;
+  /** 客户端是否声明 `streaming` 能力（PSB wire `capability`）。 */
+  readonly capability: boolean;
   /** 当前是否有采集在跑。 */
   readonly active: boolean;
   readonly width: number | null;
   readonly height: number | null;
   readonly fps: number | null;
-  readonly codec: string | null;
-  /** 最近一次采集错误（可读中文），没有则 `null`。 */
-  readonly lastError: string | null;
+  /** PSB wire `encoder`（编码器名，如 `h264`）。 */
+  readonly encoder: string | null;
+  /** 最近一次采集错误（可读中文，PSB wire `lastErrorZh`），没有则 `null`。 */
+  readonly lastErrorZh: string | null;
   /**
    * 该工作区当前桌面会话状态（PSB 加性字段，见 `PSB_DESKTOP_SESSION_STATES`）。
    *
@@ -526,6 +593,8 @@ export const PSB_ERROR_CODES = {
   occupiedByOther: 'WORKSPACE_OCCUPIED_BY_OTHER',
   clientOffline: 'CLIENT_OFFLINE',
   notFound: 'NOT_FOUND',
+  /** 403「不是归属人」：与 `NOT_FOUND` 同一个处置（不泄漏存在性），单表里按同一 IPC 码映射。 */
+  forbidden: 'FORBIDDEN',
   /**
    * CINDY-RW-10 更正版：占用 / 解除占用那一刻的版本控制检查（PSB 已把 `p4 reconcile` 与 git
    * 状态算完）。**三种都是拒绝**，没有 force 分支：
@@ -560,16 +629,409 @@ export const PSB_CINDY_FAILURE_CODES = {
   streamNoRunningSession: 'PSB_STREAM_NO_RUNNING_SESSION',
 } as const;
 
-/** PSB 版本控制检查失败码集合（占用 / 解除占用 / 自动占用都可能返回）。 */
-export const PSB_WORKSPACE_VCS_ERROR_CODES: readonly string[] = [
-  PSB_ERROR_CODES.workspaceVcsDirty,
-  PSB_ERROR_CODES.workspaceVcsUnavailable,
-  PSB_ERROR_CODES.workspaceVcsUnsupported,
-];
+/* ============ 4b. PSB 失败单表（全部 PSB_* 失败码：唯一手写处，其余全派生） ============ */
 
-/** 是否是 PSB 版本控制检查失败码（渲染层 / main 共用一份判断）。 */
-export function isPsbWorkspaceVcsErrorCode(code: unknown): boolean {
-  return typeof code === 'string' && PSB_WORKSPACE_VCS_ERROR_CODES.includes(code);
+/**
+ * 用户下一步动作的机器可读分类（渲染层据此选按钮 / 是否自动重试；main 不消费）。
+ *
+ * 只有「没有 running 桌面访问」三档会被渲染层直接消费
+ * （`psbStreamAccessFailureCopyForIpcCode` → `offerOpenWeb` / `retryOnce`）；其余分类是给后续
+ * 界面收敛用的语义标注，不在任何 switch 里穷尽。
+ */
+export type PsbFailureNextStep =
+  /** 查看未提交修改详情（或一键清理后重试）——VCS dirty。 */
+  | 'inspect-vcs'
+  /** 无法确认干净：只能重试检查（没有 force 分支）——VCS unavailable / unsupported。 */
+  | 'retry'
+  /** 去 PSB 网页启动桌面访问，再回来重试。 */
+  | 'open-web-access'
+  /** 等访问开始 / 结束落定后重试（此时点「去网页启动」是无效动作）。 */
+  | 'wait'
+  /** 登录 / 换组织账号后重试（鉴权 / 身份类失败）。 */
+  | 'sign-in'
+  /** 升级那台电脑上的 PSB 客户端（能力不支持）。 */
+  | 'upgrade-client'
+  /** 重新读取工作区 / 会话（列表已变、工作区不可见）。 */
+  | 'refresh'
+  /** 先启动观看，再把输入发出去（本端还没有活动串流连接）。 */
+  | 'start-stream'
+  /** 去 PSB 网页处理（例如被他人占用时解除占用）。 */
+  | 'open-web'
+  /** 没有可行动入口（只能读原因 / 联系管理员）。 */
+  | 'none';
+
+/** 串流访问三档状态（`none` 是「没有 running 访问」的兜底档）。 */
+export type PsbStreamAccessFailureState = 'none' | 'starting' | 'stopping';
+
+/**
+ * 一条 PSB 失败的完整描述（`{psbCode, noticeCode, messageKey, state, nextStep, …}`）。
+ *
+ * 历史上同一事实在六处手写：PSB 原始码 → 文案键（main `psbClient` 的 switch）、
+ * `WORKSPACE_VCS_*` 通知码 → 文案键（`psb-workspace-vcs`）、PSB 码 → IPC 码
+ * （`psbIpcCodeForFailure` 的 switch）、IPC 码 → 文案键（`PSB_IPC_FAILURE_MESSAGE_KEYS`）、
+ * 可写判据的 `PSB_WORKSPACE_WRITABLE_FAILURES`，以及渲染层三档串流访问文案表。六份清单
+ * 漏改任一处都**没有编译错误**，只在用户面前表现为英文原文 /「操作失败」。
+ *
+ * 现在只有本表：可写判据、IPC 码、文案键、通知码、PSB 原始码与串流访问分档全是它的投影
+ * （`psbFailureDescriptorFor*` / `psbIpcCodeForFailure` / `PSB_IPC_FAILURE_MESSAGE_KEYS` /
+ * `PSB_WORKSPACE_WRITABLE_FAILURES` / `PSB_NO_RUNNING_SESSION_IPC_CODES`）。新增一类失败
+ * 只在这里加一行；`ipc-errors.ts` 的 `IpcErrorCode` 仍要单独登记该 IPC 码（那是全仓 IPC 码表），
+ * 本表负责「PSB 原始码 / 通知码 / 文案键 / 状态 / 下一步」的对应关系。
+ *
+ * 表键是**跨 IPC 的 `PSB_*` 码**；不面向用户的本地诊断码（`PSB_PROTOCOL` / `PSB_UNKNOWN` /
+ * `PSB_AUTH_LOOP`）刻意不入表（见 `PSB_LOCAL_DIAGNOSTIC_CODES`），它们只进日志与 `INTERNAL`。
+ */
+export interface PsbFailureDescriptor {
+  /** PSB 原始 `error.code`（或 `details.code`）；本地产生的失败则是对端码的同名词。 */
+  readonly psbCode: string;
+  /**
+   * 同一 IPC 码还接受哪些 PSB 原始码（PSB 历史上换过码 / 合并过语义）。
+   *
+   * 只用于「PSB 码 → IPC 码 / 文案键」的反查，不改变 `psbCode` 的默认地位。
+   */
+  readonly alsoPsbCodes?: readonly string[];
+  /** VCS 通知码（`WORKSPACE_VCS_*`，也是 PSB advisory/409 的 `code`）；非 VCS 家族为 `null`。 */
+  readonly noticeCode: string | null;
+  /** 本地化文案键（渲染层唯一映射；main 写入 `PsbRemoteFailure.messageKey`）。 */
+  readonly messageKey: string;
+  /** 「没有 running 桌面访问」三档状态（串流访问家族）；其余为 `null`。 */
+  readonly state: PsbStreamAccessFailureState | null;
+  /** 用户下一步动作分类（渲染层选按钮 / 是否自动重试）。 */
+  readonly nextStep: PsbFailureNextStep;
+  /**
+   * 同一 PSB 码的**鉴别键**：只有 `PsbRemoteFailure.messageKey` 命中时才选这条描述。
+   *
+   * 目前只有 `AUTH_REQUIRED` 需要它：个人 membership 签不出 audience（要换组织账号）与未登录
+   * （要去登录）是同一个 PSB 码、不同的下一步。鉴别键是数据，代码里不再写 if。
+   */
+  readonly whenMessageKey?: string;
+  /**
+   * 该失败在「工作区此刻能不能写」判据里的原因（见 `psbWorkspaceWritable`）。
+   *
+   * 只有可写判据会产出的四条登记它；`PSB_WORKSPACE_WRITABLE_FAILURES` 由它派生。
+   */
+  readonly writableReason?: PsbWorkspaceWritabilityReason;
+  /** 输入框禁用的文案键（可写失败专用；缺省 = `messageKey`，即同一个事实两个入口同句）。 */
+  readonly inputMessageKey?: string;
+  /** `message` 字段是否只装占用人名（main 据此插值 `{{name}}`，不放 PSB 原话）。 */
+  readonly occupantName?: true;
+}
+
+export const PSB_FAILURE_DESCRIPTORS = {
+  // ── CINDY-RW-10：版本控制检查（占用 / 解除占用那一刻；0.1.180 advisory 与旧版 409）──
+  PSB_WORKSPACE_VCS_DIRTY: {
+    psbCode: PSB_ERROR_CODES.workspaceVcsDirty,
+    noticeCode: PSB_ERROR_CODES.workspaceVcsDirty,
+    messageKey: 'remoteWorkspace.vcs.dirty',
+    state: null,
+    nextStep: 'inspect-vcs',
+  },
+  PSB_WORKSPACE_VCS_UNAVAILABLE: {
+    psbCode: PSB_ERROR_CODES.workspaceVcsUnavailable,
+    noticeCode: PSB_ERROR_CODES.workspaceVcsUnavailable,
+    messageKey: 'remoteWorkspace.vcs.unavailable',
+    state: null,
+    nextStep: 'retry',
+  },
+  PSB_WORKSPACE_VCS_UNSUPPORTED: {
+    psbCode: PSB_ERROR_CODES.workspaceVcsUnsupported,
+    noticeCode: PSB_ERROR_CODES.workspaceVcsUnsupported,
+    messageKey: 'remoteWorkspace.vcs.unsupported',
+    state: null,
+    nextStep: 'retry',
+  },
+  // ── 订阅串流：没有 running 桌面访问（PSB 409 details.code='NO_RUNNING_SESSION'）──
+  // 按 details.state 分三档：下一步动作不同，合并成一条会让用户对着「正在启动」做
+  // 「去网页启动」。三档共用同一个 PSB 原始码，靠 `state` 而不是 messageKey 鉴别；
+  // 反查默认档取 `none`（安全默认：不进自动重试循环）。
+  PSB_STREAM_NO_RUNNING_SESSION: {
+    psbCode: PSB_ERROR_CODES.noRunningSession,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.streamAccessNone',
+    state: 'none',
+    nextStep: 'open-web-access',
+  },
+  PSB_STREAM_ACCESS_STARTING: {
+    psbCode: PSB_ERROR_CODES.noRunningSession,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.streamAccessStarting',
+    state: 'starting',
+    nextStep: 'wait',
+  },
+  PSB_STREAM_ACCESS_STOPPING: {
+    psbCode: PSB_ERROR_CODES.noRunningSession,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.streamAccessStopping',
+    state: 'stopping',
+    nextStep: 'wait',
+  },
+  // ── 鉴权 / 身份（`psbAuthFailure` 的唯一映射目标）──
+  PSB_AUTH_REQUIRED: {
+    psbCode: PSB_ERROR_CODES.authRequired,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.auth',
+    state: null,
+    nextStep: 'sign-in',
+  },
+  PSB_ORG_REQUIRED: {
+    psbCode: PSB_ERROR_CODES.authRequired,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.orgRequired',
+    state: null,
+    nextStep: 'sign-in',
+    // 个人 membership（`resolvePsbConnectionIdentity`）与未登录共用 AUTH_REQUIRED：
+    // 文案键是唯一稳定的鉴别依据（见 `psbAuthFailure`）。
+    whenMessageKey: 'remoteWorkspace.status.needOrg',
+  },
+  PSB_AUTH_EXPIRED: {
+    psbCode: PSB_ERROR_CODES.authExpired,
+    alsoPsbCodes: [PSB_ERROR_CODES.authInvalid],
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.authExpired',
+    state: null,
+    nextStep: 'sign-in',
+  },
+  PSB_IDENTITY_NOT_LINKED: {
+    psbCode: PSB_ERROR_CODES.identityNotLinked,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.identityNotLinked',
+    state: null,
+    nextStep: 'none',
+  },
+  // ── 工作区可写判据（四条原因；失败文案键与输入禁用键同表）──
+  PSB_WORKSPACE_OCCUPIED_BY_OTHER: {
+    psbCode: PSB_ERROR_CODES.occupiedByOther,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.occupiedByOther',
+    state: null,
+    nextStep: 'open-web',
+    writableReason: 'occupied-by-other',
+    inputMessageKey: 'remoteWorkspace.error.workspaceOccupied',
+    occupantName: true,
+  },
+  PSB_CLIENT_OFFLINE: {
+    psbCode: PSB_ERROR_CODES.clientOffline,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.clientOffline',
+    state: null,
+    nextStep: 'retry',
+    writableReason: 'client-offline',
+  },
+  PSB_WORKSPACE_NOT_READY: {
+    // 由本地可写判据 / 发送前重建产生（main `workspaceLock` / `sessionRebind`）。
+    psbCode: 'WORKSPACE_NOT_READY',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.input.workspaceNotReady',
+    state: null,
+    nextStep: 'wait',
+    writableReason: 'workspace-not-ready',
+  },
+  PSB_AGENT_UNSUPPORTED: {
+    // PSB `unusableReason='agent-unsupported'`（`psbWorkspaceWritable` 与发送前重建都遇到）。
+    psbCode: 'UNSUPPORTED_CAPABILITY',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.badge.agentUnsupported',
+    state: null,
+    nextStep: 'upgrade-client',
+    writableReason: 'agent-unsupported',
+  },
+  // ── 管理页 stale 上下文（main `adminService` 构造）与通用读口失败 ──
+  PSB_WORKSPACE_MISSING: {
+    psbCode: 'WORKSPACE_MISSING',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.staleMissingAction',
+    state: null,
+    nextStep: 'refresh',
+  },
+  PSB_WORKSPACE_UNREACHABLE: {
+    psbCode: 'WORKSPACE_UNREACHABLE',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.staleUnavailableAction',
+    state: null,
+    nextStep: 'retry',
+  },
+  PSB_WORKSPACE_ID_UNKNOWN: {
+    psbCode: 'WORKSPACE_ID_UNKNOWN',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.staleUnknownWorkspaceAction',
+    state: null,
+    nextStep: 'refresh',
+  },
+  PSB_NOT_FOUND: {
+    psbCode: PSB_ERROR_CODES.notFound,
+    // 403「不是归属人」按找不到呈现（PSB-RW-08：不泄漏会话存在性）。
+    alsoPsbCodes: [PSB_ERROR_CODES.forbidden],
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.admin.staleMissingTitle',
+    state: null,
+    nextStep: 'refresh',
+  },
+  PSB_UNREACHABLE: {
+    // 本地产生的网络类失败（连不上 / 超时 / 取 token 的签发通道失败）。
+    psbCode: 'PSB_UNREACHABLE',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.unreachable',
+    state: null,
+    nextStep: 'retry',
+  },
+  // ── 串流能力 / 本端串流状态 ──
+  PSB_STREAM_UNAVAILABLE: {
+    // 本地产生的两种「这台电脑不能用串流」：能力缺失 / 会话未就绪（不可恢复或需升级客户端）。
+    psbCode: 'PSB_STREAM_UNSUPPORTED',
+    alsoPsbCodes: ['PSB_STREAM_NOT_READY'],
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.session.streamUnsupported',
+    state: null,
+    nextStep: 'upgrade-client',
+  },
+  PSB_STREAM_NOT_ACTIVE: {
+    // 本端没有活动的串流连接（还没启动 / 已停止 / 已断开）：先启动观看即可恢复。
+    psbCode: 'PSB_STREAM_NOT_ACTIVE',
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.session.streamIdle',
+    state: null,
+    nextStep: 'start-stream',
+  },
+} as const satisfies Record<string, PsbFailureDescriptor>;
+
+/** 单表覆盖的 IPC 码（`PSB_*`）。 */
+export type PsbDescribedIpcCode = keyof typeof PSB_FAILURE_DESCRIPTORS;
+
+/* 运行期投影：Map 而不是对象查表（属性名来自远端字符串时，原型链会让 `constructor` 之类
+ * 命中 `Object.prototype`，返回一个函数当作文案键）。 */
+interface PsbFailureEntry {
+  readonly ipcCode: PsbDescribedIpcCode;
+  readonly descriptor: PsbFailureDescriptor;
+}
+
+const PSB_FAILURE_ENTRY_BY_IPC_CODE: ReadonlyMap<string, PsbFailureEntry> = new Map(
+  Object.entries(PSB_FAILURE_DESCRIPTORS).map(([ipcCode, descriptor]) => [
+    ipcCode,
+    { ipcCode: ipcCode as PsbDescribedIpcCode, descriptor: descriptor as PsbFailureDescriptor },
+  ]),
+);
+
+/**
+ * PSB 原始码（含别名）→ 默认条目。
+ *
+ * 「默认」的取法：跳过 `whenMessageKey` 鉴别条目；串流访问家族只收 `state:'none'` 那一档
+ * （`starting` / `stopping` 的正确文案由 `psbNoRunningSessionMessageKey` 按状态取，
+ * 不能落成「去网页启动」）。同码多条时先出现者胜，所以表内顺序即默认优先级。
+ */
+const PSB_FAILURE_ENTRY_BY_PSB_CODE: ReadonlyMap<string, PsbFailureEntry> = (() => {
+  const entries = new Map<string, PsbFailureEntry>();
+  for (const [ipcCode, descriptor] of Object.entries(PSB_FAILURE_DESCRIPTORS) as Array<
+    [PsbDescribedIpcCode, PsbFailureDescriptor]
+  >) {
+    if (descriptor.whenMessageKey !== undefined) continue;
+    if (descriptor.state !== null && descriptor.state !== 'none') continue;
+    const entry: PsbFailureEntry = { ipcCode, descriptor };
+    for (const psbCode of [descriptor.psbCode, ...(descriptor.alsoPsbCodes ?? [])]) {
+      if (!entries.has(psbCode)) entries.set(psbCode, entry);
+    }
+  }
+  return entries;
+})();
+
+/** `PSB 码 + messageKey` 鉴别条目（`AUTH_REQUIRED` 的组织变体）。 */
+const PSB_FAILURE_ENTRY_BY_PSB_CODE_AND_MESSAGE_KEY: ReadonlyMap<
+  string,
+  ReadonlyMap<string, PsbFailureEntry>
+> = (() => {
+  const byPsbCode = new Map<string, Map<string, PsbFailureEntry>>();
+  for (const [ipcCode, descriptor] of Object.entries(PSB_FAILURE_DESCRIPTORS) as Array<
+    [PsbDescribedIpcCode, PsbFailureDescriptor]
+  >) {
+    if (descriptor.whenMessageKey === undefined) continue;
+    const entry: PsbFailureEntry = { ipcCode, descriptor };
+    for (const psbCode of [descriptor.psbCode, ...(descriptor.alsoPsbCodes ?? [])]) {
+      const byMessageKey = byPsbCode.get(psbCode) ?? new Map<string, PsbFailureEntry>();
+      byMessageKey.set(descriptor.whenMessageKey, entry);
+      byPsbCode.set(psbCode, byMessageKey);
+    }
+  }
+  return byPsbCode;
+})();
+
+/** psbCode → 条目，只取带 VCS 通知码的那些项（`psb-workspace-vcs` 的通知码表从这里派生）。 */
+const PSB_VCS_FAILURE_ENTRY_BY_PSB_CODE: ReadonlyMap<string, PsbFailureEntry> = new Map(
+  Object.entries(PSB_FAILURE_DESCRIPTORS).flatMap(([ipcCode, descriptor]) =>
+    descriptor.noticeCode === null
+      ? []
+      : [[descriptor.psbCode, {
+          ipcCode: ipcCode as PsbDescribedIpcCode,
+          descriptor: descriptor as PsbFailureDescriptor,
+        }] as const],
+  ),
+);
+
+const PSB_STREAM_ACCESS_IPC_CODE_BY_STATE: ReadonlyMap<
+  PsbStreamAccessFailureState,
+  PsbDescribedIpcCode
+> = new Map(
+  Object.entries(PSB_FAILURE_DESCRIPTORS).flatMap(([ipcCode, descriptor]) =>
+    descriptor.state === null
+      ? []
+      : [[descriptor.state, ipcCode as PsbDescribedIpcCode] as const],
+  ),
+);
+
+/**
+ * 「没有 running 桌面访问」三档 → IPC 失败码（main 跨 IPC 的唯一携带方式）。
+ *
+ * 为什么不把 `state` 塞进 message：跨 IPC 只剩 `[CODE] message`，把状态编码进 message 会让
+ * 诊断原文变成机器串；本仓既有口径是「语义由码名承载」（见 §8）。三档对应三种下一步：
+ * 去 PSB 网页启动访问 / 等启动 / 等结束。
+ */
+export const PSB_NO_RUNNING_SESSION_IPC_CODES: Readonly<
+  Record<PsbStreamAccessFailureState, PsbDescribedIpcCode>
+> = {
+  none: psbStreamAccessIpcCode('none'),
+  starting: psbStreamAccessIpcCode('starting'),
+  stopping: psbStreamAccessIpcCode('stopping'),
+};
+
+function psbStreamAccessIpcCode(state: PsbStreamAccessFailureState): PsbDescribedIpcCode {
+  const ipcCode = PSB_STREAM_ACCESS_IPC_CODE_BY_STATE.get(state);
+  // 单表漏一档是编码错误（不是远端输入）：fail fast，别让 IPC 层拿到 undefined。
+  if (!ipcCode) throw new Error(`PSB stream access state has no descriptor: ${state}`);
+  return ipcCode;
+}
+
+/** PSB 原始 VCS 码 → IPC 码（`psbIpcCodeForFailure` 的 VCS 分支，由单表派生）。 */
+export function vcsIpcCodeForPsbCode(psbCode: string): PsbDescribedIpcCode | null {
+  return PSB_VCS_FAILURE_ENTRY_BY_PSB_CODE.get(psbCode)?.ipcCode ?? null;
+}
+
+/** `PSB_*` 描述符（未知码返回 `null`，调用方回落通用失败文案）。 */
+export function psbFailureDescriptorForIpcCode(code: string): PsbFailureDescriptor | null {
+  return PSB_FAILURE_ENTRY_BY_IPC_CODE.get(code)?.descriptor ?? null;
+}
+
+/**
+ * PSB 原始码 → 描述符（含别名；串流访问家族返回 `none` 默认档）。
+ *
+ * main `psbClient` 的「PSB 码 → 文案键」必须走 {@link psbFailureMessageKeyForPsbCode}，
+ * 别再在客户端里手写 switch。
+ */
+export function psbFailureDescriptorForPsbCode(psbCode: string): PsbFailureDescriptor | null {
+  return PSB_FAILURE_ENTRY_BY_PSB_CODE.get(psbCode)?.descriptor ?? null;
+}
+
+/** PSB 原始码 → 本地化文案键；不认识返回 `null`（调用方回落 `PSB_FAILURE_UNKNOWN_MESSAGE_KEY`）。 */
+export function psbFailureMessageKeyForPsbCode(psbCode: string): string | null {
+  return psbFailureDescriptorForPsbCode(psbCode)?.messageKey ?? null;
+}
+
+/**
+ * 「没有 running 桌面访问」一档 → 文案键（main 写进 `PsbRemoteFailure.messageKey`，渲染层按
+ * 同一张表拿到同一个键——不会出现「main 说 A、界面显示 B」）。
+ */
+export function psbNoRunningSessionMessageKey(
+  state: PsbWorkspaceAccessState | null | undefined,
+): string {
+  // 单表保证三档都存在（`psbStreamAccessIpcCode` 缺档会 fail fast），所以直接取键。
+  return PSB_FAILURE_DESCRIPTORS[psbNoRunningSessionIpcCode(state)].messageKey;
 }
 
 /* ============================== 5. PSB 响应解析（纯函数，主/渲染共用） ============================== */
@@ -590,16 +1052,54 @@ function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * PSB 字符串字段的长度上限（**远端输入边界**）。
+ *
+ * PSB 的字符串会直通 IPC、日志、本机快照与界面；远端（或中间一层错误响应）给一个几 MB 的
+ * `title` / `statusMessage` 没有任何上限时，代价由本机承担。口径与 `stream.cursor` 的
+ * `name` 一致（那里已有 {@link PSB_STREAM_CURSOR_MAX_NAME_LENGTH}）：
+ *
+ * - **展示字段**超限 → 截断（只影响显示的信息量，不影响任何判据）；
+ * - **标识字段**超限 → 整行按畸形丢弃（`null`）——截断会让两个不同对象撞成同一个身份，
+ *   比丢掉一条畸形行危险得多。
+ */
+export const PSB_TEXT_LIMITS = {
+  /** 标识 / 短码（id、key、personId、目录名、订阅者 id）：超限即畸形。 */
+  identity: 128,
+  /** 名称 / 标题（工作区 title、客户端名、模板标题、占用人名）。 */
+  name: 256,
+  /** 可读原因 / 状态消息（PSB 中文原话，需要容纳整句）。 */
+  message: 2048,
+  /** URL / 文件路径（仅展示，不当本机路径用）。 */
+  url: 4096,
+  /** 版本号 / 编码器名 / 时间戳文本。 */
+  code: 64,
+} as const;
+
+/** 展示字段：超限截断（不丢行）。 */
+export function readBoundedString(value: unknown, max: number): string | null {
+  const text = readString(value);
+  if (text === null) return null;
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+/** 标识字段：空 / 超限都返回 `null`（调用方据此丢行），**绝不截断**。 */
+function readIdentityString(value: unknown): string | null {
+  const text = readString(value);
+  if (text === null || text.length === 0 || text.length > PSB_TEXT_LIMITS.identity) return null;
+  return text;
+}
+
 function readOccupancy(value: unknown): PsbWorkspaceOccupancy {
   if (!isRecord(value)) {
     return { occupied: false, byMe: false, personId: null, personName: '', occupiedAt: null };
   }
-  const personId = readString(value['personId']);
+  const personId = readIdentityString(value['personId']);
   return {
     occupied: readBoolean(value['occupied']) || personId !== null,
     byMe: readBoolean(value['byMe']),
     personId,
-    personName: readString(value['personName']) ?? '',
+    personName: readBoundedString(value['personName'], PSB_TEXT_LIMITS.name) ?? '',
     occupiedAt: readNumber(value['occupiedAt']),
   };
 }
@@ -609,40 +1109,43 @@ function readOccupancy(value: unknown): PsbWorkspaceOccupancy {
  *
  * 为什么手写而不用 zod：renderer 与 main 都要用，而 renderer 目前不引 zod；这里只需要**防崩**
  * （未知/缺字段收敛成安全默认），不做严格校验——严格校验在 PSB 侧。
- * 返回 `null` 表示这一行连 `id` 都没有，调用方应丢弃它而不是显示一条空行。
+ * 返回 `null` 表示这一行连 `id` 都没有（或 id 超长），调用方应丢弃它而不是显示一条空行。
+ *
+ * 枚举未知值（`state` / `unusableReason`）解析成 `null` = 未知，**不回落某个已知状态**：
+ * 未知状态是不可写、不可当作「失败」展示的（见 `PsbRemoteWorkspace.state` 注释）。
  */
 export function parsePsbRemoteWorkspace(value: unknown): PsbRemoteWorkspace | null {
   if (!isRecord(value)) return null;
-  const id = readString(value['id']);
+  const id = readIdentityString(value['id']);
   if (!id) return null;
-  const state = isPsbWorkspaceState(value['state']) ? value['state'] : 'failed';
+  const state = isPsbWorkspaceState(value['state']) ? value['state'] : null;
   const unusableReason = isPsbWorkspaceUnusableReason(value['unusableReason'])
     ? value['unusableReason']
     : null;
   return {
     id,
-    title: readString(value['title']) ?? '',
-    clientId: readString(value['clientId']) ?? '',
-    clientName: readString(value['clientName']) ?? '',
+    title: readBoundedString(value['title'], PSB_TEXT_LIMITS.name) ?? '',
+    clientId: readIdentityString(value['clientId']) ?? '',
+    clientName: readBoundedString(value['clientName'], PSB_TEXT_LIMITS.name) ?? '',
     clientOnline: readBoolean(value['clientOnline']),
-    clientPlatform: readString(value['clientPlatform']),
+    clientPlatform: readBoundedString(value['clientPlatform'], PSB_TEXT_LIMITS.code),
     state,
-    templateKey: readString(value['templateKey']),
-    templateTitle: readString(value['templateTitle']),
-    directoryName: readString(value['directoryName']),
-    clientPath: readString(value['clientPath']),
+    templateKey: readIdentityString(value['templateKey']),
+    templateTitle: readBoundedString(value['templateTitle'], PSB_TEXT_LIMITS.name),
+    directoryName: readIdentityString(value['directoryName']),
+    clientPath: readBoundedString(value['clientPath'], PSB_TEXT_LIMITS.url),
     occupancy: readOccupancy(value['occupancy']),
     usable: readBoolean(value['usable']),
     unusableReason,
     sessionCount: readNumber(value['sessionCount']) ?? 0,
-    webUrl: readString(value['webUrl']),
-    sessionsWebUrl: readString(value['sessionsWebUrl']),
+    webUrl: readBoundedString(value['webUrl'], PSB_TEXT_LIMITS.url),
+    sessionsWebUrl: readBoundedString(value['sessionsWebUrl'], PSB_TEXT_LIMITS.url),
   };
 }
 
 export function parsePsbRemoteClient(value: unknown): PsbRemoteClient | null {
   if (!isRecord(value)) return null;
-  const id = readString(value['id']);
+  const id = readIdentityString(value['id']);
   if (!id) return null;
   const capabilities = isRecord(value['capabilities']) ? value['capabilities'] : {};
   const agents = Array.isArray(value['agents'])
@@ -652,16 +1155,16 @@ export function parsePsbRemoteClient(value: unknown): PsbRemoteClient | null {
           {
             kind: entry['kind'],
             available: readBoolean(entry['available']),
-            version: readString(entry['version']),
+            version: readBoundedString(entry['version'], PSB_TEXT_LIMITS.code),
           },
         ];
       })
     : [];
   return {
     id,
-    name: readString(value['name']) ?? '',
+    name: readBoundedString(value['name'], PSB_TEXT_LIMITS.name) ?? '',
     online: readBoolean(value['online']),
-    platform: readString(value['platform']),
+    platform: readBoundedString(value['platform'], PSB_TEXT_LIMITS.code),
     capabilities: {
       workspace: readBoolean(capabilities['workspace']),
       agent: readBoolean(capabilities['agent']),
@@ -675,76 +1178,85 @@ export function parsePsbRemoteClient(value: unknown): PsbRemoteClient | null {
 
 export function parsePsbProjectTemplate(value: unknown): PsbProjectTemplate | null {
   if (!isRecord(value)) return null;
-  const key = readString(value['key']);
+  const key = readIdentityString(value['key']);
   if (!key) return null;
   return {
     key,
-    title: readString(value['title']) ?? key,
-    description: readString(value['description']),
+    title: readBoundedString(value['title'], PSB_TEXT_LIMITS.name) ?? key,
+    description: readBoundedString(value['description'], PSB_TEXT_LIMITS.message),
     checkoutCount: readNumber(value['checkoutCount']) ?? 0,
   };
 }
 
+/**
+ * 解析一条会话行。
+ *
+ * **未知枚举不落可写默认**（任务级安全边界）：
+ * - `agentKind` 决定数据面隧道 mode：未知 → `null`，不回落 `'claude-code'`（那会用错隧道去连）；
+ * - `status` 是「是否终态」的唯一依据，终态会触发发送前透明重建（**远端写**）：
+ *   未知 → `null`，不回落 `'failed'`（那会把一条正常会话当成要重建）。
+ */
 export function parsePsbRemoteSession(value: unknown): PsbRemoteSession | null {
   if (!isRecord(value)) return null;
-  const id = readString(value['id']);
-  const workspaceId = readString(value['workspaceId']);
+  const id = readIdentityString(value['id']);
+  const workspaceId = readIdentityString(value['workspaceId']);
   if (!id || !workspaceId) return null;
-  const agentKind = isPsbAgentKind(value['agentKind']) ? value['agentKind'] : 'claude-code';
-  const status = isPsbSessionStatus(value['status']) ? value['status'] : 'failed';
+  const agentKind = isPsbAgentKind(value['agentKind']) ? value['agentKind'] : null;
+  const status = isPsbSessionStatus(value['status']) ? value['status'] : null;
   const createdBy = isRecord(value['createdBy']) ? value['createdBy'] : {};
   const source = createdBy['source'] === 'web' ? 'web' : 'cindy';
   return {
     id,
     workspaceId,
-    clientId: readString(value['clientId']) ?? '',
-    title: readString(value['title']),
+    clientId: readIdentityString(value['clientId']) ?? '',
+    title: readBoundedString(value['title'], PSB_TEXT_LIMITS.name),
     agentKind,
     status,
-    statusMessage: readString(value['statusMessage']),
-    createdAt: readString(value['createdAt']) ?? '',
-    updatedAt: readString(value['updatedAt']) ?? '',
+    statusMessage: readBoundedString(value['statusMessage'], PSB_TEXT_LIMITS.message),
+    createdAt: readBoundedString(value['createdAt'], PSB_TEXT_LIMITS.code) ?? '',
+    updatedAt: readBoundedString(value['updatedAt'], PSB_TEXT_LIMITS.code) ?? '',
     createdBy: {
-      personId: readString(createdBy['personId']),
-      personName: readString(createdBy['personName']) ?? '',
+      personId: readIdentityString(createdBy['personId']),
+      personName: readBoundedString(createdBy['personName'], PSB_TEXT_LIMITS.name) ?? '',
       source,
     },
-    webUrl: readString(value['webUrl']),
+    webUrl: readBoundedString(value['webUrl'], PSB_TEXT_LIMITS.url),
   };
 }
 
+/**
+ * 解析 PSB 串流状态（字段名就是 PSB wire 名：`capability` / `encoder` / `lastErrorZh`）。
+ *
+ * 早期契约草稿的 `capable` / `codec` / `lastError` **不再读取**：它们从未出现在任何已发布
+ * PSB 版本（理由与下线记录见 `PsbSessionStreamStatus` 的类型注释）。未知/缺字段按 `null`
+ * 或 `false` 收敛——`capability` 缺失时是 `false`（不可启动，安全侧）。
+ */
 export function parsePsbSessionStreamStatus(value: unknown): PsbSessionStreamStatus {
   if (!isRecord(value)) {
     return {
-      capable: false,
+      capability: false,
       active: false,
       width: null,
       height: null,
       fps: null,
-      codec: null,
-      lastError: null,
+      encoder: null,
+      lastErrorZh: null,
       desktopSession: null,
       reasonCode: null,
     };
   }
-  // PSB 的 `CindyRemoteStreamStatus` 用 `capability` / `encoder` / `lastErrorZh`
-  // （见 PSB 仓 `packages/shared/src/cindy-remote.ts`）；早期契约草稿写的是
-  // `capable` / `codec` / `lastError`。两种拼写都认，优先 PSB 现行字段。
-  const capable = value['capability'] ?? value['capable'];
-  const codec = value['encoder'] ?? value['codec'];
-  const lastError = value['lastErrorZh'] ?? value['lastError'];
   // `desktopSession` / `reasonCode` 是 2026-11-26 的**加性字段**：旧服务端不带它们，
   // 解析成 `null`（= 未知）而不是猜一个值；PSB 只下发上面枚举里的词，其它值一律当未知。
   const desktopSession = value['desktopSession'];
   const reasonCode = value['reasonCode'];
   return {
-    capable: readBoolean(capable),
+    capability: readBoolean(value['capability']),
     active: readBoolean(value['active']),
     width: readNumber(value['width']),
     height: readNumber(value['height']),
     fps: readNumber(value['fps']),
-    codec: readString(codec),
-    lastError: readString(lastError),
+    encoder: readBoundedString(value['encoder'], PSB_TEXT_LIMITS.code),
+    lastErrorZh: readBoundedString(value['lastErrorZh'], PSB_TEXT_LIMITS.message),
     desktopSession: isPsbDesktopSessionState(desktopSession) ? desktopSession : null,
     reasonCode: isPsbStreamReasonCode(reasonCode) ? reasonCode : null,
   };
@@ -761,14 +1273,69 @@ export function parsePsbWorkspaceStreamSubscription(
   value: unknown,
 ): PsbWorkspaceStreamSubscription | null {
   if (!isRecord(value)) return null;
-  const sessionId = readString(value['sessionId']);
+  const sessionId = readIdentityString(value['sessionId']);
   if (!sessionId) return null;
   return {
     sessionId,
-    streamPath: readString(value['streamPath']),
-    subscriberId: readString(value['subscriberId']),
-    expiresAt: readString(value['expiresAt']),
+    streamPath: readBoundedString(value['streamPath'], PSB_TEXT_LIMITS.url),
+    subscriberId: readIdentityString(value['subscriberId']),
+    expiresAt: readBoundedString(value['expiresAt'], PSB_TEXT_LIMITS.code),
   };
+}
+
+/* ===================== 5c. 失败外壳解析（main 的 HTTP / WS 共用一份） ===================== */
+
+/**
+ * PSB 失败外壳的字段（失败响应的三种真实形态之一）。
+ *
+ * PSB 在 Cindy 命名空间统一用 `{ error: { code, message, details? } }`；0.1.180 的
+ * `access` 路由（网页命名空间）见过**平铺** `{ code, message, details? }`。两种都读，
+ * **只读这两种**，不递归猜别的形状。HTTP 客户端（`psbClient`）与 WS 观看端升级失败
+ * （`streamViewer`）必须用同一份解析：两边各写一遍的结果是「同一个失败，HTTP 侧能按码
+ * 归因、WS 侧落成操作失败」。
+ */
+export interface PsbFailureFields {
+  readonly code: string | null;
+  readonly message: string;
+  readonly details: unknown;
+}
+
+/** 从已解析的 JSON（任意值）里取失败字段；`error` 优先、平铺兜底。 */
+export function readPsbFailureFields(envelope: unknown): PsbFailureFields {
+  if (isRecord(envelope)) {
+    const nested = envelope['error'];
+    if (isRecord(nested)) {
+      return {
+        code: readBoundedString(nested['code'], PSB_TEXT_LIMITS.code),
+        message:
+          readBoundedString(nested['message'], PSB_TEXT_LIMITS.message) ?? '',
+        details: nested['details'],
+      };
+    }
+    return {
+      code: readBoundedString(envelope['code'], PSB_TEXT_LIMITS.code),
+      message: readBoundedString(envelope['message'], PSB_TEXT_LIMITS.message) ?? '',
+      details: envelope['details'],
+    };
+  }
+  return { code: null, message: '', details: undefined };
+}
+
+/**
+ * 从原始响应文本（升级失败体的 string）解析失败字段；`null` = 不是 JSON 对象。
+ *
+ * 调用方拿 `null` 时按 HTTP 状态 / 关闭码归因，绝不从中文里反推机器码。
+ */
+export function readPsbFailureFieldsFromText(text: string): PsbFailureFields | null {
+  if (text.trim().length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  return readPsbFailureFields(parsed);
 }
 
 /* ============================== 5b. 串流宿主光标形状（stream.cursor，2026-11-26） ============================== */
@@ -802,7 +1369,7 @@ export function parsePsbWorkspaceStreamSubscription(
  * 别名 / 容错 / 未知回退用例已移植到
  * `shared/__tests__/psbRemoteWorkspaceStreamCursor.test.ts`（同一形状断言同一 CSS 值）。
  *
- * **后续替换点**：PSB 已表示可发布共享包或给出版本化快照（`联动需求.md` CINDY-RW-09 第 4 点；
+ * **后续替换点**：PSB 已表示可发布共享包或给出版本化快照（CINDY-RW-09 第 4 点；
  * 跟进项记在 `docs/collaboration/psb-remote-workspace-contract.md` §2）。拿到版本化快照后，把这两
  * 张表与归一化逻辑改为「对照 pinned 快照的差异测试」；若将来允许跨仓依赖，改为 import PSB
  * 共享包、这里只保留 Cindy 特有的 DTO / IPC。**在那之前不要在本文件自行增删别名或改映射顺序**：
@@ -1072,6 +1639,17 @@ export const PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME: Readonly<Record<string, stri
 export const DEFAULT_PSB_STREAM_CURSOR_KEYWORD = 'default';
 
 /**
+ * 别名表的 Map 视图（查表用）。
+ *
+ * **不能**直接 `PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME[name]`：`name` 来自远端文本帧，
+ * `constructor` / `__proto__` / `toString` 这类名字会命中 `Object.prototype`，把一个函数当作
+ * CSS 关键字返回（`?? default` 兜不住 truthy 的函数）。Map 只认自有键。
+ */
+const PSB_CURSOR_KEYWORD_BY_X11_NAME_MAP: ReadonlyMap<string, string> = new Map(
+  Object.entries(PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME),
+);
+
+/**
  * 形状 → 宿主光标名（XFixes 的 `name`，如 `xterm`）；缺省 / 空白时 `null`。
  *
  * 只归一字符串原值，不做映射 ——「这个形状叫什么」（排障属性用）与「它该显示成什么」（见
@@ -1111,7 +1689,7 @@ export function psbStreamCursorKeyword(shape: PsbStreamCursorShape): string | nu
   // X11 名用下划线、人写的别名常用连字符/空格：查表前统一成下划线。
   const aliased = normalized.replaceAll('-', '_').replaceAll(' ', '_');
   if (PSB_STREAM_CURSOR_CSS_KEYWORDS.has(aliased)) return aliased;
-  return PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME[aliased] ?? DEFAULT_PSB_STREAM_CURSOR_KEYWORD;
+  return PSB_CURSOR_KEYWORD_BY_X11_NAME_MAP.get(aliased) ?? DEFAULT_PSB_STREAM_CURSOR_KEYWORD;
 }
 
 /**
@@ -1160,7 +1738,8 @@ export function parsePsbStreamCloseReason(
     desktopSession: isPsbDesktopSessionState(parsed['desktopSession'])
       ? parsed['desktopSession']
       : null,
-    messageZh: tail.length > 0 ? tail : null,
+    // 关闭原因是界面可见的诊断文本，与其它 PSB 可读原因同一上限（防畸形载荷撑爆日志/IPC）。
+    messageZh: tail.length > 0 ? tail.slice(0, PSB_TEXT_LIMITS.message) : null,
   };
 }
 
@@ -1197,77 +1776,219 @@ export function psbWorkspaceLockState(
   return occupancy.byMe ? 'mine' : 'other';
 }
 
-export function psbWorkspaceHealth(workspace: {
-  readonly state: PsbWorkspaceState;
-  readonly clientOnline: boolean;
-  readonly occupancy: PsbWorkspaceOccupancy;
-  readonly usable: boolean;
-  readonly unusableReason: PsbWorkspaceUnusableReason | null;
-}): PsbWorkspaceHealth {
+/**
+ * 工作区徽标口径（用户明确要求：状态标签 + 锁）。
+ *
+ * **单一可写判据**：`canStartSession` 与「为什么不能开」都来自 {@link psbWorkspaceWritable}
+ * （PSB 的 `usable` / `unusableReason` 权威 + 本地字段兜底），本函数只负责把原因翻成
+ * tone / badgeKey，不再自己拼 `state === 'ready' && ...`（那是本批收敛掉的三份重算之一）。
+ *
+ * - `tone: 'ok'`   可以开会话；
+ * - `tone: 'warn'` 被**别人**占用；
+ * - `tone: 'bad'`  机器离线 / 工作区失败；
+ * - `tone: 'idle'` 未就绪 / 客户端缺运行时等中间态。
+ */
+export function psbWorkspaceHealth(workspace: PsbWorkspaceWritabilityInput): PsbWorkspaceHealth {
   const lock = psbWorkspaceLockState(workspace.occupancy);
-  const canStartSession =
-    workspace.usable &&
-    workspace.clientOnline &&
-    workspace.state === 'ready' &&
-    lock !== 'other';
+  const writable = psbWorkspaceWritable(workspace, { requireAgentRuntime: true });
+  switch (writable.reason) {
+    case 'agent-unsupported':
+      return {
+        tone: 'idle',
+        lock,
+        canStartSession: false,
+        badgeKey: 'remoteWorkspace.badge.agentUnsupported',
+      };
+    case 'occupied-by-other':
+      return { tone: 'warn', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.occupied' };
+    case 'client-offline':
+      return { tone: 'bad', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.offline' };
+    case 'workspace-not-ready':
+      // PSB 权威只说「不可写」；具体是失败还是中间态仍看本地状态词（缺字段时按中间态）。
+      return workspace.state === 'failed'
+        ? { tone: 'bad', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.failed' }
+        : { tone: 'idle', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.pending' };
+    case null:
+      return { tone: 'ok', lock, canStartSession: writable.ok, badgeKey: 'remoteWorkspace.badge.online' };
+  }
+}
 
-  if (!workspace.clientOnline) {
-    return { tone: 'bad', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.offline' };
+/**
+ * 工作区「现在能不能写」的**唯一判据**（main 的三条写入口与渲染层的可点判据共用）。
+ *
+ * ## 为什么必须只有一份
+ *
+ * 「能不能开新会话 / 启动串流 / 发消息」在 main 有三处会判断（占用闸门 `workspaceLock`、
+ * 发送前重建 `sessionRebind`、渲染层禁用态 `psbWorkspaceHealth`）。历史上这三处各写一遍
+ * `clientOnline` / `state === 'ready'` / `occupancy` 的组合，**都漏读了 PSB 权威字段
+ * `usable`**（PSB 已经把「占用 + 状态 + 在线 + 客户端能力」算好，见
+ * `PSB_WORKSPACE_UNUSABLE_REASONS`）：结果是 PSB 说「不能开新会话」时 Cindy 仍然放行，
+ * 用户只能等 PSB 拒绝后看到一句不可行动的失败。判据收在这一处，调用方只消费结果。
+ *
+ * ## 为什么区分 `requireAgentRuntime`
+ *
+ * `unusableReason='agent-unsupported'` 只否定**新建 Agent 会话**；占位 / 启动串流是
+ * 工作区级写操作，与那台机器装没装某个 Harness 无关。把两者混成一个「不可写」会让
+ * 串流按钮被无关原因锁死。因此默认按「要开 Agent 会话」的严格口径，工作区级写入口
+ * 显式传 `false`。
+ *
+ * 返回值里的 `ipcCode` / `messageKey` 来自 §4b 的失败单表（可写原因只是它的一列）：main 抛
+ * `PsbClientError` 前用它，跨进程后渲染层按同一张表的 IPC 码投影又能查到同一个键——
+ * 不会出现「main 说 A、界面显示 B」。
+ */
+export type PsbWorkspaceWritabilityReason =
+  | 'occupied-by-other'
+  | 'client-offline'
+  | 'workspace-not-ready'
+  | 'agent-unsupported';
+
+export interface PsbWorkspaceWritability {
+  readonly ok: boolean;
+  /** `ok:true` 时恒为 `null`。 */
+  readonly reason: PsbWorkspaceWritabilityReason | null;
+  /** 跨 IPC 的失败码（`ok:true` 时 `null`）。 */
+  readonly ipcCode: PsbIpcFailureCode | null;
+  /** i18n 文案键（`ok:true` 时 `null`）。 */
+  readonly messageKey: string | null;
+  /** 被他人占用时的占用人名（其余情况 `''`）。 */
+  readonly personName: string;
+  /** 工作区状态（未就绪文案的参数来源；未知时 `null`）。 */
+  readonly state: PsbWorkspaceState | null;
+  /**
+   * 同一原因的「会话输入禁用」文案键（`remoteWorkspace.error.*`；工作区未就绪用
+   * `remoteWorkspace.input.workspaceNotReady`）。
+   *
+   * 输入框置灰的文案与按钮失败文案是**同一个事实的两个入口**（offline / occupied 的措辞不同），
+   * 所以两套键登记在同一张表里，`psbSessionInputAllowed` 不再自己拼第二套判据。
+   * `ok:true` 时为 `null`。
+   */
+  readonly inputMessageKey: string | null;
+}
+
+/** 工作区可写判据需要的字段（`PsbRemoteWorkspace` 的子集，快照/会话行自带的部分也能传）。 */
+export type PsbWorkspaceWritabilityInput = Pick<
+  PsbRemoteWorkspace,
+  'state' | 'clientOnline' | 'occupancy' | 'usable' | 'unusableReason'
+>;
+
+/**
+ * 可写判据的四条原因 → IPC 码 / 文案键（**单表投影**，见 §4b 的 `PSB_FAILURE_DESCRIPTORS`）。
+ *
+ * 同一原因有两个消费面（操作失败 + 输入框置灰），两套键都登记在单表里：新增 / 改名一处生效，
+ * 不会出现「按钮说 A、输入框说 B」。
+ */
+const PSB_WORKSPACE_WRITABLE_FAILURES: Record<
+  PsbWorkspaceWritabilityReason,
+  { readonly ipcCode: PsbIpcFailureCode; readonly messageKey: string; readonly inputMessageKey: string }
+> = (() => {
+  const failures = Object.fromEntries(
+    Object.entries(PSB_FAILURE_DESCRIPTORS).flatMap(([ipcCode, rawDescriptor]) => {
+      const descriptor = rawDescriptor as PsbFailureDescriptor;
+      return descriptor.writableReason === undefined
+        ? []
+        : [[descriptor.writableReason, {
+            ipcCode: ipcCode as PsbIpcFailureCode,
+            messageKey: descriptor.messageKey,
+            inputMessageKey: descriptor.inputMessageKey ?? descriptor.messageKey,
+          }] as const];
+    }),
+  ) as Record<
+    PsbWorkspaceWritabilityReason,
+    { readonly ipcCode: PsbIpcFailureCode; readonly messageKey: string; readonly inputMessageKey: string }
+  >;
+  // 单表漏一条可写原因是编码错误（不是远端输入）：fail fast，别让界面拿到 undefined。
+  for (const reason of [
+    'occupied-by-other',
+    'client-offline',
+    'workspace-not-ready',
+    'agent-unsupported',
+  ] as const) {
+    if (!failures[reason]) throw new Error(`PSB writable failure has no descriptor: ${reason}`);
   }
-  if (workspace.state === 'failed') {
-    return { tone: 'bad', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.failed' };
+  return failures;
+})();
+
+/** 组装一个「不可写」结果。 */
+function psbUnwritable(
+  reason: PsbWorkspaceWritabilityReason,
+  input: PsbWorkspaceWritabilityInput,
+): PsbWorkspaceWritability {
+  const failure = PSB_WORKSPACE_WRITABLE_FAILURES[reason];
+  return {
+    ok: false,
+    reason,
+    ipcCode: failure.ipcCode,
+    messageKey: failure.messageKey,
+    personName: reason === 'occupied-by-other' ? input.occupancy.personName.trim() : '',
+    state: input.state,
+    inputMessageKey: failure.inputMessageKey,
+  };
+}
+
+/**
+ * 工作区此刻能不能写（见类型注释的「为什么必须只有一份」）。
+ *
+ * 判据顺序刻意固定：**先信 PSB 的 `usable` / `unusableReason`**（那是服务端算好的完整口径），
+ * 再用本地字段兜底（旧服务端 / 快照里 `usable` 与状态不一致时仍给出可行动原因）。
+ */
+export function psbWorkspaceWritable(
+  workspace: PsbWorkspaceWritabilityInput,
+  options: { requireAgentRuntime?: boolean } = {},
+): PsbWorkspaceWritability {
+  const requireAgentRuntime = options.requireAgentRuntime ?? true;
+  const reason = workspace.unusableReason;
+  if (reason === 'agent-unsupported') {
+    if (requireAgentRuntime) return psbUnwritable('agent-unsupported', workspace);
+  } else if (reason === 'occupied-by-other') {
+    return psbUnwritable('occupied-by-other', workspace);
+  } else if (reason === 'client-offline') {
+    return psbUnwritable('client-offline', workspace);
+  } else if (reason === 'workspace-not-ready') {
+    return psbUnwritable('workspace-not-ready', workspace);
+  } else if (!workspace.usable && requireAgentRuntime) {
+    // `usable:false` 但没有（认识的）原因：PSB 说不能开新会话，具体原因 Cindy 不猜。
+    // 工作区级写入口（`requireAgentRuntime:false`）不看这个字段：它描述的是「开新会话」。
+    return psbUnwritable('workspace-not-ready', workspace);
   }
-  if (workspace.state !== 'ready') {
-    return { tone: 'idle', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.pending' };
+
+  if (psbWorkspaceLockState(workspace.occupancy) === 'other') {
+    return psbUnwritable('occupied-by-other', workspace);
   }
-  if (lock === 'other') {
-    return { tone: 'warn', lock, canStartSession: false, badgeKey: 'remoteWorkspace.badge.occupied' };
-  }
-  if (workspace.unusableReason === 'agent-unsupported') {
-    return {
-      tone: 'idle',
-      lock,
-      canStartSession: false,
-      badgeKey: 'remoteWorkspace.badge.agentUnsupported',
-    };
-  }
-  return { tone: 'ok', lock, canStartSession, badgeKey: 'remoteWorkspace.badge.online' };
+  if (!workspace.clientOnline) return psbUnwritable('client-offline', workspace);
+  if (workspace.state !== 'ready') return psbUnwritable('workspace-not-ready', workspace);
+  return {
+    ok: true,
+    reason: null,
+    ipcCode: null,
+    messageKey: null,
+    personName: '',
+    state: workspace.state,
+    inputMessageKey: null,
+  };
 }
 
 /**
  * 会话输入是否允许（`false` 时输入框置灰）。
+ *
+ * **判据是同一个** {@link psbWorkspaceWritable}（`requireAgentRuntime: false`）：发消息不是
+ * 「开新 Agent 会话」，所以 `agent-unsupported` 不阻断既有会话的输入；但「被他人占用 /
+ * 客户端离线 / 工作区未就绪」必须与开新会话同一口径（历史上这里自己拼了一套，与 PSB 权威
+ * 字段 `usable` 漂移）。
  *
  * **终态不阻断输入**：PSB 的会话终态不可逆转，但 Cindy 在用户下一次发送时会透明地
  * 在同一工作区新建一条 PSB 会话、重绑本地任务并发起这一轮（见
  * `docs/dev-rules/psb-remote-session-transport.md` §6）。所以「这个任务已经结束」
  * 不是真实状态——本地任务还在，只是底层 PSB 会话换了。
  *
- * 真正阻断输入的只剩三种：**被他人占用**（用户明确要求置灰）、**客户端离线**、
- * **工作区未就绪**（这两种消息发不出去）。这三种在发送时也无法自动恢复，属于
- * 可行动的外部条件，保持阻断。
- *
  * `session` 参数保留在形状里（调用方与渲染层都按会话对象传），但不再参与判据；
  * 「这条会话下次发送会不会重建」用 `psbSessionNeedsRebind(session.status)` 单独问。
  */
 export function psbSessionInputAllowed(input: {
   readonly session: PsbRemoteSession;
-  readonly workspace: {
-    readonly state: PsbWorkspaceState;
-    readonly clientOnline: boolean;
-    readonly occupancy: PsbWorkspaceOccupancy;
-  };
+  readonly workspace: PsbWorkspaceWritabilityInput;
 }): { readonly allowed: boolean; readonly reason: string | null } {
-  const { workspace } = input;
-  if (psbWorkspaceLockState(workspace.occupancy) === 'other') {
-    return { allowed: false, reason: 'remoteWorkspace.input.occupiedByOther' };
-  }
-  if (!workspace.clientOnline) {
-    return { allowed: false, reason: 'remoteWorkspace.input.clientOffline' };
-  }
-  if (workspace.state !== 'ready') {
-    return { allowed: false, reason: 'remoteWorkspace.input.workspaceNotReady' };
-  }
-  return { allowed: true, reason: null };
+  const writable = psbWorkspaceWritable(input.workspace, { requireAgentRuntime: false });
+  return { allowed: writable.ok, reason: writable.inputMessageKey };
 }
 
 /* ============================== 7. IPC 通道与 DTO ============================== */
@@ -1303,16 +2024,34 @@ export const PSB_REMOTE_CHANNELS = {
   STOP_SESSION: 'psb-remote:stop-session',
   /** 在系统浏览器里打开 PSB 网页工作区页面。 */
   OPEN_WEB_WORKSPACE: 'psb-remote:open-web-workspace',
-  /** 串流状态（启动/停止/详情按钮的数据来源）。 */
-  STREAM_STATUS: 'psb-remote:stream-status',
-  /** 开始串流（建立观看端 WS，后续帧经 `STREAM_EVENT` 推送）。 */
-  STREAM_START: 'psb-remote:stream-start',
-  /** 停止串流。 */
-  STREAM_STOP: 'psb-remote:stream-stop',
-  /** 键鼠输入（renderer → main → PSB 观看端 WS）。 */
-  STREAM_INPUT: 'psb-remote:stream-input',
-  /** main → renderer 的串流事件（帧 / 状态 / 光标 / 错误）。 */
-  STREAM_EVENT: 'psb-remote:stream-event',
+  /**
+   * 会话结束 → 归还它占用的 PSB 工作区（幂等、可重试）。
+   *
+   * 入参与 main 的 `releasePsbWorkspaceForSession` 逐字一致：本地会话 id + 会话行的远端身份
+   * （`psb:<id>`）+ 终态原因。**事实判断在 main**：它读 PSB 会话行、只在「由我占用」且
+   * 「同工作区没有别的活动任务」时释放；失败不阻断调用方，先记进 main 的有界待释放账本
+   * （`PENDING_RELEASES_GET` / `PENDING_RELEASES_RETRY`），渲染层不自己判占用者、也不重复
+   * 排一份重试。
+   *
+   * **触发权威也在 main**（2026-11-27 审查 s5/s8 P1）：终态 observer
+   * （`setTerminalSessionStatusObserver`）在每次归档 / 删除落库后已经发起释放，渲染层**不再**
+   * 为同一个动作重复报告（否则一次归档 = 两轮 PSB `sessionStatus` + `release`）。这条通道只
+   * 保留给「旧 main / 旧 preload 没有终态释放」的兼容补投：渲染层探测到新 main（本方法存在）
+   * 时零调用；只有旧 build 存下的未送达事件在升级后的首次启动由本地账本重投一次。
+   */
+  RELEASE_SESSION_WORKSPACE: 'psb-remote:release-session-workspace',
+  /** 读 main 的待释放账本（释放失败、等下次重试的会话；常驻提示条与诊断的数据源）。 */
+  PENDING_RELEASES_GET: 'psb-remote:pending-releases:get',
+  /** 显式重试待释放账本（一次、不排后台轮询）；返回重试后的完整账本。 */
+  PENDING_RELEASES_RETRY: 'psb-remote:pending-releases:retry',
+  /** main → renderer：待释放账本变了（失败入账 / 重试成功出账 / 退出前重试）。 */
+  PENDING_RELEASES_CHANGED: 'psb-remote:pending-releases-changed',
+  /**
+   * 会话级串流通道（`STREAM_STATUS` / `STREAM_START` / `STREAM_STOP` / `STREAM_INPUT` /
+   * `STREAM_EVENT`）**已删除**（2026-11-26）：渲染层对它们的消费为零，唯一在用的观看端是
+   * 「远程工作区」管理页的**工作区级**通道（`PSB_ADMIN_CHANNELS`，见
+   * `shared/psb-workspace-admin.ts`）。保留两套只会让「是谁启动了串流 / 帧该推给谁」有两个答案。
+   */
   /** main → renderer：某工作区占用/在线状态变更（其他窗口占用了工作区等）。 */
   WORKSPACE_CHANGED: 'psb-remote:workspace-changed',
   /**
@@ -1372,37 +2111,52 @@ export interface PsbRemoteFailure {
    * 桌面访问状态（仅 `PSB_STREAM_NO_RUNNING_SESSION` 带，来自 PSB 409 的 `details.state`）。
    *
    * `null` = PSB 没给 / 给了未知值（按 none 家族处理）。**这个字段不跨 IPC**：跨进程只有
-   * `[CODE] message`，所以 main 把它翻成三条不同的 IPC 码（`PSB_NO_RUNNING_SESSION_IPC_CODES`），
-   * 渲染层按码选文案，不解析本字段。
+   * `[CODE] message`，所以 main 把它翻成三条不同的 IPC 码（`PSB_NO_RUNNING_SESSION_IPC_CODES`
+   * 由 §4b 单表派生），渲染层按码选文案，不解析本字段。
    */
   readonly streamAccessState?: PsbWorkspaceAccessState | null;
 }
 
 /**
- * 「没有 running 桌面访问」按状态分的 IPC 失败码（main → renderer 的唯一携带方式）。
+ * 一条 PSB 串流访问失败的**可行动文案**（单表投影，渲染层横幅专用）。
  *
- * 为什么不把 `state` 塞进 message：跨 IPC 只剩 `[CODE] message`，把状态编码进 message 会让
- * 诊断原文变成机器串；本仓既有口径是「语义由码名承载」（见 §8）。三种码对应三种下一步：
- *
- * - `PSB_STREAM_NO_RUNNING_SESSION`（none / stopped / failed / 未知）：让用户去 PSB 网页的
- *   「远程控制」启动访问，再回来点「启动」——UI 同时提供「在网页启动访问」入口；
- * - `PSB_STREAM_ACCESS_STARTING`：访问正在启动（Unity / 虚拟桌面还没就绪）——等一会儿再试，
- *   UI 会自动重试一次；
- * - `PSB_STREAM_ACCESS_STOPPING`：访问正在结束——等它落定后重试。
+ * 从 §4b 单表派生：`state` 决定「等还是去网页启动」，不再由渲染层自己写三档表。
  */
-export const PSB_NO_RUNNING_SESSION_IPC_CODES = {
-  none: 'PSB_STREAM_NO_RUNNING_SESSION',
-  starting: 'PSB_STREAM_ACCESS_STARTING',
-  stopping: 'PSB_STREAM_ACCESS_STOPPING',
-} as const;
+export interface PsbStreamAccessFailureCopy {
+  readonly state: PsbStreamAccessFailureState;
+  /** 已本地化的正文由调用方 `t(messageKey)` 得到。 */
+  readonly messageKey: string;
+  /** 是否值得给「在 PSB 网页启动访问」入口（`starting` / `stopping` 的正确动作是等）。 */
+  readonly offerOpenWeb: boolean;
+  /** 竞态：访问正在启动，等一会儿重试一次通常就好。 */
+  readonly retryOnce: boolean;
+}
 
-/** 状态 → IPC 失败码；`running` / `null` / 未知值都落到「去网页启动访问」那一档。 */
+/** IPC 码 → 串流访问失败文案；不是这三档码返回 `null`（调用方走通用失败文案）。 */
+export function psbStreamAccessFailureCopyForIpcCode(
+  code: string,
+): PsbStreamAccessFailureCopy | null {
+  const descriptor = psbFailureDescriptorForIpcCode(code);
+  if (!descriptor || descriptor.state === null) return null;
+  return {
+    state: descriptor.state,
+    messageKey: descriptor.messageKey,
+    offerOpenWeb: descriptor.nextStep === 'open-web-access',
+    retryOnce: descriptor.nextStep === 'wait',
+  };
+}
+
+/**
+ * 状态 → IPC 失败码（`PSB_NO_RUNNING_SESSION_IPC_CODES` 的投影，见 §4b 单表）。
+ *
+ * `running` / `null` / 未知值都落到「去网页启动访问」那一档（安全默认：不进自动重试循环）。
+ */
 export function psbNoRunningSessionIpcCode(
   state: PsbWorkspaceAccessState | null | undefined,
-): (typeof PSB_NO_RUNNING_SESSION_IPC_CODES)[keyof typeof PSB_NO_RUNNING_SESSION_IPC_CODES] {
-  if (state === 'starting') return PSB_NO_RUNNING_SESSION_IPC_CODES.starting;
-  if (state === 'stopping') return PSB_NO_RUNNING_SESSION_IPC_CODES.stopping;
-  return PSB_NO_RUNNING_SESSION_IPC_CODES.none;
+): PsbDescribedIpcCode {
+  if (state === 'starting') return psbStreamAccessIpcCode('starting');
+  if (state === 'stopping') return psbStreamAccessIpcCode('stopping');
+  return psbStreamAccessIpcCode('none');
 }
 
 export interface PsbListWorkspacesResult {
@@ -1429,6 +2183,14 @@ export interface PsbCreateWorkspaceResult {
 
 export interface PsbWorkspaceRefRequest {
   readonly workspaceId: string;
+  /**
+   * 发起这次动作的本地任务 id（加性、可空）。
+   *
+   * 只用于 main 的多窗口推送分桶：`CONTEXT_CHANGED` 是广播，main 只有一份「最近一次上下文
+   * 读取用的本地任务」，多窗口各自打开不同任务时渲染层要按它过滤。动作路径带上它，main
+   * 就能把「这次占用/释放属于哪个窗口的任务」写进下一次上下文；不传时按工作区匹配兜底。
+   */
+  readonly localSessionId?: string | null;
 }
 
 export interface PsbOccupyWorkspaceResult {
@@ -1468,17 +2230,19 @@ export interface PsbCreateSessionRequest {
 export interface PsbCreateSessionResult {
   /** PSB 原始会话行（Cindy 用 `id` 拼 `psb:<id>` 作为会话的 `remoteHostId`）。 */
   readonly session: PsbRemoteSession;
-  /** 本次会话所属工作区的快照（草稿页顶部要显示客户端与工作区实例 ID）。 */
+  /**
+   * 会话所属工作区的快照（草稿页顶部要显示客户端与工作区实例 ID）。
+   *
+   * **语义是「创建前读到的、请求里那个 workspaceId 的行」**：main 的 `createSession` 先读
+   * 工作区、再建会话（读失败时**不建**，所以不存在「建了却拿不到工作区」的孤儿会话）。
+   * 派生字段（占用 / 会话数）可能与会话行同一时刻差几十毫秒，渲染层本来就轮询，可接受。
+   */
   readonly workspace: PsbRemoteWorkspace;
 }
 
 export interface PsbSessionStatusResult {
   readonly session: PsbRemoteSession;
   readonly workspace: PsbRemoteWorkspace;
-}
-
-export interface PsbStreamStartResult {
-  readonly status: PsbSessionStreamStatus;
 }
 
 /**
@@ -1553,6 +2317,96 @@ export interface PsbSessionsReboundEvent {
   readonly remoteHostId: string;
 }
 
+/* ================== 7b. 会话结束归还工作区占用（renderer ↔ main） ================== */
+
+/**
+ * 触发释放的终态来源（诊断 / 账本归因用；**不参与**释放判据）。
+ *
+ * 判据只有两条（main 侧、都由 main 掌握）：
+ *   1. PSB 会话行显示工作区「由我占用」才发释放；
+ *   2. **同一工作区还有别的活动任务时不释放**（工作区级协作锁，不是会话级）—— 归档一条
+ *      任务不等于归还它和同事共用的工作区。这一条只有 main 能判断（会话表 + 会话→工作区
+ *      映射），所以它是「main 单权威」的一部分（见 `RELEASE_SESSION_WORKSPACE`）。
+ *
+ * 原因只用于日志、账本展示与「为什么会有一条待释放记录」的归因。
+ */
+export const PSB_SESSION_RELEASE_REASONS = [
+  'session-archived',
+  'session-deleted',
+  'session-stopped',
+  'app-quit',
+] as const;
+
+export type PsbSessionReleaseReason = (typeof PSB_SESSION_RELEASE_REASONS)[number];
+
+/**
+ * 「这条本地任务结束了」→ 让 main 归还它占用的 PSB 工作区。
+ *
+ * `remoteHostId` 来自本地会话行的 `psb:<PSB session id>`；不是 `psb:`（本地 / SSH / MCPRouter）
+ * 时 main 直接 no-op —— 那三类 transport 没有 PSB 协作锁。
+ */
+export interface PsbSessionWorkspaceReleaseRequest {
+  readonly sessionId: string;
+  readonly remoteHostId: string | null;
+  readonly reason: PsbSessionReleaseReason;
+}
+
+/**
+ * main 对一次释放报告的结果。
+ *
+ * `ok:false` **不代表事件丢了**：main 已把失败记进它自己的待释放账本（`reason:'retained'`），
+ * 由账本统一重试；渲染层只需清掉本地「事件未送达」的记录，不再为同一件事排第二份重试。
+ * `reason:'not-wired'` 是「main 端口还没装配」，渲染层应保留记录等下次启动补投。
+ *
+ * `reason:'workspace-in-use'` = **同一工作区还有别的活动任务**，这次释放被跳过、也没有入账
+ * （工作区锁要留到最后一个任务结束）。它是正常的成功结果，不是失败。
+ */
+export interface PsbSessionWorkspaceReleaseResult {
+  readonly ok: boolean;
+  readonly released: boolean;
+  readonly reason: 'not-psb' | 'not-wired' | 'not-held' | 'released' | 'retained' | 'workspace-in-use';
+  readonly failureCode: string | null;
+  readonly message: string | null;
+}
+
+/**
+ * 待重试的一条释放（main 账本）。
+ *
+ * 跨 IPC 只带 id / 原因 / 有界错误诊断：`lastError` 是 PSB 失败原文（不含 token、
+ * Authorization 或身份字段），`attempt` 是连续失败次数。
+ */
+export interface PsbPendingWorkspaceReleaseInfo {
+  readonly key: string;
+  readonly psbSessionId: string;
+  readonly remoteHostId: string;
+  /**
+   * 失败那一次**已经读到**的工作区 id（PSB 会话行 → `workspace.id`）；`null` = 还没读到
+   * （读会话行就失败了）。
+   *
+   * 重试优先按它直接 `releaseWorkspace`：不依赖 PSB 会话行还在（会话 404 时工作区锁仍可由
+   * workspaceId 归还），也不再为一条账本各打一次 `sessionStatus`。只读字段，跨 IPC 不参与
+   * 任何判定以外的用途。
+   */
+  readonly workspaceId: string | null;
+  readonly reason: PsbSessionReleaseReason;
+  readonly attempt: number;
+  readonly lastError: string;
+  readonly failureCode: string | null;
+  readonly updatedAt: number;
+}
+
+/** 待释放账本快照（`PENDING_RELEASES_GET` 与 `PENDING_RELEASES_CHANGED` 同形）。 */
+export interface PsbPendingWorkspaceReleasesResult {
+  readonly releases: readonly PsbPendingWorkspaceReleaseInfo[];
+}
+
+/** 显式重试结果：账本快照 + 这一次尝试的计数（`attempted:0` = 本来就没有待释放项）。 */
+export interface PsbPendingWorkspaceReleasesRetryResult extends PsbPendingWorkspaceReleasesResult {
+  readonly attempted: number;
+  readonly released: number;
+  readonly failed: number;
+}
+
 /* ============================== 8. IPC 失败码与失败形状 ============================== */
 
 /**
@@ -1570,50 +2424,44 @@ export interface PsbSessionsReboundEvent {
  */
 export const PSB_IPC_FAILURE_CODE_PREFIX = 'PSB_';
 
-/** PSB 失败码 → i18n 文案键（渲染层唯一映射；main 用 `psbIpcCodeForFailure` 反向产出）。 */
-export const PSB_IPC_FAILURE_MESSAGE_KEYS = {
-  PSB_AUTH_REQUIRED: 'remoteWorkspace.error.auth',
-  PSB_ORG_REQUIRED: 'remoteWorkspace.error.orgRequired',
-  PSB_AUTH_EXPIRED: 'remoteWorkspace.error.authExpired',
-  PSB_IDENTITY_NOT_LINKED: 'remoteWorkspace.error.identityNotLinked',
-  PSB_WORKSPACE_OCCUPIED_BY_OTHER: 'remoteWorkspace.error.occupiedByOther',
-  PSB_CLIENT_OFFLINE: 'remoteWorkspace.error.clientOffline',
-  /**
-   * 工作区还没就绪（`planned` / `provisioning` / `failed` / `deleting`）：发送前重建
-   * 无法开始，等它就绪后重发即可。文案复用输入禁用的同一条（同一个事实，两种入口）。
-   */
-  PSB_WORKSPACE_NOT_READY: 'remoteWorkspace.input.workspaceNotReady',
-  PSB_NOT_FOUND: 'remoteWorkspace.error.notFound',
-  PSB_UNREACHABLE: 'remoteWorkspace.error.unreachable',
-  /**
-   * CINDY-RW-10：占用 / 解除占用被版本控制检查拒绝。三种码都**不是**「操作失败」：
-   * 用户有明确的下一步（看详情 / 还原后重试 / 重试检查），所以必须各有可行动文案。
-   */
-  PSB_WORKSPACE_VCS_DIRTY: 'remoteWorkspace.vcs.dirty',
-  PSB_WORKSPACE_VCS_UNAVAILABLE: 'remoteWorkspace.vcs.unavailable',
-  PSB_WORKSPACE_VCS_UNSUPPORTED: 'remoteWorkspace.vcs.unsupported',
-  PSB_STREAM_UNAVAILABLE: 'remoteWorkspace.session.streamUnsupported',
-  /**
-   * 本端此刻没有活动的串流连接（还没启动 / 已停止 / 连接已断开），所以输入无处可发。
-   *
-   * 与 `PSB_STREAM_UNAVAILABLE` 分开：那个是「这台机器/客户端不支持串流」（不可恢复），
-   * 这个是「先把观看启动起来」（用户一步就能恢复）。渲染层据此给「串流未启动」而不是
-   * 「本机不能串流」，否则用户会去做无效动作。
-   */
-  PSB_STREAM_NOT_ACTIVE: 'remoteWorkspace.session.streamIdle',
-  /**
-   * 订阅串流时该工作区**没有 running 的桌面访问会话**（PSB 409 `NO_RUNNING_SESSION`）。
-   *
-   * 三条码按 `details.state` 分开：下一步动作不同（去网页启动 / 等启动 / 等结束），
-   * 合并成一条会让用户对着「正在启动」去做「去网页启动」这种无效动作。
-   * 文案正本见产品 §2.4。
-   */
-  PSB_STREAM_NO_RUNNING_SESSION: 'remoteWorkspace.admin.streamAccessNone',
-  PSB_STREAM_ACCESS_STARTING: 'remoteWorkspace.admin.streamAccessStarting',
-  PSB_STREAM_ACCESS_STOPPING: 'remoteWorkspace.admin.streamAccessStopping',
+/**
+ * 不面向用户的**本地诊断码**（不来自 PSB、也没有可行动文案）。
+ *
+ * 只出现在 `PsbRemoteFailure.code` 与日志里；`psbIpcCodeForFailure` 对它们返回 `null`，
+ * IPC 层落 `INTERNAL`。集中一处，避免 main 各文件各写一串（也避免它们被误登记进失败单表）。
+ */
+export const PSB_LOCAL_DIAGNOSTIC_CODES = {
+  /** 协议违约（外壳缺失 / 路径越界 / 响应超限）。 */
+  protocol: 'PSB_PROTOCOL',
+  /** 无法归因的本地失败。 */
+  unknown: 'PSB_UNKNOWN',
+  /** 401 重签一次后仍被判失败（实现错误保护）。 */
+  authLoop: 'PSB_AUTH_LOOP',
 } as const;
 
-export type PsbIpcFailureCode = keyof typeof PSB_IPC_FAILURE_MESSAGE_KEYS;
+/**
+ * 未知 PSB 失败 / 本地诊断失败的回退文案键（渲染层最后一道兜底）。
+ *
+ * §4b 单表覆盖的码不会用到它；main 与渲染层都从这里取，不再各写一份字面量。
+ */
+export const PSB_FAILURE_UNKNOWN_MESSAGE_KEY = 'remoteWorkspace.error.unknown';
+
+/**
+ * PSB 失败码 → i18n 文案键（**§4b 失败单表的投影**，唯一手写处仍在单表）。
+ *
+ * 保留这个名字是因为仓内注释 / 文档一直用它指「渲染层按 IPC 码查文案表」这件事；
+ * 实际映射只有 `PSB_FAILURE_DESCRIPTORS` 一处，不要在这里再补行。
+ */
+export const PSB_IPC_FAILURE_MESSAGE_KEYS: Readonly<Record<PsbDescribedIpcCode, string>> =
+  Object.fromEntries(
+    Object.entries(PSB_FAILURE_DESCRIPTORS).map(([ipcCode, descriptor]) => [
+      ipcCode,
+      descriptor.messageKey,
+    ]),
+  ) as Readonly<Record<PsbDescribedIpcCode, string>>;
+
+/** 失败码全集：由 §4b 单表派生（`ipc-errors.ts` 仍单独登记这些码）。 */
+export type PsbIpcFailureCode = PsbDescribedIpcCode;
 
 /**
  * main 侧唯一出口：失败形状 → 命名空间化 IPC 错误码（IPC 层 `throwIpcError` 用）。
@@ -1622,71 +2470,41 @@ export type PsbIpcFailureCode = keyof typeof PSB_IPC_FAILURE_MESSAGE_KEYS;
  * 只把诊断原文放进 message。
  */
 export function psbIpcCodeForFailure(failure: PsbRemoteFailure): PsbIpcFailureCode | null {
-  switch (failure.code) {
-    case 'AUTH_REQUIRED':
-      // 个人 membership 与未登录都会走到 AUTH_REQUIRED；文案要区分「需要登录」与「需要企业组织」。
-      return failure.messageKey === 'remoteWorkspace.status.needOrg'
-        ? 'PSB_ORG_REQUIRED'
-        : 'PSB_AUTH_REQUIRED';
-    case 'AUTH_INVALID':
-    case 'AUTH_EXPIRED':
-      return 'PSB_AUTH_EXPIRED';
-    case 'IDENTITY_NOT_LINKED':
-      return 'PSB_IDENTITY_NOT_LINKED';
-    case 'WORKSPACE_OCCUPIED_BY_OTHER':
-      return 'PSB_WORKSPACE_OCCUPIED_BY_OTHER';
-    case 'CLIENT_OFFLINE':
-      return 'PSB_CLIENT_OFFLINE';
-    // 工作区可见但未就绪（occupied 闸门 / 发送前重建都会遇到）：`planned` / `provisioning` /
-    // `failed` / `deleting` 时不能写，等它就绪后重试即可 —— 与「找不到工作区」是不同的下一步。
-    case 'WORKSPACE_NOT_READY':
-      return 'PSB_WORKSPACE_NOT_READY';
-    // CINDY-RW-10：版本控制检查的三种拒绝各有下一步（详情 / 还原后重试 / 重试检查），
-    // 不能并进通用失败，否则用户只看到「操作失败，请稍后重试」。
-    case 'WORKSPACE_VCS_DIRTY':
-      return 'PSB_WORKSPACE_VCS_DIRTY';
-    case 'WORKSPACE_VCS_UNAVAILABLE':
-      return 'PSB_WORKSPACE_VCS_UNAVAILABLE';
-    case 'WORKSPACE_VCS_UNSUPPORTED':
-      return 'PSB_WORKSPACE_VCS_UNSUPPORTED';
-    // 403「不是归属人」按找不到呈现（PSB-RW-08：不泄漏会话存在性）。
-    case 'NOT_FOUND':
-    case 'FORBIDDEN':
-      return 'PSB_NOT_FOUND';
-    case 'PSB_UNREACHABLE':
-      return 'PSB_UNREACHABLE';
-    case 'PSB_STREAM_UNSUPPORTED':
-    case 'PSB_STREAM_NOT_READY':
-      return 'PSB_STREAM_UNAVAILABLE';
-    // 输入没有可用的活动连接：可恢复（先启动观看），因此不并进「不支持串流」。
-    case 'PSB_STREAM_NOT_ACTIVE':
-      return 'PSB_STREAM_NOT_ACTIVE';
-    // 没有 running 桌面访问会话（订阅 409）：按 PSB 的 details.state 分三条码，下一步动作不同。
-    case 'PSB_STREAM_NO_RUNNING_SESSION':
-      return psbNoRunningSessionIpcCode(failure.streamAccessState);
-    default:
-      return null;
-  }
+  // VCS 三码：PSB 原始码 → IPC 码由 §4b 单表派生（VCS 通知码表用同一份映射）。
+  const vcsIpcCode = vcsIpcCodeForPsbCode(failure.code);
+  if (vcsIpcCode) return vcsIpcCode;
+  // 同一 PSB 码的鉴别条目（AUTH_REQUIRED → 组织账号 / 未登录）：鉴别键登记在单表里。
+  const discriminated = PSB_FAILURE_ENTRY_BY_PSB_CODE_AND_MESSAGE_KEY
+    .get(failure.code)
+    ?.get(failure.messageKey);
+  if (discriminated) return discriminated.ipcCode;
+  // 本地已经产出 PSB_ 码（例如 `PSB_STREAM_NO_RUNNING_SESSION` 带 `streamAccessState`）。
+  const byIpcCode = PSB_FAILURE_ENTRY_BY_IPC_CODE.get(failure.code);
+  if (byIpcCode) return psbIpcCodeForEntry(byIpcCode, failure);
+  // PSB 原始码（含历史别名）。
+  const byPsbCode = PSB_FAILURE_ENTRY_BY_PSB_CODE.get(failure.code);
+  if (!byPsbCode) return null;
+  return psbIpcCodeForEntry(byPsbCode, failure);
 }
 
-/** 失败码 → 文案键；不是 PSB 失败码返回 `null`（调用方回落通用文案）。 */
-export function psbFailureMessageKeyForIpcCode(code: string): string | null {
-  return (PSB_IPC_FAILURE_MESSAGE_KEYS as Record<string, string>)[code] ?? null;
+/** 单表条目 → IPC 码；串流访问家族按 `streamAccessState` 分三档（单表 `state` 列）。 */
+function psbIpcCodeForEntry(
+  entry: PsbFailureEntry,
+  failure: PsbRemoteFailure,
+): PsbIpcFailureCode {
+  return entry.descriptor.state === null
+    ? entry.ipcCode
+    : psbNoRunningSessionIpcCode(failure.streamAccessState);
 }
 
 /**
- * 「没有 running 桌面访问」按状态取文案键（main 的失败形状与渲染层共用同一映射）。
+ * 失败码 → 文案键（§4b 失败单表的投影）；不是 PSB 失败码返回 `null`（调用方回落通用文案）。
  *
- * 两边都用它：main 写进 `PsbRemoteFailure.messageKey`，渲染层遇到对应 IPC 码时用同一张表
- * （`psbFailureMessageKeyForIpcCode`）拿到同一个键——不会出现「main 说 A、界面显示 B」。
+ * 只查 Map（单表投影），不做对象属性查找：`constructor` 之类的远端字符串命中原型链会把
+ * 函数当文案键返回。
  */
-export function psbNoRunningSessionMessageKey(
-  state: PsbWorkspaceAccessState | null | undefined,
-): string {
-  return (
-    psbFailureMessageKeyForIpcCode(psbNoRunningSessionIpcCode(state)) ??
-    'remoteWorkspace.admin.streamAccessNone'
-  );
+export function psbFailureMessageKeyForIpcCode(code: string): string | null {
+  return psbFailureDescriptorForIpcCode(code)?.messageKey ?? null;
 }
 
 /**
@@ -1701,14 +2519,16 @@ export function psbNoRunningSessionMessageKey(
  * 这个差异登记在共享契约里（唯一映射点），渲染层**不得**再为某个码手写 if；新增带名字
  * 差异的失败码时在这里补一行，而不是在 main / renderer 各写一份。
  */
-const PSB_IPC_BANNER_MESSAGE_KEYS: Record<string, string> = {
-  ...PSB_IPC_FAILURE_MESSAGE_KEYS,
+const PSB_IPC_BANNER_MESSAGE_KEY_OVERRIDES: Readonly<Record<string, string>> = {
   PSB_WORKSPACE_OCCUPIED_BY_OTHER: 'remoteWorkspace.error.workspaceOccupied',
 };
 
 /** 错误横幅用：失败码 → 文案键（含无名字兜底）；不是 PSB 失败码返回 `null`。 */
 export function psbBannerMessageKeyForIpcCode(code: string): string | null {
-  return (PSB_IPC_BANNER_MESSAGE_KEYS as Record<string, string>)[code] ?? null;
+  if (Object.hasOwn(PSB_IPC_BANNER_MESSAGE_KEY_OVERRIDES, code)) {
+    return PSB_IPC_BANNER_MESSAGE_KEY_OVERRIDES[code] ?? null;
+  }
+  return psbFailureMessageKeyForIpcCode(code);
 }
 
 /**

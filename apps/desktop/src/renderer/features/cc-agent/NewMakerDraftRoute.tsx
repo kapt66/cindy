@@ -88,24 +88,13 @@ import { modelCatalogKey } from '../../../shared/controlledModelCatalog';
 import { useProviderShareAgentDevices } from '@/features/provider-share/useProviderShareAgentDevices';
 import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
 import { isSharedTaskPeer } from '@cindy/device-link';
-import {
-  buildPsbDraftTarget,
-  consumePsbDraftRouteTarget,
-  readPsbDraftRouteTarget,
-} from '@/features/remote-workspace/draft/psbDraftTarget';
-import {
-  createPsbSessionGate,
-  releasePsbDraftTarget,
-  type PsbDraftSession,
-  type PsbSessionGate,
-} from '@/features/remote-workspace/draft/psbDraftSession';
+import type { PsbDraftSession } from '@/features/remote-workspace/draft/psbDraftSession';
 import { psbFailureText, psbWorkspaceDisplayName, vendorToPsbAgentKind } from '@/features/remote-workspace/dialog/psbDialogModel';
 import {
   RemoteWorkspacePickerDialog,
   type RemoteWorkspacePickerCreated,
 } from '@/features/remote-workspace/dialog/RemoteWorkspacePickerDialog';
-import { tryGetPsbRemoteBridge } from '@/features/remote-workspace/bridge';
-import { parsePsbRemoteHostId, type PsbAgentKind } from '../../../shared/psb-remote-workspace';
+import { parsePsbRemoteHostId } from '../../../shared/psb-remote-workspace';
 import {
   controlledComputerSupportsRemoteAgent,
   selectControlledTaskAgentDevices,
@@ -140,6 +129,7 @@ import {
   markDefaultTupleCustomized,
   clearDefaultTupleTuningCustomization,
   resetDraftWorkspaceTargets,
+  resolveDraftTargetKind,
   getFastModeForModel,
   setFastModeForModel,
   setEffortForModel,
@@ -229,13 +219,12 @@ import { getWorktreeModelNamingEnabled } from '@/hooks/useWorktreeModelNamingPre
 import { useRefreshWorktreeForSession } from '@/contexts/WorktreeContext';
 import { crossAgentConvertService } from '@/lib/crossAgentConvertService';
 import {
-  consumeNewMakerDialogueTargetRequest,
-  consumeNewMakerFolderPickerRequest,
+  consumeNewMakerNavigationIntent,
   isSameNewMakerDevice,
-  readNewMakerDialogueTargetRequest,
-  readNewMakerFolderPickerRequest,
+  readNewMakerNavigationIntent,
   shouldPrefillDefaultNewTaskWorkingDir,
 } from './lib/newMakerRouteState';
+import { usePsbDraftTarget } from './usePsbDraftTarget';
 import { useCrossAgentMigrationDialog } from '@/hooks/useCrossAgentConvertPrompt';
 import { getCollaborationStartErrorMessage } from './collaborationErrors';
 import { canShowMekaCollabToggleForDraft } from './lib/collaborationEligibility';
@@ -398,7 +387,7 @@ import { resolveNewMakerDraftRightSidebar } from './newMakerDraftRightSidebar';
 import { resolveNewMakerDraftEffort } from './newMakerDraftModelPrefs';
 import { loadSshSessionModelSelection, SshModelSelectionError } from './sshSessionModelSelection';
 import { useSshCodexProviders } from '@/hooks/useSshCodexProviders';
-import { resolveSshCodexCatalogHostId } from '@/lib/remoteCodexModelHost';
+import { asSshRemoteHostId, resolveSshCodexCatalogHostId } from '@/lib/remoteCodexModelHost';
 import { mergeSshCodexCatalog, type SshCodexCatalog } from '@/lib/sshCodexCatalog';
 import { useSshCodexDraftSelection } from './useSshCodexDraftSelection';
 import { closeAllTabs as closeRightSidebarTabs } from '@/features/right-sidebar/store';
@@ -1070,13 +1059,19 @@ export function NewMakerDraftRoute() {
       cancelled = true;
     };
   }, [routeMekaDraft.mekaProjectId, routeMekaDraft.mekaRoleId]);
-  const dialogueTargetRequest = useMemo(
-    () => readNewMakerDialogueTargetRequest(location.state),
+  // 一次性导航意图：**唯一读口**（dialogue / folderPicker / psbTarget 三类都在这个 union 里）。
+  // 每个消费点都用同一个 `consumeNewMakerNavigationIntent` 在应用后删除自己那一条。
+  const navigationIntent = useMemo(
+    () => readNewMakerNavigationIntent(location.state),
     [location.state],
   );
+  const dialogueTargetRequest = useMemo(
+    () => (navigationIntent?.kind === 'dialogue' ? navigationIntent : null),
+    [navigationIntent],
+  );
   const folderPickerRequest = useMemo(
-    () => readNewMakerFolderPickerRequest(location.state),
-    [location.state],
+    () => (navigationIntent?.kind === 'folderPicker' ? navigationIntent : null),
+    [navigationIntent],
   );
   const handledDialogueTargetRequestRef = useRef<string | null>(null);
   const handledGenericDefaultLocationRef = useRef<string | null>(null);
@@ -1399,11 +1394,18 @@ export function NewMakerDraftRoute() {
   // `remoteHostId = psb:<id>` 是懒建成功后才有的派生值。
   const psbTarget = draft.psbTarget;
   const psbSessionHostId = parsePsbRemoteHostId(effectiveRemoteHostId);
+  /**
+   * 目标类别的**唯一判据**来自 store 的 `resolveDraftTargetKind`：`psb:` 前缀 / `mcpr:` 前缀 /
+   * 其它远端主机 / device-link / 本地项目 / 对话都在那一处分类，本文件不手写前缀或组合
+   * `isPsbDraft || isPsbChannelSelected`。`psbChannelSelected` 是「渠道已选、工作区未选」的
+   * 过渡态，也算 PSB 目标——否则发送会当作对话/本地目标继续。
+   */
+  const draftTargetKind = resolveDraftTargetKind({ ...draft, psbChannelSelected });
   const isPsbDraft = psbTarget != null || psbSessionHostId !== null;
   /** 位置渠道当前停在「远程工作区」：已选到工作区，或刚选中渠道还没选工作区。 */
-  const isPsbChannelSelected = psbTarget != null || psbChannelSelected;
+  const isPsbChannelSelected = draftTargetKind === 'psb';
   /** 只给 SSH-only 入口（草稿 SSH Codex 目录、Agent 认证门等）使用的真实主机。 */
-  const sshRemoteHostId = isPsbDraft ? null : effectiveRemoteHostId;
+  const sshRemoteHostId = asSshRemoteHostId(effectiveRemoteHostId);
   // device-link:为远程设备项目新建对话(草稿带 deviceId)。与 SSH remoteHostId 互斥。
   // 归一成 string | undefined(能力 hook / getModelById / ChatInput prop 都按此签名;
   // 下面 isDeviceLinkDraft 与 create 分支的真值收窄对 undefined 同样成立)。
@@ -1652,7 +1654,7 @@ export function NewMakerDraftRoute() {
   }, []);
   // 本机供应商连接引导只适用于在本机执行的草稿。
   const providerOnboarding = useProviderOnboarding({
-    remote: isDeviceLinkDraft || isAgentDeviceDraft || isPsbDraft || !!effectiveRemoteHostId,
+    remote: isDeviceLinkDraft || isAgentDeviceDraft || isPsbChannelSelected || !!effectiveRemoteHostId,
   });
   const showProviderOnboardingCard = providerOnboarding.visible;
   // Meka 项目的 additionalPaths 与草稿自带的 extraDirs 合并后才是运行期目录集。
@@ -1670,6 +1672,9 @@ export function NewMakerDraftRoute() {
   // "有没有选项目目录" 给出 —— 与它提交给 createSession 的值同源,不让 helper 反推。
   const collabWorkspaceKind = isMekaDraft ? 'meka' : effectiveWorkingDir ? 'project' : 'dialogue';
   const collabEntry = resolveCollabEntryPolicy({
+    // 目标类别是唯一判据（`psb:` / `mcpr:` / SSH / device-link / 项目的分叉都在 store 的
+    // resolveDraftTargetKind 里），不在这个闸门里重新手写前缀或组合条件。
+    targetKind: draftTargetKind,
     workspaceKind: collabWorkspaceKind,
     workingDir: effectiveWorkingDir,
     remoteHostId: effectiveRemoteHostId,
@@ -1678,7 +1683,7 @@ export function NewMakerDraftRoute() {
   // Cindy 的通用 policy 已明确支持普通对话草稿(无 workingDir 时只查用户/全局开关)。
   // Meka 的项目/角色草稿仍使用专用资格函数，并保留其不依赖本地 cwd 的行为；不要让
   // Meka helper 覆盖 Cindy dialogue 的入口，否则「+」菜单会在合并后静默消失。
-  const showCollabToggle = isPsbDraft
+  const showCollabToggle = isPsbChannelSelected
     ? false
     : isMekaDraft
       ? canShowMekaCollabToggleForDraft({
@@ -1773,7 +1778,7 @@ export function NewMakerDraftRoute() {
             workspaceId: psbTarget.workspaceId,
             workspaceTitle: psbTarget.workspaceTitle,
           })
-        : t('remoteWorkspace.dialog.tabExisting'))
+        : t('remoteWorkspace.draft.selectWorkspaceShort'))
     : remoteSessionLabel
       ? remoteSessionLabel
       : isMekaDraft
@@ -3520,7 +3525,7 @@ export function NewMakerDraftRoute() {
         deviceLinkDeviceId: req.deviceId,
         deviceLinkDeviceName: req.deviceName,
         workingDir: req.workingDir,
-        explicitNoProject: req.workingDir == null && req.explicitNoProject === true,
+        explicitNoProject: req.explicitNoProject === true,
         // device-link 与 SSH 互斥。
         remoteHostId: req.remoteHostId ?? null,
         // 展示名跟目标一起写(每次转移都显式带上,缺省 null 顺手清掉上一个目标的旧名字)。
@@ -3551,71 +3556,12 @@ export function NewMakerDraftRoute() {
   const [psbPickerOpen, setPsbPickerOpen] = useState(false);
   /** 弹窗打开页签：渠道内「新建远程工作区」入口直接落在新建页签。 */
   const [psbPickerTab, setPsbPickerTab] = useState<'existing' | 'create'>('existing');
-  /** 侧栏弹窗 → 草稿页的一次性交接载荷（history state 上的 `psbTarget`，工作区级）。 */
-  const psbRouteTarget = useMemo(() => readPsbDraftRouteTarget(location.state), [location.state]);
-  /**
-   * 当前草稿里的 PSB 目标。占用没有 TTL（PSB 侧事实），不释放会挡住别人直到用户去
-   * PSB 网页手动解锁，所以放弃草稿时必须还回去；懒建出的 PSB 会话也一并停掉。
-   */
-  const psbOccupiedTargetRef = useRef<NewMakerDraftPsbTarget | null>(null);
-  psbOccupiedTargetRef.current = psbTarget;
-  /** 已经建出 Cindy 本地会话 = 占用被这条会话接手，放弃草稿时不再释放。 */
-  const psbTargetCommittedRef = useRef(false);
-  const handledPsbRouteTargetRef = useRef<string | null>(null);
-  /** 首条消息懒建 PSB 会话：在途合并 + clientRequestId 跨重试复用。 */
-  const psbSessionGateRef = useRef<PsbSessionGate | null>(null);
-  if (!psbSessionGateRef.current) psbSessionGateRef.current = createPsbSessionGate();
-
-  /**
-   * 放弃草稿时归还 PSB 协作锁与（若已懒建）PSB 会话（尽力而为）。
-   *
-   * 失败只记日志、不阻塞离开：用户可能已经断网或退出登录，卡在这里比留下占用更糟
-   * （docs/product-rules/psb-remote-workspace-sessions.md §2.5）。
-   */
-  const releasePsbTarget = useCallback((target: NewMakerDraftPsbTarget | null) => {
-    releasePsbDraftTarget(target, {
-      getBridge: tryGetPsbRemoteBridge,
-      logWarn: (message, error) => log.warn(message, error),
-    });
-  }, []);
-
-  // 离开草稿页 = 放弃这次草稿。发送成功路径会先 resetDraftWorkspaceAfterSend 清掉目标并
-  // 置 committed，因此这里不会误释放「已经被新会话接手」的工作区/会话。
-  useEffect(
-    () => () => {
-      const abandoned = psbOccupiedTargetRef.current;
-      if (!abandoned || psbTargetCommittedRef.current) return;
-      releasePsbTarget(abandoned);
-      psbSessionGateRef.current?.reset();
-      // 目标已失效：不把「已释放的工作区」留给下一次进入草稿页。
-      // `explicitNoProject` 一并复位：PSB 目标曾经把它置 true（远程工作区没有本地项目目录），
-      // 只清目标会让下一次通用新建继续按「明确无项目」处理、不再使用用户设置的默认目录。
-      patchDraft({ psbTarget: null, explicitNoProject: false });
-    },
-    [releasePsbTarget],
-  );
-
-  // 页内换目标（换远程工作区 / 退回本机 / 换项目）= 放弃上一处占用。
-  // sessionId 回写（懒建成功）不算换目标，必须按 workspaceId 比较。
-  const previousPsbTargetRef = useRef<NewMakerDraftPsbTarget | null>(null);
-  useEffect(() => {
-    const previous = previousPsbTargetRef.current;
-    previousPsbTargetRef.current = psbTarget;
-    if (!previous) return;
-    if (psbTarget && previous.workspaceId === psbTarget.workspaceId) return;
-    psbSessionGateRef.current?.reset();
-    if (psbTargetCommittedRef.current) return;
-    releasePsbTarget(previous);
-  }, [psbTarget, releasePsbTarget]);
-
   /**
    * 把 PSB 目标落到草稿：统一经过 `applyDraftTarget`，让 mention chip / extraDirs /
    * worktree 三态与其它目标转移走同一条路径。引擎不在这里决定（草稿页既有链路选择）。
    */
   const applyPsbDraftTarget = useCallback(
     (next: NewMakerDraftPsbTarget) => {
-      psbTargetCommittedRef.current = false;
-      psbSessionGateRef.current?.reset();
       applyDraftTarget({
         deviceId: null,
         deviceName: null,
@@ -3624,103 +3570,39 @@ export function NewMakerDraftRoute() {
         remoteProjectName: next.workspaceTitle || null,
         remoteInstanceName: next.clientName || null,
         psbTarget: next,
-        explicitNoProject: true,
       });
     },
     [applyDraftTarget],
   );
 
-  /**
-   * 首条消息发送前确保 PSB 会话存在：没有就按这一帧草稿的 harness 懒建一条；
-   * 成功回写 `psbTarget.sessionId`（持久化，重试/重发复用同一条、不产生第二条）。
-   * 失败/桥缺失/目标已变都返回非 ok，调用方据此**不建本地会话**并停留草稿。
-   */
-  const ensurePsbSessionForSend = useCallback(
-    async (agentKind: PsbAgentKind, title?: string | null) => {
-      const target = getDraft().psbTarget;
-      if (!target) return null;
-      return psbSessionGateRef.current!.ensure({
-        target,
-        agentKind,
-        title: title ?? null,
-        getBridge: tryGetPsbRemoteBridge,
-        isCurrentTarget: () => {
-          const current = getDraft().psbTarget;
-          return !!current && current.workspaceId === target.workspaceId;
-        },
-        onSessionCreated: (sessionId) => {
-          const current = getDraft().psbTarget;
-          if (!current || current.workspaceId !== target.workspaceId) return;
-          patchDraft({ psbTarget: { ...current, sessionId } });
-        },
-      });
-    },
-    [],
-  );
-
-  useLayoutEffect(() => {
-    if (!psbRouteTarget || !dataOwnerId) return;
-    // 去重键用**导航记录**（`location.key`）而不是工作区 id：同一个工作区可以被再次交接
-    // （例如用户又点了一次侧栏「新建任务」选同一台工作区），用 workspaceId 去重会把第二次
-    // 交接静默吞掉、草稿停在旧目标上。dataOwnerId 一并进 key，切账号后同一条记录可以重放。
-    const token = `${dataOwnerId}:${location.key}`;
-    const routeState = location.state;
-    const { pathname, search, hash } = location;
-    // 已有一次性交接：应用并消费。若是同一条记录重复进入，**仍然消费 state**，避免遗留的
-    // 导航载荷在之后某次渲染里被重新应用（那时用户可能已经自己换过目标）。
-    if (handledPsbRouteTargetRef.current !== token) {
-      handledPsbRouteTargetRef.current = token;
-      const next = buildPsbDraftTarget(psbRouteTarget);
-      // 回到**同一个**工作区（例如再点一次侧栏「新建任务」选同一台）时沿用已懒建的
-      // sessionId：否则会用一份 sessionId=null 的目标覆盖草稿，让上一条 PSB 会话变成孤儿
-      // （占用仍在这条 Cindy 会话上，重发才会再建第二条）。按最新草稿读，不吃渲染快照。
-      const current = getDraft().psbTarget;
-      if (current && current.workspaceId === next.workspaceId) {
-        next.sessionId = current.sessionId ?? null;
-      }
-      applyPsbDraftTarget(next);
-    }
-    // 一次性导航指令：应用后从 history state 移除（与 dialogueTargetRequest 同款），
-    // 避免浏览器后退到旧记录时再次应用。
-    navigate(`${pathname}${search}${hash}`, {
-      replace: true,
-      state: consumePsbDraftRouteTarget(routeState),
-    });
-  }, [applyPsbDraftTarget, dataOwnerId, location, navigate, psbRouteTarget]);
+  // 远程工作区草稿目标的**资源生命周期**（一次性交接意图、懒建 PSB 会话、占用释放、已接手
+  // 标记）由 `usePsbDraftTarget` 独占。它需要的依赖全部注入，因此可以单独用 renderHook +
+  // mock bridge 钉住成功 / 失败 / 已接手 / 放弃草稿四条路径（见该文件头注释）。
+  const psb = usePsbDraftTarget({
+    draft,
+    applyTarget: applyPsbDraftTarget,
+    dataOwnerId,
+    location,
+    navigate,
+    intent: navigationIntent,
+    isBusy: () => sendInFlightRef.current || (directoryRecoveryRef.current?.isSelecting() ?? false),
+    toastWarning: (message) => toast.warning(message),
+    t,
+    logWarn: (message, error) => log.warn(message, error),
+  });
 
   /**
-   * 选中一个 PSB 工作区（弹窗确认 / 渠道下拉选中共用）。只写草稿目标：
-   * PSB 会话在首条消息发送时才懒建；重选**同一个**工作区属于确认当前目标，必须保留已懒建
-   * 出的 `sessionId`（否则会静默丢掉远端会话身份、下次发送再建第二条）。
+   * 选中一个 PSB 工作区（弹窗确认 / 渠道下拉选中共用）。
    *
    * 发送在途 / 目录恢复选择中**不换目标**：占用已经在弹窗 / 下拉那侧完成，此时改 `psbTarget`
-   * 会让那次发送用旧目标建会话、同时把用户刚选的新工作区占着不放（同上面各渠道的回调口径）。
-   * 占用没有 TTL，**这次选择进不了草稿就必须立刻还回去**，否则会挡住别人直到用户去 PSB 网页
-   * 手动解锁；重选当前目标时它仍挂在当前草稿的占用里，不释放。
+   * 会让那次发送用旧目标建会话、同时把用户刚选的新工作区占着不放。占用没有 TTL，
+   * **这次选择进不了草稿就必须立刻还回去**——由 controller 统一处理，路由不重复实现。
    */
   const selectPsbWorkspace = useCallback(
     (created: RemoteWorkspacePickerCreated) => {
-      if (sendInFlightRef.current || directoryRecoveryRef.current?.isSelecting()) {
-        if (!psbTarget || psbTarget.workspaceId !== created.workspaceId) {
-          const bridge = tryGetPsbRemoteBridge();
-          if (bridge) {
-            void bridge.releaseWorkspace({ workspaceId: created.workspaceId }).catch((error) => {
-              log.warn('psb: releasing the workspace occupied by a rejected selection failed', error);
-            });
-          }
-        }
-        // 不能静默：用户刚点完选择却什么都没发生，至少要说明为什么。
-        toast.warning(t('remoteWorkspace.draft.actionBusy'));
-        return;
-      }
-      const next = buildPsbDraftTarget(created);
-      if (psbTarget && psbTarget.workspaceId === next.workspaceId) {
-        next.sessionId = psbTarget.sessionId ?? null;
-      }
-      setPsbChannelSelected(true);
-      applyPsbDraftTarget(next);
+      if (psb.selectWorkspace(created)) setPsbChannelSelected(true);
     },
-    [applyPsbDraftTarget, psbTarget, t],
+    [psb.selectWorkspace],
   );
 
   const handlePsbPickerCreated = useCallback(
@@ -3751,14 +3633,15 @@ export function NewMakerDraftRoute() {
     if (isPsbChannelSelected) return;
     setMcprChannelSelected(false);
     setRemoteSessionDisplayLabel(null);
-    // 先落「对话」目标（顺带清掉其它渠道的项目 / 设备 / PSB 目标），再切渠道 UI 状态；
-    // applyDraftTarget 会先把它自己维护的渠道状态清掉，所以顺序必须是「先落目标、后置 true」。
+    // 先落一个「无本机目标」的中性草稿（顺带清掉其它渠道的项目 / 设备 / PSB 目标），再切渠道
+    // UI 状态；applyDraftTarget 会先把它自己维护的渠道状态清掉，所以顺序必须是「先落目标、
+    // 后置 true」。不写 `explicitNoProject`：渠道已选但工作区未选是**远程工作区目标**的过渡态，
+    // 不是用户显式选了「对话」（那个标记只给真正的对话意图，见 store 的 DraftTarget 归约）。
     applyDraftTarget({
       deviceId: null,
       deviceName: null,
       workingDir: null,
       psbTarget: null,
-      explicitNoProject: true,
     });
     setPsbChannelSelected(true);
   }, [applyDraftTarget, isMekaDraft, isPsbChannelSelected]);
@@ -3816,7 +3699,7 @@ export function NewMakerDraftRoute() {
     }
     navigate(`${location.pathname}${location.search}${location.hash}`, {
       replace: true,
-      state: consumeNewMakerDialogueTargetRequest(location.state),
+      state: consumeNewMakerNavigationIntent(location.state, dialogueTargetRequest),
     });
   }, [applyDraftTarget, dataOwnerId, dialogueTargetRequest, location, navigate]);
 
@@ -3825,7 +3708,7 @@ export function NewMakerDraftRoute() {
   useLayoutEffect(() => {
     // PSB 交接先于本效果落地（上面的 useLayoutEffect 已把 remoteHostId 写进 store），
     // 但同一个 state 里仍带着 psbTarget 时**不要**用本机默认目录覆盖目标。
-    if (!dataOwnerId || dialogueTargetRequest || psbRouteTarget) return;
+    if (!dataOwnerId || dialogueTargetRequest || navigationIntent?.kind === 'psbTarget') return;
     const token = `${dataOwnerId}:${location.key}`;
     if (handledGenericDefaultLocationRef.current === token) return;
     handledGenericDefaultLocationRef.current = token;
@@ -3833,7 +3716,7 @@ export function NewMakerDraftRoute() {
     if (defaultDir && shouldPrefillDefaultNewTaskWorkingDir(location.state, getDraft())) {
       applyDraftTarget({ deviceId: null, deviceName: null, workingDir: defaultDir });
     }
-  }, [applyDraftTarget, dataOwnerId, dialogueTargetRequest, location.key, location.state, psbRouteTarget]);
+  }, [applyDraftTarget, dataOwnerId, dialogueTargetRequest, location.key, location.state, navigationIntent]);
 
   // 弹窗确认添加后的落点:SSH 立即建会话 + navigate;device-link 把当前草稿指向被控端项目,
   // 首条消息发出时走既有 create-on-send 链路(见下方 isDeviceLinkDraft 分支)。
@@ -3910,8 +3793,12 @@ export function NewMakerDraftRoute() {
       // (createSession + makerChatStore.setSessionRuntime + navigate)。
       //
       // Codex reads the selected SSH host; other harnesses retain their existing routing.
+      // SSH-only 探针只接受 branded 主机：弹窗给的是「用户选中的 SSH 目标」，这里仍过一次
+      // `asSshRemoteHostId`（类型层保证 `mcpr:` / `psb:` 永远进不了 SSH 码路径）。
+      const sshHostId = asSshRemoteHostId(target.hostId);
+      if (!sshHostId) throw new SshModelSelectionError('no-route');
       const sshOwner = getDataOwnerGeneration();
-      const selection = await loadSshSessionModelSelection(target.hostId, {
+      const selection = await loadSshSessionModelSelection(sshHostId, {
         providers: localProviders,
         loading: localProvidersLoading,
         loadFailed: localProvidersLoadFailed,
@@ -4590,7 +4477,7 @@ export function NewMakerDraftRoute() {
     setDevicePickerOpen(false);
     navigate(`${location.pathname}${location.search}${location.hash}`, {
       replace: true,
-      state: consumeNewMakerFolderPickerRequest(location.state),
+      state: consumeNewMakerNavigationIntent(location.state, folderPickerRequest),
     });
   }, [folderPickerRequest, location, navigate]);
   const handleDevicePickerOpenChange = useCallback((open: boolean) => {
@@ -5395,7 +5282,7 @@ export function NewMakerDraftRoute() {
           // 按草稿当前选中的引擎懒建；失败 → 可读错误 + 不建本地会话，任务与目标留在草稿里重试。
           const psbLazySession: PsbDraftSession | null = isPsbDraft
             ? await (async () => {
-                const ensured = await ensurePsbSessionForSend(
+                const ensured = await psb.ensureSessionForSend(
                   vendorToPsbAgentKind(normalizeDbAgentKind(persistedAgentKind)),
                   optimisticFirstMessageTitle(message, files, mentions, opts, autoTitleLabels),
                 );
@@ -5403,7 +5290,7 @@ export function NewMakerDraftRoute() {
                   if (!ensured || ensured.reason === 'unavailable') {
                     toast.error(t('remoteWorkspace.error.unknown'));
                   } else if (ensured.reason === 'failed') {
-                    toast.error(psbFailureText(ensured.failure, t));
+                    toast.error(psbFailureText(t, ensured.failure));
                   } else {
                     toast.warning(t('ccAgent.draft.createSessionFailed'));
                   }
@@ -6310,7 +6197,7 @@ export function NewMakerDraftRoute() {
           }
           // PSB 远程工作区草稿：本地会话行已经建出 = 占用由这条会话接手，放弃草稿时
           // 不再释放工作区（释放归会话结束路径）。
-          if (isPsbDraft) psbTargetCommittedRef.current = true;
+          if (isPsbDraft) psb.commit();
           // 草稿里选中的那条收藏跟着会话走(见 carryDraftFavoriteAnchorToSession)。
           carryDraftFavoriteAnchorToSession(newSession.id, persistedAgentKind, model, providerId);
           // 计划模式是一次性选择:随本次发送被消耗,草稿勾选同步熄灭。
@@ -6618,7 +6505,7 @@ export function NewMakerDraftRoute() {
       // （按发送那一帧的 vendor 换算 agentKind）。
       isPsbChannelSelected,
       isPsbDraft,
-      ensurePsbSessionForSend,
+      psb,
     ],
   );
 
@@ -6810,13 +6697,13 @@ export function NewMakerDraftRoute() {
         // PSB 远程工作区：与 handleSend 同一条懒建规则（目标文案就是首条消息）。
         const goalPsbSession: PsbDraftSession | null = isPsbDraft
           ? await (async () => {
-              const ensured = await ensurePsbSessionForSend(
+              const ensured = await psb.ensureSessionForSend(
                 vendorToPsbAgentKind(normalizeDbAgentKind(persistedAgentKind)),
                 normalizeAutoTitle(objective),
               );
               if (!ensured || !ensured.ok) {
                 if (ensured?.reason === 'failed') {
-                  throw new Error(psbFailureText(ensured.failure, t));
+                  throw new Error(psbFailureText(t, ensured.failure));
                 }
                 throw new Error(t('ccAgent.draft.createSessionFailed'));
               }
@@ -7226,7 +7113,7 @@ export function NewMakerDraftRoute() {
           throw new Error(t('ccAgent.draft.createSessionFailed'));
         }
         // PSB 远程工作区草稿：本地会话行已经建出 = 占用由这条会话接手，放弃草稿时不再释放。
-        if (isPsbDraft) psbTargetCommittedRef.current = true;
+        if (isPsbDraft) psb.commit();
         // 草稿里选中的那条收藏跟着会话走(见 carryDraftFavoriteAnchorToSession)。
         carryDraftFavoriteAnchorToSession(
           newSession.id,
@@ -7415,7 +7302,7 @@ export function NewMakerDraftRoute() {
       // PSB：渠道已选但工作区未选时拦在 Goal 入口；首条消息前懒建远端会话。
       isPsbChannelSelected,
       isPsbDraft,
-      ensurePsbSessionForSend,
+      psb,
     ],
   );
 
@@ -7948,7 +7835,7 @@ export function NewMakerDraftRoute() {
                     // agentDeviceId，而 patchDraft 会把 psbTarget 静默清掉（换设备 = 换目标）。
                     // 不伪造 remoteHostId 来挡，只按渠道收掉这一面。
                     remoteAgentDevices={
-                      isPsbDraft || isPsbChannelSelected ? undefined : remoteAgentDevices
+                      isPsbChannelSelected ? undefined : remoteAgentDevices
                     }
                     catalogHostDeviceId={controlledModelRoute.catalogHostDeviceId}
                     modelMemoryOverride={deviceLinkDraftMemory}
@@ -8102,12 +7989,12 @@ export function NewMakerDraftRoute() {
                     // createSession 的 extraDirs 带到远端,无效甚至报错)。
                     // 恢复这个能力要把 picker 路由到对端(设备域浏览器已有 fs:list-dir),见 follow-up。
                     onExtraDirsChange={
-                      isDeviceLinkDraft || isPsbDraft || isPsbChannelSelected
+                      isDeviceLinkDraft || isPsbChannelSelected
                         ? undefined
                         : handleExtraDirsChange
                     }
                     onWritableDirsChange={
-                      isDeviceLinkDraft || isRemoteProjectDraft || isPsbDraft || isPsbChannelSelected
+                      isDeviceLinkDraft || isRemoteProjectDraft || isPsbChannelSelected
                         ? undefined
                         : handleWritableDirsChange
                     }
@@ -8317,3 +8204,10 @@ export function NewMakerDraftRoute() {
     </TopRightChipStackProvider>
   );
 }
+
+
+
+
+
+
+

@@ -31,6 +31,7 @@ import {
 } from '../../../shared/psb-remote-workspace';
 import {
   createPsbSessionRebindCoordinator,
+  deriveRebindRequestId,
   type PsbRebindCreateOutcome,
   type PsbRebindRemoteLookup,
   type PsbSessionRebindDeps,
@@ -189,7 +190,6 @@ function makeHarness(overrides: Partial<Harness> = {}): Harness {
     emitRebound: (event) => {
       h.emitted.push(event);
     },
-    createRequestId: () => `req-${h.createCalls.length + 1}`,
   };
   (h as { deps: PsbSessionRebindDeps }).deps = deps;
   return h;
@@ -215,14 +215,14 @@ describe('psb 会话发送前重建（决策矩阵）', () => {
       remoteHostId: 'psb:new-1',
     });
     // 新 PSB 会话沿用同一工作区 + 同一引擎 + 同一标题。
-    expect(h.createCalls).toEqual([
-      {
-        workspaceId: WORKSPACE_ID,
-        agentKind: 'claude-code',
-        title: '修一下登录',
-        clientRequestId: 'req-1',
-      },
-    ]);
+    expect(h.createCalls).toHaveLength(1);
+    expect(h.createCalls[0]).toMatchObject({
+      workspaceId: WORKSPACE_ID,
+      agentKind: 'claude-code',
+      title: '修一下登录',
+    });
+    // 去重键由 (本地任务 id, 旧 PSB 会话 id) 确定性派生（不是每次随机）。
+    expect(h.createCalls[0]?.clientRequestId).toMatch(/^psb-rebind-[0-9a-f]{32}$/);
     // 本地行先落新身份（并清掉旧的原生会话 id，否则新会话会 resume 不存在的会话）。
     expect(h.persistCalls).toEqual([
       {
@@ -344,24 +344,58 @@ describe('psb 会话发送前重建（决策矩阵）', () => {
     expect(h.emitted).toEqual([]);
   });
 
-  it('旧 PSB 会话已不存在（404）⇒ 仍重建，工作区 id 来自本地记录', async () => {
-    const h = makeHarness({
-      lookup: { kind: 'missing' },
-      row: makeRow({ workspaceId: WORKSPACE_ID }),
-    });
-    await expect(
-      createPsbSessionRebindCoordinator(h.deps).prepareForSend('local-1'),
-    ).resolves.toEqual({ previousRemoteHostId: 'psb:old', remoteHostId: 'psb:new-1' });
-    expect(h.listCalls.count).toBe(1);
-    expect(h.persistCalls[0]?.workspaceId).toBe(WORKSPACE_ID);
-  });
-
   it('旧会话已不存在且没有工作区线索 ⇒ 报 PSB_NOT_FOUND，不猜工作区', async () => {
     const h = makeHarness({ lookup: { kind: 'missing' } });
     await expect(
       createPsbSessionRebindCoordinator(h.deps).prepareForSend('local-1'),
     ).rejects.toMatchObject({ code: 'PSB_NOT_FOUND' });
     expect(h.createCalls).toEqual([]);
+  });
+
+  it('重绑去重键确定：同一个旧身份的重试复用同一个 clientRequestId（PSB 只建一条会话）', async () => {
+    const h = makeHarness({
+      createOutcome: { kind: 'failed', failure: clientOffline },
+      lookup: {
+        kind: 'found',
+        result: { session: makeSession({ status: 'stopped' }), workspace: makeWorkspace() },
+      },
+    });
+    const coordinator = createPsbSessionRebindCoordinator(h.deps);
+
+    // 第一次失败（本地行仍是 psb:old）→ 下一次发送重试同样的旧身份。
+    await expect(coordinator.prepareForSend('local-1')).rejects.toMatchObject({
+      code: 'PSB_CLIENT_OFFLINE',
+    });
+    h.createOutcome = null;
+    await expect(coordinator.prepareForSend('local-1')).resolves.toMatchObject({
+      previousRemoteHostId: 'psb:old',
+    });
+
+    expect(h.createCalls).toHaveLength(2);
+    expect(h.createCalls[0]?.clientRequestId).toBe(h.createCalls[1]?.clientRequestId);
+    // 不同本地任务 / 不同旧身份 → 不同键（不会把两个任务的重建去重到一起）。
+    expect(h.createCalls[0]?.clientRequestId).not.toBe(
+      deriveRebindRequestId('local-1', 'another-psb-session'),
+    );
+  });
+
+  it('PSB 说客户端缺这个 Agent 的运行时（usable=false / agent-unsupported）⇒ 不重建、给升级码', async () => {
+    const h = makeHarness({
+      lookup: {
+        kind: 'found',
+        result: {
+          session: makeSession({ status: 'stopped' }),
+          workspace: makeWorkspace({ usable: false, unusableReason: 'agent-unsupported' }),
+        },
+      },
+    });
+
+    await expect(
+      createPsbSessionRebindCoordinator(h.deps).prepareForSend('local-1'),
+    ).rejects.toMatchObject({ code: 'PSB_AGENT_UNSUPPORTED' });
+    // 关键：不建、不改、不广播 —— 升级客户端后下一次发送还能再试。
+    expect(h.createCalls).toEqual([]);
+    expect(h.persistCalls).toEqual([]);
   });
 
   it('新建失败 ⇒ 不重绑；下一次发送可以重试成功', async () => {
@@ -447,7 +481,13 @@ describe('共享判据（main / renderer 同一份）', () => {
   });
 
   it('终态不再阻断输入；真正阻断只剩占用 / 离线 / 未就绪', () => {
-    const onlineWorkspace = { state: 'ready' as const, clientOnline: true, occupancy: makeWorkspace().occupancy };
+    const onlineWorkspace = {
+      state: 'ready' as const,
+      clientOnline: true,
+      occupancy: makeWorkspace().occupancy,
+      usable: true,
+      unusableReason: null,
+    };
     expect(
       psbSessionInputAllowed({
         session: makeSession({ status: 'stopped' }),
@@ -463,13 +503,13 @@ describe('共享判据（main / renderer 同一份）', () => {
           occupancy: { occupied: true, byMe: false, personId: '2', personName: '小王', occupiedAt: 1 },
         },
       }),
-    ).toEqual({ allowed: false, reason: 'remoteWorkspace.input.occupiedByOther' });
+    ).toEqual({ allowed: false, reason: 'remoteWorkspace.error.workspaceOccupied' });
     expect(
       psbSessionInputAllowed({
         session: makeSession({ status: 'stopped' }),
         workspace: { ...onlineWorkspace, clientOnline: false },
       }),
-    ).toEqual({ allowed: false, reason: 'remoteWorkspace.input.clientOffline' });
+    ).toEqual({ allowed: false, reason: 'remoteWorkspace.error.clientOffline' });
     expect(
       psbSessionInputAllowed({
         session: makeSession({ status: 'stopped' }),

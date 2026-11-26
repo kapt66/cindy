@@ -584,3 +584,67 @@ describe('companion scope invalidated while flag settings are written', () => {
     expect(scopeChecks).toBe(3);
   });
 });
+
+/**
+ * 远端 Skill 发现的 cwd 口径（审查 r7 P2）。
+ *
+ * Bug／规则依据：`psb:` 远程工作区的 cwd 归宿主，本机 `workingDir` 是虚拟路径
+ * （`/psb-remote/<目录>`，远端不存在）。修复前 `listAgentSkills` 把它拼成
+ * `.claude/commands` / `.claude/skills` 去远端列目录 —— 远端只会返回空，
+ * 用户配置的项目 Skill 被静默判成「不存在」。修复后宿主按 transport 能力打
+ * `remoteHostOwnsCwd`，cc 只列 agent 全局 Skill（不拿虚拟路径拼远端目录）。
+ *
+ * 最小失败输入：`listDir` 收到任何以 `/psb-remote/` 开头的目录。
+ */
+describe('Claude remote Skill discovery honours the host-owned cwd', () => {
+  function fileOpsSpy() {
+    const listed: string[] = [];
+    const fileOps = {
+      async listDir(dir: string) {
+        listed.push(dir);
+        return [] as string[];
+      },
+      async stat() {
+        return null;
+      },
+      async readFile() {
+        return '';
+      },
+      async sha256File() {
+        return '';
+      },
+    };
+    return { fileOps, listed };
+  }
+
+  it('does not scan the virtual /psb-remote working dir when the host owns the cwd', async () => {
+    const deps = createDeps();
+    const { fileOps, listed } = fileOpsSpy();
+    deps.getRemoteAgentFileOps = () => fileOps;
+    const agent = new ClaudeCodeAgent(deps);
+
+    await agent.listAgentSkills({
+      workingDir: '/psb-remote/some-workspace',
+      remoteHostId: 'psb:session-1',
+      remoteHostOwnsCwd: true,
+    });
+
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed.filter((dir) => dir.startsWith('/psb-remote/'))).toEqual([]);
+  });
+
+  it('keeps project-scope discovery for a real remote path (ssh / mcpr)', async () => {
+    const deps = createDeps();
+    const { fileOps, listed } = fileOpsSpy();
+    deps.getRemoteAgentFileOps = () => fileOps;
+    const agent = new ClaudeCodeAgent(deps);
+
+    await agent.listAgentSkills({
+      workingDir: '/srv/repo',
+      remoteHostId: 'mcpr:instance-1',
+    });
+
+    expect(listed.some((dir) => dir === '/srv/repo/.claude/commands')).toBe(true);
+    expect(listed.some((dir) => dir === '/srv/repo/.claude/skills')).toBe(true);
+  });
+});

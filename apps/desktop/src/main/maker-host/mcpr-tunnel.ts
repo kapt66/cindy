@@ -1,24 +1,25 @@
-import { EventEmitter } from 'node:events';
 import { StringDecoder } from 'node:string_decoder';
 
-import WebSocket, { type RawData } from 'ws';
+import WebSocket from 'ws';
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { CC_MGR_BUNDLE_VERSION } from '@cindy/maker-cc-manager';
 
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import type { PsbTunnelMode } from '../../shared/psb-remote-workspace.js';
+import {
+  createExecByteStream,
+  type PsbWebSocketLike,
+} from '../remote-workspace/wsFrames.js';
 import { getMekaRouterService } from '../meka-settings/ipc.js';
 
-type WebSocketLike = {
-  readyState: number;
-  binaryType?: string;
-  send(data: string | Buffer, callback?: (error?: Error) => void): void;
-  close(code?: number, reason?: string): void;
-  terminate?: () => void;
-  on(event: 'open', callback: () => void): unknown;
-  on(event: 'message', callback: (data: RawData) => void): unknown;
-  on(event: 'close', callback: (code: number, reason: Buffer) => void): unknown;
-  on(event: 'error', callback: (error: Error) => void): unknown;
+/**
+ * MCPRouter 隧道的 WS 面 = 共享字节工具的结构类型 + 它自己的握手事件。
+ *
+ * `toBuffer` / `ExecStreamHandle` 包装只有一份（`remote-workspace/wsFrames.ts`，与 PSB 的
+ * 两条通道共用）；这里只补 MCPRouter 独有的 `unexpected-response`（握手被拒时的状态码归因）。
+ */
+type WebSocketLike = PsbWebSocketLike & {
   on(
     event: 'unexpected-response',
     callback: (_request: unknown, response: { statusCode?: number; resume(): void }) => void,
@@ -33,6 +34,12 @@ type WebSocketConstructor = new (
 /**
  * MCPRouter agent-tunnel 的 mode。
  *
+ * **不是第二份字面量联合**：MCPRouter 的 `agent-tunnel` 与 PSB 是同一份帧契约，mode 语义
+ * 逐字相同，所以唯一来源是共享契约（`shared/psb-remote-workspace.ts` 的
+ * `PSB_TUNNEL_MODES` / `PsbTunnelMode`）。agent → mode 的映射表同样只有一张
+ * （`remote-session-routing.ts` 的能力描述符，复用共享的 `psbTunnelModeForAgent`）。
+ *
+ * mode 语义：
  *   - `cc-mgr` / `codex-appserver`:cc-mgr bundle 的两种形态(控制通道 / Codex app-server
  *     字节流),都由 cc-mgr 那份产物承载,因此都要带 `bundleVersion` 声明(见 §4.1 / WL-4.1.10);
  *   - `pi`:pi-manager 的通道(runtime 把隧道接到 `pi-manager bridge --socket <受管 socket>`
@@ -44,7 +51,7 @@ type WebSocketConstructor = new (
  * `pi` / `exec` **不带** `bundleVersion`:它们不消费 cc-mgr 产物,声明一个 cc-mgr 版本
  * 只会让服务端白做一次 bundle 物化(而 pi/exec 需要的是 pi 运行时资产,由 `pi` CDN 段交付)。
  */
-export type McprTunnelMode = 'cc-mgr' | 'codex-appserver' | 'pi' | 'exec';
+export type McprTunnelMode = PsbTunnelMode;
 
 /** 消费 cc-mgr 产物的两种 mode(只有它们要声明 cc-mgr bundle 版本)。 */
 const CC_MGR_BACKED_TUNNEL_MODES: ReadonlySet<McprTunnelMode> = new Set(['cc-mgr', 'codex-appserver']);
@@ -112,7 +119,14 @@ export async function openMcprTunnel(
     socket.on('open', () => {
       if (opened) return;
       opened = true;
-      resolve(toByteStream(socket));
+      // 字节搬运与句柄包装复用共享实现（与 PSB 的两条 WS 通道同一份）：
+      // MCPRouter 的隧道没有控制帧（`binaryOnly` 缺省 false，所有帧都是业务字节），
+      // 关闭码 4003 / 4004 在 close 前再发一次可归因错误（与旧实现逐字节等价）。
+      resolve(createExecByteStream(socket as PsbWebSocketLike, {
+        classifyError,
+        classifyClose,
+        closedErrorCodes: [4003, 4004],
+      }));
     });
     socket.on('error', (error) => fail(classifyError(error)));
     socket.on('unexpected-response', (_request, response) => {
@@ -127,69 +141,6 @@ export async function openMcprTunnel(
     });
     socket.on('close', (code, reason) => fail(classifyClose(code, reason)));
   });
-}
-
-function toByteStream(socket: WebSocketLike): ExecStreamHandle {
-  const events = new EventEmitter();
-  let closed = false;
-  socket.on('message', (data) => events.emit('stdout', toBuffer(data)));
-  socket.on('error', (error) => events.emit('stream-error', classifyError(error)));
-  socket.on('close', (code, reason) => {
-    if (closed) return;
-    closed = true;
-    if (code === 4003 || code === 4004) events.emit('stream-error', classifyClose(code, reason));
-    events.emit('close', { code, signal: reason.length ? reason.toString('utf8') : null });
-  });
-  return {
-    write(data) {
-      if (socket.readyState !== WebSocket.OPEN)
-        throw new Error('[MCPR_TUNNEL_UNREACHABLE] tunnel closed');
-      socket.send(data, (error) => {
-        if (error) events.emit('stream-error', classifyError(error));
-      });
-      return true;
-    },
-    end(data) {
-      if (data !== undefined) this.write(data);
-      socket.close(1000, 'client end');
-    },
-    kill() {
-      if (socket.terminate) socket.terminate();
-      else socket.close(1000, 'client kill');
-    },
-    onStdoutBytes(callback) {
-      events.on('stdout', callback);
-      return () => events.off('stdout', callback);
-    },
-    onStdout(callback) {
-      const onBytes = (chunk: Buffer) => callback(chunk.toString('utf8'));
-      events.on('stdout', onBytes);
-      return () => events.off('stdout', onBytes);
-    },
-    onStderr(callback) {
-      events.on('stderr', callback);
-      return () => events.off('stderr', callback);
-    },
-    onDrain(callback) {
-      events.on('drain', callback);
-      return () => events.off('drain', callback);
-    },
-    onClose(callback) {
-      events.on('close', callback);
-      return () => events.off('close', callback);
-    },
-    onError(callback) {
-      events.on('stream-error', callback);
-      return () => events.off('stream-error', callback);
-    },
-  };
-}
-
-function toBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data.map(toBuffer));
-  return Buffer.from(data);
 }
 
 function classifyError(error: Error): Error {

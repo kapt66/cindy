@@ -5,7 +5,9 @@
  * `components/ui/dropdown-menu.tsx` 的默认值(DESIGN §4 Select & Dropdown);
  * DropdownMenu 根与「+」触发按钮在 TabBar。
  *
- * 菜单内容与空面板共用宿主提供的创建菜单。
+ * 菜单内容与空面板共用宿主提供的创建菜单。**所有项**都把当前标签栏所在的组
+ * (`groupId`)与「已打开」通知(`onGlobalTabSelected`)交给 `menu.select`：插件页签与
+ * 「远程工作区」全局页签用它决定落点(点哪排的 + 就落到哪排)，其余 kind 忽略这两个参数。
  */
 
 import { useEffect } from 'react';
@@ -72,21 +74,24 @@ export function AddTabDropdown({
     return () => cancelAnimationFrame(raf);
   }, [open, anchorRef, onClose]);
 
-  const enabled = menu.items.filter(item => item.enabled && item.group !== 'plugins');
-  const plugins = menu.items.filter(item => item.group === 'plugins');
-  const coming = menu.items.filter(item => !item.enabled);
+  const enabled = menu.items.filter((item) => item.enabled && item.group !== 'plugins');
+  const plugins = menu.items.filter((item) => item.group === 'plugins');
+  const coming = menu.items.filter((item) => !item.enabled);
   const renderItem = (item: TabCreationMenu['items'][number]) => (
     <AddTabItem
       key={item.kind}
       icon={item.icon}
       label={item.labelText ?? t(item.labelKey)}
-      trailing={item.alreadyOpen || (item.singleton && existingKinds?.has(item.kind))
-        ? t('rightSidebar.tabs.menu.alreadyOpen') : undefined}
+      trailing={
+        item.alreadyOpen || (item.singleton && existingKinds?.has(item.kind))
+          ? t('rightSidebar.tabs.menu.alreadyOpen')
+          : undefined
+      }
       disabled={item.disabled}
       onSelect={() => {
         onClose();
-        if (item.group === 'plugins') menu.select(item.kind, { groupId, onGlobalTabSelected });
-        else menu.select(item.kind);
+        // 两个入口同款语义：落点 = 点的那排标签栏所在组；单入口内部只写一次组。
+        menu.select(item.kind, { groupId, onGlobalTabSelected });
       }}
     />
   );
@@ -106,11 +111,13 @@ export function AddTabDropdown({
     >
       <DropdownMenuLabel>{t('rightSidebar.tabs.menu.addLabel')}</DropdownMenuLabel>
       {enabled.map(renderItem)}
-      {plugins.length > 0 && <>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>{t('rightSidebar.tabs.menu.pluginsLabel')}</DropdownMenuLabel>
-        {plugins.map(renderItem)}
-      </>}
+      {plugins.length > 0 && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>{t('rightSidebar.tabs.menu.pluginsLabel')}</DropdownMenuLabel>
+          {plugins.map(renderItem)}
+        </>
+      )}
       {coming.length > 0 && (
         <>
           <DropdownMenuSeparator />

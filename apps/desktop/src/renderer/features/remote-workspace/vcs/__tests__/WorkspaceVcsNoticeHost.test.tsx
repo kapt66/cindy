@@ -3,16 +3,17 @@
 /**
  * 测试价值
  * - 生产入口与可观察结果：`WorkspaceVcsNoticeHost` 是版本控制检查通知的**全局接线点**（挂在
- *   App 的 `ConfirmDialogProvider` 内、只挂主窗）。它负责两件事：把 main 的
- *   `onWorkspaceVcsNotice` 广播变成一条非阻塞横幅；把不可逆清理的二次确认接到宿主自己的确认框
- *   （`useConfirmDialog`）。用户可观察结果：推送后马上出现横幅、点「一键清理」先弹宿主确认框、
- *   取消不发请求、确认后只按 kind + `confirm:true` 调 `runWorkspaceVcsAction`。
- * - Bug／规则依据：产品规则 `psb-remote-workspace-sessions.md` §2.7（advisory 非阻塞；清理不可逆
- *   必须二次确认；「继续」不发请求）；工程契约 §13.5.2（挂载点与测试）。
- * - 现有覆盖缺口：store（推送 / 兜底读）与 View（两代形态、确认取消）各有单测，但「宿主订阅
- *   推送 + 用宿主确认框」这条接线没有覆盖 —— 漏订阅就是推送不回显，确认框没接就是点一下就清理。
- * - 最小失败输入：宿主不订阅 `onWorkspaceVcsNotice`；`requestConfirm` 没接确认框而直接执行；
- *   取消后仍调用 `runWorkspaceVcsAction`。
+ *   App 的 `ConfirmDialogProvider` 内、只挂主窗）。它负责把 main 的 `onWorkspaceVcsNotice`
+ *   广播变成一条非阻塞横幅；横幅必须写清「哪个工作区」（多个工作区同时有提示时不能只说一句
+ *   「工作区有未提交修改」），并且只显示**最近被更新**的那一条。
+ * - Bug／规则依据（独立审查 r4 P1）：
+ *   ① 「最近一条」按最近更新时间（更新已有工作区也要排到最前），不是 Map 插入序；
+ *   ② 横幅带工作区名；
+ *   ③ 不可逆清理的二次确认走宿主确认框，并列出入确认范围的检出与修改数；
+ *   ④ 关闭语义：advisory 直接关；非 advisory 先清 main 缓存再关（否则换窗口 / hydrate 复现）。
+ * - 现有覆盖缺口：宿主此前没有「多工作区取最近一条」「工作区名」「非 advisory 关闭」的用例。
+ * - 最小失败输入：先推 ws-1 再推 ws-2 后更新 ws-1（横幅应回到 ws-1）；非 advisory 关闭不调
+ *   main（下次 hydrate 复现已关闭的提示）。
  * - tier：unit（jsdom + 内存 fake bridge，无真实 PSB / Electron）。
  */
 
@@ -22,7 +23,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 import type { WorkspaceVcsNotice } from '../../../../../shared/psb-workspace-vcs';
 import { WorkspaceVcsNoticeHost } from '../WorkspaceVcsNoticeHost';
-import { resetWorkspaceVcsNoticeStoreForTest } from '../vcsNoticeStore';
+import {
+  rememberWorkspaceVcsNoticeWorkspaceLabel,
+  resetWorkspaceVcsNoticeStoreForTest,
+} from '../vcsNoticeStore';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -66,12 +70,29 @@ const ADVISORY: WorkspaceVcsNotice = {
   ],
 };
 
+const NON_ADVISORY: WorkspaceVcsNotice = {
+  ...ADVISORY,
+  advisory: false,
+  messageZh: '工作区有未提交修改',
+  actions: [
+    {
+      kind: 'clean-workspace',
+      method: 'POST',
+      path: '/api/cindy/remote/workspaces/ws-1/vcs/revert',
+      body: { projectIds: [1], confirm: 'revert' },
+    },
+  ],
+};
+
 /** main → renderer 的推送处理器（Host 的 effect 里通过 `onWorkspaceVcsNotice` 注册）。 */
 const noticeHandlers = new Set<(event: unknown) => void>();
 
-function pushNotice(notice: WorkspaceVcsNotice | null): void {
+function pushNotice(
+  notice: WorkspaceVcsNotice | null,
+  workspaceId = 'ws-1',
+): void {
   for (const handler of [...noticeHandlers]) {
-    handler({ workspaceId: 'ws-1', operation: 'occupy', notice });
+    handler({ workspaceId, operation: 'occupy', notice });
   }
 }
 
@@ -135,8 +156,8 @@ describe('WorkspaceVcsNoticeHost', () => {
     expect(banner.dataset['variant']).toBe('banner');
     expect(banner.dataset['advisory']).toBe('true');
     expect(banner.textContent).toContain('检测到未提交修改（1 个检出）');
-    // 悬浮容器不遮断输入：外层 pointer-events-none、内层可点。
-    expect(host.className).toContain('pointer-events-none');
+    // 悬浮容器不遮断输入：advisory 是建议，不是模态。
+    expect(host.getAttribute('data-placement')).toBe('bottom-right');
 
     // 不可逆动作：宿主已有确认框能力，点一下**直接**弹宿主确认（不再叠加 View 的内联两步确认，
     // 否则用户要点两次）；此时没有发出任何后端动作。
@@ -144,6 +165,10 @@ describe('WorkspaceVcsNoticeHost', () => {
     expect(screen.queryByTestId('workspace-vcs-confirm')).toBeNull();
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText('remoteWorkspace.vcs.confirm.title')).toBeTruthy();
+    // 确认框必须列出确认范围（检出路径 + 未提交修改数），而不是只说「1 个检出」。
+    expect(dialog.textContent).toContain(
+      'remoteWorkspace.vcs.projectLine#.,p4,3',
+    );
     expect(bridge.runWorkspaceVcsAction).not.toHaveBeenCalled();
 
     // 取消：不执行。
@@ -178,6 +203,35 @@ describe('WorkspaceVcsNoticeHost', () => {
     );
   });
 
+  it('多工作区并存时只显示最近更新的一条，并带工作区名', async () => {
+    installBridge();
+    renderHost();
+    await act(async () => {
+      rememberWorkspaceVcsNoticeWorkspaceLabel('ws-1', '打包机 · saga2');
+      rememberWorkspaceVcsNoticeWorkspaceLabel('ws-2', '渲染机 · saga2');
+      pushNotice(ADVISORY, 'ws-1');
+      pushNotice({ ...ADVISORY, messageZh: '第二个工作区的提示' }, 'ws-2');
+    });
+    // 先写 ws-1 再写 ws-2：最近一条是 ws-2。
+    expect(screen.getByTestId('workspace-vcs-notice').textContent).toContain(
+      '第二个工作区的提示',
+    );
+    expect(screen.getByTestId('workspace-vcs-workspace-label').textContent).toBe(
+      '渲染机 · saga2',
+    );
+
+    // 更新已有工作区 ws-1：它必须重新成为「最近一条」（旧实现按插入序会仍然显示 ws-2）。
+    await act(async () => {
+      pushNotice({ ...ADVISORY, messageZh: '第一个工作区更新了' }, 'ws-1');
+    });
+    expect(screen.getByTestId('workspace-vcs-notice').textContent).toContain(
+      '第一个工作区更新了',
+    );
+    expect(screen.getByTestId('workspace-vcs-workspace-label').textContent).toBe(
+      '打包机 · saga2',
+    );
+  });
+
   it('收到 notice:null（成功占用 / 释放 / 清理后）撤下横幅', async () => {
     installBridge();
     renderHost();
@@ -188,6 +242,33 @@ describe('WorkspaceVcsNoticeHost', () => {
 
     await act(async () => {
       pushNotice(null);
+    });
+    expect(screen.queryByTestId('workspace-vcs-notice-host')).toBeNull();
+  });
+
+  it('advisory 关闭只清本地；非 advisory 关闭先清 main 缓存再关', async () => {
+    const bridge = installBridge();
+    renderHost();
+    await act(async () => {
+      pushNotice(ADVISORY);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'remoteWorkspace.vcs.dismiss' }));
+    });
+    // advisory 是「操作已成功后的建议」：关掉就够，不必打 main。
+    expect(bridge.runWorkspaceVcsAction).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('workspace-vcs-notice-host')).toBeNull();
+
+    // 非 advisory（旧版 409）关闭：先让 main 清缓存，否则换窗口 / hydrate 会把已关闭的提示复现。
+    await act(async () => {
+      pushNotice(NON_ADVISORY);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'remoteWorkspace.vcs.dismiss' }));
+    });
+    expect(bridge.runWorkspaceVcsAction).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      kind: 'continue',
     });
     expect(screen.queryByTestId('workspace-vcs-notice-host')).toBeNull();
   });

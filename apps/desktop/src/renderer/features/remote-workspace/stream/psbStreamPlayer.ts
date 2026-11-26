@@ -11,7 +11,7 @@
  * 帧来自 `PsbStreamEvent{type:'frame'}`（main 侧观看端转发），本模块只做三件事：
  * 解析信封 → 维护 `VideoDecoder` → 把解出的 `VideoFrame` 画到 canvas。
  *
- * 本模块**只负责解码画帧**：不采集键鼠、不发会话级 `streamInput`。可交互观看的输入由
+ * 本模块**只负责解码画帧**：不采集键鼠、不发任何输入事件。可交互观看的输入由
  * `admin/usePsbStreamInteraction.ts` 采集、经**工作区级** `adminStreamInput` 发到同一条
  * 观看端 WS（产品正本 `docs/product-rules/psb-remote-workspace-sessions.md` §2.4，
  * 工程契约 §12.2）；播放器与输入通道互不依赖。
@@ -25,6 +25,15 @@ import {
 
 /** 解码队列积压超过该值就丢掉后续 delta 帧，等下一个关键帧重来（与既有播放器同口径）。 */
 const MAX_DECODE_QUEUE = 8;
+/**
+ * 「提交解码时间」待配对样本的上限。
+ *
+ * 正常情形每次 `decode()` 都会在不久后产出一帧，样本被输出回调逐个取走；但解码器在错误 /
+ * 硬件重建窗口里可能连续吃掉输入不产出，若只 push 不设上限，这个数组会随串流时长无限增长。
+ * 保留最近 N 次提交足够算延迟分布；极端积压时配对可能偏向更早的提交（延迟被高估），
+ * 这是**有意的取舍**：统计只用于 HUD，内存与「不随时长泄漏」优先。
+ */
+export const PSB_STREAM_MAX_PENDING_SUBMISSIONS = 64;
 /** 逐帧递增的时间戳步长；只用于让解码器有单调时间轴，不参与播放节奏。 */
 const FRAME_DURATION_US = 16_667;
 
@@ -84,14 +93,19 @@ function nowMs(): number {
 /**
  * 创建播放器。WebCodecs 缺席或 canvas 没有 2D 上下文时返回 `null`
  * （调用方据此显示「这台客户端没有开启串流能力」）。
+ *
+ * @param options.now 时钟（默认 `performance.now()`）；只为让解码延迟统计可被行为测试钉住，
+ *   生产调用方不需要传。
  */
 export function createPsbStreamPlayer(
   canvas: HTMLCanvasElement,
   handlers: PsbStreamPlayerHandlers = {},
+  options: { readonly now?: () => number } = {},
 ): PsbStreamPlayer | null {
   if (typeof VideoDecoder === 'undefined') return null;
   const context = canvas.getContext('2d');
   if (!context) return null;
+  const now = options.now ?? nowMs;
 
   let disposed = false;
   let decoder: VideoDecoder | null = null;
@@ -130,7 +144,7 @@ export function createPsbStreamPlayer(
   const recordDecodeLatency = (frame: VideoFrame): void => {
     const startedAt = submittedAt.shift();
     if (startedAt === undefined) return;
-    const elapsed = nowMs() - startedAt;
+    const elapsed = now() - startedAt;
     if (!Number.isFinite(elapsed) || elapsed < 0) return;
     latencySamples.push(elapsed);
     if (latencySamples.length > LATENCY_SAMPLE_LIMIT) latencySamples.shift();
@@ -240,7 +254,8 @@ export function createPsbStreamPlayer(
           data: psbVideoChunkData(payload, nalFormat),
         }),
       );
-      submittedAt.push(nowMs());
+      submittedAt.push(now());
+      if (submittedAt.length > PSB_STREAM_MAX_PENDING_SUBMISSIONS) submittedAt.shift();
       timestamp += FRAME_DURATION_US;
     } catch {
       dropDecoder();

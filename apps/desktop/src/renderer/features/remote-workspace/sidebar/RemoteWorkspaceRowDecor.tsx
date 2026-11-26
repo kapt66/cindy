@@ -37,7 +37,11 @@ import { useStableTranslation as useTranslation } from '@/hooks/useStableTransla
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { psbWorkspaceHealth, type PsbWorkspaceTone } from '../../../../shared/psb-remote-workspace';
+import {
+  psbWorkspaceHealth,
+  type PsbRemoteWorkspace,
+  type PsbWorkspaceTone,
+} from '../../../../shared/psb-remote-workspace';
 import { tryGetPsbRemoteBridge } from '../bridge';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
 import { psbFailureText } from '../psbFailureText';
@@ -63,16 +67,22 @@ type RemoteWorkspaceRowSession = RemoteWorkspaceSidebarSessionLike;
  * 工作区 id 解析顺序（详见 `remoteWorkspaceStatusStore.ts` 文件头）：缓存里的显式绑定 /
  * 虚拟工作目录反查 → 兜底一次 `sessionStatus()`（**仅在用户点击时**发生，不是渲染期请求，
  * 不用逐行打 PSB）。
+ *
+ * `workspace` 由 `RemoteWorkspaceRowDecor` 一次解析后传入；单独使用本组件时才内部解析
+ * （兼容旧调用点，FIX-F 迁移后应只用合并组件）。
  */
 export function RemoteWorkspaceOpenButton({
   session,
   isActive,
+  workspace: resolvedWorkspace,
 }: {
   session: RemoteWorkspaceRowSession;
   isActive: boolean;
+  workspace?: PsbRemoteWorkspace | null;
 }) {
   const { t } = useTranslation();
-  const workspace = useRemoteWorkspaceForSession(session);
+  const storeWorkspace = useRemoteWorkspaceForSession(resolvedWorkspace === undefined ? session : null);
+  const workspace = resolvedWorkspace === undefined ? storeWorkspace : resolvedWorkspace;
   const [opening, setOpening] = useState(false);
   const label = t('remoteWorkspace.session.openWorkspace');
 
@@ -144,10 +154,21 @@ export function RemoteWorkspaceOpenButton({
 /**
  * 状态标签 + 锁。工作区状态未解析出来时不渲染任何东西 —— 宁可暂时没有标签，也不能把
  * 「在线 / 使用中」贴到错的工作区上。
+ *
+ * `workspace` 由 `RemoteWorkspaceRowDecor` 一次解析后传入（同一次渲染只解析一次）。
  */
-export function RemoteWorkspaceStatusBadges({ session }: { session: RemoteWorkspaceRowSession }) {
+export function RemoteWorkspaceStatusBadges({
+  session,
+  workspace: resolvedWorkspace,
+}: {
+  session: RemoteWorkspaceRowSession;
+  workspace?: PsbRemoteWorkspace | null;
+}) {
   const { t } = useTranslation();
-  const workspace = useRemoteWorkspaceForSession(session);
+  const storeWorkspace = useRemoteWorkspaceForSession(
+    resolvedWorkspace === undefined ? session : null,
+  );
+  const workspace = resolvedWorkspace === undefined ? storeWorkspace : resolvedWorkspace;
   if (!workspace) return null;
   const health = psbWorkspaceHealth(workspace);
   // 锁的 Tip 与页头占用文案共用同一格式函数（2026-11-26）：有名字显示名字，自己占用追加「（你）」。
@@ -189,5 +210,29 @@ export function RemoteWorkspaceStatusBadges({ session }: { session: RemoteWorksp
         </Tip>
       ) : null}
     </span>
+  );
+}
+
+/**
+ * 会话行上「外链按钮 + 状态标签/锁」的**合并入口**（2026-11-26 审查：一次解析传给两个装饰）。
+ *
+ * 两个装饰都需要「这条会话属于哪个工作区」：旧调用点分别挂 `RemoteWorkspaceOpenButton` 与
+ * `RemoteWorkspaceStatusBadges`，同一行同一次渲染解析两遍。这里解析一次，把结果当 prop 传下去。
+ *
+ * 调用点（`SessionItem` / `SessionCard`，FIX-F 负责迁移）应只挂这一个组件。
+ */
+export function RemoteWorkspaceRowDecor({
+  session,
+  isActive,
+}: {
+  session: RemoteWorkspaceRowSession;
+  isActive: boolean;
+}) {
+  const workspace = useRemoteWorkspaceForSession(session);
+  return (
+    <>
+      <RemoteWorkspaceOpenButton session={session} isActive={isActive} workspace={workspace} />
+      <RemoteWorkspaceStatusBadges session={session} workspace={workspace} />
+    </>
   );
 }

@@ -45,8 +45,18 @@ import { remoteWorkspacePsbSessionId } from './isRemoteWorkspaceSession';
 
 const log = createLogger('RemoteWorkspaceSidebar');
 
-/** 状态刷新节流：侧栏行上的标签不需要秒级实时，10~15s 一档避免 PSB 请求风暴。 */
+/** 状态刷新节流（批量拉取的最小间隔）：侧栏行上的标签不需要秒级实时。 */
 const REFRESH_TTL_MS = 12_000;
+
+/**
+ * 轮询间隔（节点挂载期间）。
+ *
+ * 与 `REFRESH_TTL_MS` **分开**：TTL 是「两次批量拉取至少隔多久」的节流，轮询是「多久主动刷一次」
+ * 的节奏。用同一个常量会让轮询永远刚好卡在 TTL 边界上（浮点/调度抖动时被节流吞掉一次，
+ * 表现为偶尔 24s 才更新），也让「聚焦补拉」「推送增量」与轮询互相污染。轮询略长于 TTL，
+ * 保证每次轮询都能真的发请求。
+ */
+const POLL_INTERVAL_MS = 15_000;
 
 /** 侧栏会话行解析工作区所需的字段（`Session` 满足该结构）。 */
 export interface RemoteWorkspaceSidebarSessionLike {
@@ -71,9 +81,18 @@ let releaseBridgeEvents: (() => void) | null = null;
 let retainCount = 0;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let focusRegistered = false;
+/**
+ * 会话 → 工作区反查的**单次解析缓存**：侧栏同一行会挂两个装饰组件（外链按钮 + 状态徽标），
+ * 它们各自调用 `resolveRemoteWorkspaceForSession`，一次渲染就是两次全表扫描。
+ * 键里带 `snapshot.revision`，任何批量刷新/推送都会让缓存自然失效。
+ */
+let resolveCacheKey: string | null = null;
+let resolveCacheResult: PsbRemoteWorkspace | null = null;
 
 function publishListChange(loadFailed: boolean): void {
   snapshot = { revision: snapshot.revision + 1, loadFailed };
+  resolveCacheKey = null;
+  resolveCacheResult = null;
   for (const listener of listListeners) listener();
 }
 
@@ -89,18 +108,68 @@ export function subscribeRemoteWorkspaceList(listener: () => void): () => void {
   };
 }
 
-/** 只比较会渲染到行上的字段；达到「同一条工作区行」的程度就够了。 */
-function sameWorkspace(a: PsbRemoteWorkspace, b: PsbRemoteWorkspace): boolean {
+/**
+ * 行投影：**只包含会渲染到侧栏行上的字段**。
+ *
+ * 旧实现手列 14 个字段做逐字段比较：新增一个渲染字段时要么忘记加（状态不刷新），要么把
+ * 只用于其它入口的字段也塞进来（无谓地让整行重渲染）。这里让「比较什么」由投影结构直接表达：
+ * 投影里有什么字段，就是行会读到什么；没进投影的字段变化不会替换对象引用。
+ */
+interface RemoteWorkspaceRowProjection {
+  readonly id: string;
+  readonly title: string;
+  readonly clientName: string;
+  readonly templateTitle: string | null;
+  readonly directoryName: string | null;
+  readonly state: string | null;
+  readonly clientOnline: boolean;
+  readonly usable: boolean;
+  readonly unusableReason: string | null;
+  readonly occupancy: {
+    readonly occupied: boolean;
+    readonly byMe: boolean;
+    readonly personId: string | null;
+    readonly personName: string;
+    readonly occupiedAt: number | null;
+  };
+}
+
+function workspaceRowProjection(workspace: PsbRemoteWorkspace): RemoteWorkspaceRowProjection {
+  return {
+    id: workspace.id,
+    title: workspace.title,
+    clientName: workspace.clientName,
+    templateTitle: workspace.templateTitle,
+    directoryName: workspace.directoryName,
+    state: workspace.state,
+    clientOnline: workspace.clientOnline,
+    usable: workspace.usable,
+    unusableReason: workspace.unusableReason,
+    occupancy: {
+      occupied: workspace.occupancy.occupied,
+      byMe: workspace.occupancy.byMe,
+      personId: workspace.occupancy.personId,
+      personName: workspace.occupancy.personName,
+      occupiedAt: workspace.occupancy.occupiedAt,
+    },
+  };
+}
+
+/** 两个行投影是否完全相同（字段少、浅比较；`occupancy` 是唯一嵌套对象）。 */
+function sameRowProjection(
+  a: RemoteWorkspaceRowProjection,
+  b: RemoteWorkspaceRowProjection,
+): boolean {
   return (
     a.id === b.id &&
     a.title === b.title &&
-    a.clientOnline === b.clientOnline &&
+    a.clientName === b.clientName &&
+    a.templateTitle === b.templateTitle &&
+    a.directoryName === b.directoryName &&
     a.state === b.state &&
+    a.clientOnline === b.clientOnline &&
     a.usable === b.usable &&
     a.unusableReason === b.unusableReason &&
-    a.directoryName === b.directoryName &&
-    a.webUrl === b.webUrl &&
-    a.sessionsWebUrl === b.sessionsWebUrl &&
     a.occupancy.occupied === b.occupancy.occupied &&
     a.occupancy.byMe === b.occupancy.byMe &&
     a.occupancy.personId === b.occupancy.personId &&
@@ -109,12 +178,15 @@ function sameWorkspace(a: PsbRemoteWorkspace, b: PsbRemoteWorkspace): boolean {
   );
 }
 
+/** 行投影不变时保留旧对象引用：行上的快照不变 → React 不重渲染这一行。 */
 function mergeWorkspace(
   previous: PsbRemoteWorkspace | undefined,
   next: PsbRemoteWorkspace,
 ): PsbRemoteWorkspace {
-  // 内容没变就保留旧引用：行上的快照不变 → React 不重渲染这一行。
-  return previous && sameWorkspace(previous, next) ? previous : next;
+  if (!previous) return next;
+  return sameRowProjection(workspaceRowProjection(previous), workspaceRowProjection(next))
+    ? previous
+    : next;
 }
 
 /**
@@ -174,12 +246,19 @@ export function resolveRemoteWorkspaceForSession(
   if (remoteWorkspacePsbSessionId(session) === null) return null;
   const workingDir = session.workingDir?.trim();
   if (!workingDir) return null;
+  const cacheKey = `${snapshot.revision}\u0000${workingDir}`;
+  if (resolveCacheKey === cacheKey) return resolveCacheResult;
   let found: PsbRemoteWorkspace | null = null;
   for (const workspace of workspacesById.values()) {
     if (!matchesVirtualWorkingDir(workspace, workingDir)) continue;
-    if (found) return null;
+    if (found) {
+      found = null;
+      break;
+    }
     found = workspace;
   }
+  resolveCacheKey = cacheKey;
+  resolveCacheResult = found;
   return found;
 }
 
@@ -231,7 +310,7 @@ export function retainRemoteWorkspaceStatus(): () => void {
     void refreshRemoteWorkspaces(true);
     pollTimer = setInterval(() => {
       void refreshRemoteWorkspaces(true);
-    }, REFRESH_TTL_MS);
+    }, POLL_INTERVAL_MS);
     if (typeof window !== 'undefined' && !focusRegistered) {
       focusRegistered = true;
       window.addEventListener('focus', handleWindowFocus);
@@ -255,8 +334,14 @@ export function retainRemoteWorkspaceStatus(): () => void {
     }
     // 释放引用后不留陈旧快照：下次打开侧栏重新拉，避免展示很久以前占用状态。
     workspacesById = new Map();
+    resolveCacheKey = null;
+    resolveCacheResult = null;
     inFlight = null;
     loadedAtMs = 0;
+    // **清空也要 publish**：否则已经挂着的会话行还拿着旧工作区引用，占用锁/状态标签不会消失
+    // （旧实现只在清空前不通知，节点收起后行上残留「使用中」）。
+    snapshot = { revision: snapshot.revision + 1, loadFailed: false };
+    for (const listener of listListeners) listener();
   };
 }
 
@@ -273,6 +358,8 @@ export function resetRemoteWorkspaceStatusForTest(): void {
     focusRegistered = false;
   }
   workspacesById = new Map();
+  resolveCacheKey = null;
+  resolveCacheResult = null;
   listListeners.clear();
   snapshot = { revision: 0, loadFailed: false };
   loadedAtMs = 0;

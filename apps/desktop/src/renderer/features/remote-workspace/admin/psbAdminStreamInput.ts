@@ -27,7 +27,7 @@
  * 发送失败只吞掉错误（WS 断开会由串流状态驱动界面），不打断后续输入。
  */
 
-import { tryGetPsbRemoteBridge } from '../bridge';
+import { psbBridgeHasMethod, tryGetPsbRemoteBridge } from '../bridge';
 import type { PsbWorkspaceAdminStreamInputRequest } from '../../../../shared/psb-workspace-admin';
 import type { PsbRemoteBridge } from '../bridge';
 import type { PsbStreamInputEvent } from '../stream/psbStreamInput';
@@ -40,12 +40,13 @@ export type PsbAdminStreamInputBridge = Pick<PsbRemoteBridge, 'adminStreamInput'
 
 /**
  * 取带输入通道的 preload 桥；方法不存在时返回 `null`（**只读观看**降级，不是错误）。
+ *
+ * 方法探测统一走 `psbBridgeHasMethod`（单点断言；方法名受编译期约束）。
  */
 export function tryGetAdminStreamInputBridge(): PsbAdminStreamInputBridge | null {
-  const bridge = tryGetPsbRemoteBridge() as unknown as Record<string, unknown> | null;
-  if (!bridge) return null;
-  if (typeof bridge.adminStreamInput !== 'function') return null;
-  return bridge as unknown as PsbAdminStreamInputBridge;
+  const bridge = tryGetPsbRemoteBridge();
+  if (!psbBridgeHasMethod(bridge, 'adminStreamInput')) return null;
+  return bridge as PsbAdminStreamInputBridge;
 }
 
 /** 「画面捕获态」开关（工作区级；全屏时通知 main 让本窗口的宿主快捷键让路）。 */
@@ -56,10 +57,9 @@ export type PsbAdminStreamCaptureBridge = Pick<PsbRemoteBridge, 'setAdminStreamC
  * 菜单快捷键可能仍会响应 —— 降级路径由渲染层的 `preventDefault` 尽力兜住）。
  */
 export function tryGetAdminStreamCaptureBridge(): PsbAdminStreamCaptureBridge | null {
-  const bridge = tryGetPsbRemoteBridge() as unknown as Record<string, unknown> | null;
-  if (!bridge) return null;
-  if (typeof bridge.setAdminStreamCaptureActive !== 'function') return null;
-  return bridge as unknown as PsbAdminStreamCaptureBridge;
+  const bridge = tryGetPsbRemoteBridge();
+  if (!psbBridgeHasMethod(bridge, 'setAdminStreamCaptureActive')) return null;
+  return bridge as PsbAdminStreamCaptureBridge;
 }
 
 export interface PsbStreamInputSender {

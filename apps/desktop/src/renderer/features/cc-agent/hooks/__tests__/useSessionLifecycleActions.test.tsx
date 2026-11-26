@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   logInfo: vi.fn(),
   logWarn: vi.fn(),
   logError: vi.fn(),
+  findById: vi.fn(),
 }));
 
 vi.mock('react-router-dom', async (importOriginal) => ({
@@ -86,6 +87,7 @@ vi.mock('@/lib/sessionsStore', () => ({
     beginStatusTransitionWhenReady: mocks.beginStatusTransitionWhenReady,
     completeStatusTransition: mocks.completeStatusTransition,
     rollbackStatusTransition: mocks.rollbackStatusTransition,
+    findById: mocks.findById,
   },
 }));
 
@@ -106,6 +108,7 @@ vi.mock('@/lib/logger', () => ({
 
 import { useSessionLifecycleActions } from '../useSessionLifecycleActions';
 import { isSessionRemovalRouteCurrent } from '../../lib/sessionRemovalNavigation';
+import { __testing as psbReleaseTesting, listPsbSessionReleases } from '../../psbOccupancyRelease';
 import { clearRemoteSessionActivity, applyRemoteSessionActivity } from '@/features/device-link/remoteSessionActivityStore';
 
 beforeEach(() => {
@@ -614,6 +617,73 @@ describe('useSessionLifecycleActions archive optimistic ordering', () => {
 
 });
 
+describe('useSessionLifecycleActions PSB workspace release', () => {
+  // 二轮审查 s5/s8 P1：归档 / 删除的占用归还是 **main 单权威**（终态 observer 在落库后发起）。
+  // 渲染层若为同一次动作再报一次，就是一次归档两轮 PSB 请求（sessionStatus + release）并与
+  // main 账本双记账。最小失败输入：这里断言 `releaseWorkspaceForSession` 未被调用。
+  it('does not send a second PSB release report after the archive write succeeds', async () => {
+    const releaseWorkspaceForSession = vi.fn().mockResolvedValue(undefined);
+    psbReleaseTesting.setBridge(() => ({ releaseWorkspaceForSession }) as never);
+    psbReleaseTesting.reset();
+    mocks.findById.mockReturnValue({ id: 'psb-task', remoteHostId: 'psb:psb-session-9', status: 'active' });
+    try {
+      const { result } = renderHook(() => useSessionLifecycleActions());
+      await act(async () => {
+        await result.current.runSessionAction('psb-task', 'archive', { activeSessionId: null });
+      });
+      expect(mocks.setStatus).toHaveBeenCalledWith('psb-task', 'archived', { kind: 'local' });
+      expect(releaseWorkspaceForSession).not.toHaveBeenCalled();
+      expect(listPsbSessionReleases()).toHaveLength(0);
+    } finally {
+      psbReleaseTesting.setBridge(null);
+      psbReleaseTesting.reset();
+    }
+  });
+
+  // 旧 main / 旧 preload（没有释放 IPC，也就没有终态 observer）：兼容账本要留住这条结束事件，
+  // 升级后由 flush 补投一次。最小失败输入：旧 build 下直接丢弃 → 占用永不归还。
+  it('keeps the end event in the legacy ledger when main has no session-end release', async () => {
+    psbReleaseTesting.setBridge(() => ({}) as never);
+    psbReleaseTesting.reset();
+    mocks.findById.mockReturnValue({ id: 'psb-legacy', remoteHostId: 'psb:psb-session-3', status: 'active' });
+    try {
+      const { result } = renderHook(() => useSessionLifecycleActions());
+      await act(async () => {
+        await result.current.runSessionAction('psb-legacy', 'delete', { activeSessionId: null });
+      });
+      expect(listPsbSessionReleases()).toEqual([
+        expect.objectContaining({
+          localSessionId: 'psb-legacy',
+          psbSessionId: 'psb-session-3',
+          reason: 'session-deleted',
+        }),
+      ]);
+    } finally {
+      psbReleaseTesting.setBridge(null);
+      psbReleaseTesting.reset();
+    }
+  });
+
+  it('does not report local tasks that carry no PSB identity', async () => {
+    const releaseWorkspaceForSession = vi.fn().mockResolvedValue(undefined);
+    psbReleaseTesting.setBridge(() => ({ releaseWorkspaceForSession }) as never);
+    psbReleaseTesting.reset();
+    mocks.findById.mockReturnValue({ id: 'local-task', remoteHostId: null, status: 'active' });
+    try {
+      const { result } = renderHook(() => useSessionLifecycleActions());
+      await act(async () => {
+        await result.current.runSessionAction('local-task', 'archive', { activeSessionId: null });
+      });
+      expect(releaseWorkspaceForSession).not.toHaveBeenCalled();
+      expect(listPsbSessionReleases()).toHaveLength(0);
+    } finally {
+      psbReleaseTesting.setBridge(null);
+      psbReleaseTesting.reset();
+    }
+  });
+});
+
+
 describe('useSessionLifecycleActions delete cache invalidation', () => {
   // Unit: deleting the last visible task enters the real generic new-task route.
   // Existing delete tests have no active route and cannot catch a missing default-directory marker.
@@ -796,3 +866,6 @@ describe('useSessionLifecycleActions unarchive convergence', () => {
     expect(mocks.toastError).toHaveBeenCalledWith('ccAgent.sidebar.unarchiveFailed');
   });
 });
+
+
+

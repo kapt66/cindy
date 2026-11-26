@@ -22,7 +22,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { ManagerServer } from '../server.js';
-import { PiSessionRegistry, scrubCredentialText } from '../session-registry.js';
+import { PiSessionRegistry, resolvePiEnsureChildCwd, scrubCredentialText } from '../session-registry.js';
 import {
   METHODS,
   NOTIFICATIONS,
@@ -363,8 +363,6 @@ async function runDaemon(
   const registry = new PiSessionRegistry({
     sockDir,
     envDir,
-    // pi 子进程的 cwd 显式钉在 daemon 启动 cwd 上（宿主用它把会话工作区传进来；见上）。
-    ...(launchCwd !== undefined ? { defaultChildCwd: launchCwd } : {}),
     // 空闲回收超时可配置(秒):默认 1800s, 缩短便于真机验证(自审轮 10 B-1)。
     ...(idleTimeoutSeconds !== undefined
       ? { idleTimeoutMs: idleTimeoutSeconds * 1000 }
@@ -386,12 +384,24 @@ async function runDaemon(
       || typeof p.env !== 'object' || p.env === null) {
       throw makeError('INVALID_PARAMS', 'pi/ensure requires sessionId, cmd, env, envHash');
     }
+    if (p.cwdPolicy !== undefined && p.cwdPolicy !== 'host' && p.cwdPolicy !== 'command'
+      && p.cwdPolicy !== 'explicit') {
+      throw makeError('INVALID_PARAMS', `pi/ensure unknown cwdPolicy ${JSON.stringify(p.cwdPolicy)}`);
+    }
+    // cwd 归属显式解析（唯一判定点，见 resolvePiEnsureChildCwd）：daemon 不在 registry 里
+    // 隐式用进程 cwd 兜底，也不猜客户端想要哪种语义。
+    const childCwd = resolvePiEnsureChildCwd({
+      policy: p.cwdPolicy,
+      cwd: typeof p.cwd === 'string' ? p.cwd : undefined,
+      hostLaunchCwd: launchCwd,
+    });
     const result = await registry.ensure(
       p.sessionId,
       p.cmd,
       p.env as Record<string, string>,
       p.envHash,
       p.restart === true,
+      childCwd,
     );
     return result satisfies PiEnsureResult;
   });

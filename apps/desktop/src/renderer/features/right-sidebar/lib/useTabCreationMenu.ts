@@ -13,11 +13,16 @@ import { listTabKindMenuMetas, useTabKindRegistryVersion } from '../registry';
 import type { TabKindId, TabKindMenuMeta } from '../types';
 import { canOpenSideChat, openSideChatTab, type SideChatTabPlacement } from './openSideChatTab';
 import {
-  addGlobalPluginTab, globalTabTitleForGhost, isGlobalTabCapableGhost,
-  addRemoteWorkspaceAdminTab, findRemoteWorkspaceAdminTab, isRemoteWorkspaceAdminKind,
-  preferredRemoteWorkspaceAdminGroup,
-  setActiveGlobalTabId, useGlobalTabs, type PluginViewTabState,
+  addGlobalPluginTab,
+  globalTabTitleForGhost,
+  isGlobalTabCapableGhost,
+  findRemoteWorkspaceAdminTab,
+  isRemoteWorkspaceAdminKind,
+  setActiveGlobalTabId,
+  useGlobalTabs,
+  type PluginViewTabState,
 } from '../globalTabs';
+import { openRemoteWorkspaceAdminTab } from '@/features/remote-workspace/admin/remoteWorkspaceAdminTab';
 import type { TabGroupId } from '../tabGroups';
 
 const BOT_SECONDARY_KINDS = new Set<TabKindId>([
@@ -33,9 +38,14 @@ export interface TabCreationSelectionOptions {
 }
 
 export interface TabCreationMenu {
-  items: Array<TabKindMenuMeta & {
-    disabled: boolean; busy: boolean; group?: 'plugins'; alreadyOpen?: boolean;
-  }>;
+  items: Array<
+    TabKindMenuMeta & {
+      disabled: boolean;
+      busy: boolean;
+      group?: 'plugins';
+      alreadyOpen?: boolean;
+    }
+  >;
   select: (kind: TabKindId, options?: TabCreationSelectionOptions) => void;
 }
 
@@ -54,53 +64,63 @@ export function useTabCreationMenu({
   useTabKindRegistryVersion();
   const installedGhosts = useInstalledGhosts();
   const globalTabs = useGlobalTabs();
-  const pluginEntries = installedGhosts.filter(isGlobalTabCapableGhost).map(ghost => {
-    const instanceId = installedGhostStoragePart(ghost);
-    return {
-      kind: `ghost:${instanceId}` as TabKindId,
-      instanceId,
-      ghost,
-      title: globalTabTitleForGhost(ghost),
-      icon: MAIN_VIEW_ICONS[ghost.manifest.mainView?.icon ?? 'puzzle'] ?? Puzzle,
-      open: globalTabs.some(tab => (tab.state as PluginViewTabState | null)?.instanceId === instanceId),
-    };
-  }).sort((a, b) => a.title.localeCompare(b.title) || a.instanceId.localeCompare(b.instanceId));
+  const pluginEntries = installedGhosts
+    .filter(isGlobalTabCapableGhost)
+    .map((ghost) => {
+      const instanceId = installedGhostStoragePart(ghost);
+      return {
+        kind: `ghost:${instanceId}` as TabKindId,
+        instanceId,
+        ghost,
+        title: globalTabTitleForGhost(ghost),
+        icon: MAIN_VIEW_ICONS[ghost.manifest.mainView?.icon ?? 'puzzle'] ?? Puzzle,
+        open: globalTabs.some(
+          (tab) => (tab.state as PluginViewTabState | null)?.instanceId === instanceId,
+        ),
+      };
+    })
+    .sort((a, b) => a.title.localeCompare(b.title) || a.instanceId.localeCompare(b.instanceId));
   const bots = useBotProfiles();
   const bot = sessionId ? findBotProfileForSession(bots, sessionId) : undefined;
   const detachedOwner = useContext(DetachedBotMenuOwnerContext);
   const linkedOwner = detachedOwner?.sessionId === sessionId ? detachedOwner : null;
   const isBotSession = Boolean(bot || linkedOwner);
-  const localSession = useSyncExternalStore(
-    sessionsStore.subscribe,
-    () => sessionId ? sessionsStore.findById(sessionId) : null,
+  const localSession = useSyncExternalStore(sessionsStore.subscribe, () =>
+    sessionId ? sessionsStore.findById(sessionId) : null,
   );
   const remoteSessions = useRemoteProjectSessions();
-  const session = remoteSessions.find(row => row.id === sessionId) ?? localSession;
+  const session = remoteSessions.find((row) => row.id === sessionId) ?? localSession;
   const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
   const pending = useRef<string | null>(null);
-  const items = listTabKindMenuMetas().filter(item => {
-    if (item.kind.startsWith('ghost:')) return false;
-    if (item.kind === 'subagents' && !subagentsAvailable) return false;
-    if (item.kind === 'side-chat' && (isBotSession || !canOpenSideChat(session))) return false;
-    return !isBotSession || !BOT_SECONDARY_KINDS.has(item.kind) || isRemoteWorkspaceAdminKind(item.kind);
-  }).map(item => {
-    const busy = item.kind === 'side-chat' && !!sessionId && openingSessionId === sessionId;
-    // 「远程工作区」是全局页签(不跟任务、不按会话分桶):没有打开任务 / 打开的不是远程工作区
-    // 任务时也允许打开,页面自己显示提示态;已有同一页时菜单显示「已打开」。
-    const adminKind = isRemoteWorkspaceAdminKind(item.kind);
-    return {
-      ...item,
-      busy,
-      ...(adminKind ? { alreadyOpen: findRemoteWorkspaceAdminTab() !== null } : {}),
-      disabled: adminKind
-        ? !item.enabled || busy
-        : !sessionId || !item.enabled || busy
-          || (item.kind === 'side-chat' && isRemoteSessionWriteBlocked(session)),
-    };
-  });
+  const items = listTabKindMenuMetas()
+    .filter((item) => {
+      if (item.kind.startsWith('ghost:')) return false;
+      if (item.kind === 'subagents' && !subagentsAvailable) return false;
+      if (item.kind === 'side-chat' && (isBotSession || !canOpenSideChat(session))) return false;
+      // Bot 会话只收「伙伴的次要页签」白名单；「远程工作区」不是次要页签（不在集合里），
+      // 因此自然通过这一条 —— 不要再补一个 kind 特判。
+      return !isBotSession || !BOT_SECONDARY_KINDS.has(item.kind);
+    })
+    .map((item) => {
+      const busy = item.kind === 'side-chat' && !!sessionId && openingSessionId === sessionId;
+      // 「远程工作区」是全局页签(不跟任务、不按会话分桶):没有打开任务 / 打开的不是远程工作区
+      // 任务时也允许打开,页面自己显示提示态;已有同一页时菜单显示「已打开」。
+      const adminKind = isRemoteWorkspaceAdminKind(item.kind);
+      return {
+        ...item,
+        busy,
+        ...(adminKind ? { alreadyOpen: findRemoteWorkspaceAdminTab() !== null } : {}),
+        disabled: adminKind
+          ? !item.enabled || busy
+          : !sessionId ||
+            !item.enabled ||
+            busy ||
+            (item.kind === 'side-chat' && isRemoteSessionWriteBlocked(session)),
+      };
+    });
 
   const select = (kind: TabKindId, options?: TabCreationSelectionOptions) => {
-    const plugin = pluginEntries.find(entry => entry.kind === kind);
+    const plugin = pluginEntries.find((entry) => entry.kind === kind);
     if (plugin) {
       const tab = addGlobalPluginTab(plugin.instanceId, {
         ...(options?.groupId && options.groupId !== 'right' ? { groupId: options.groupId } : {}),
@@ -112,21 +132,24 @@ export function useTabCreationMenu({
       }
       return;
     }
-    // 「远程工作区」:与标题栏按钮同一个动作 —— 打开或聚焦那一个全局页签。所有宿主
-    // (主窗 / 边组 / 弹出窗口 / 空面板快捷入口)都经这里,不存在第二套创建路径。
-    // 落点 = 打开菜单的那条标签栏所在的组(在插件窗口那排点 +,就落在同一排)。
+    // 「远程工作区」是**全局页签**：打开/聚焦只有 `openRemoteWorkspaceAdminTab` 一个入口
+    // （标题栏按钮、管理页、这里的「+」菜单都走它）。这里只把「+」菜单独有的语义交给它：
+    // **落点 = 点 + 的那排标签栏所在的组**（在插件窗口那排点 +，就落在同一排）。组只由单入口
+    // 写一次，且它给出的 dock 展开判定也按这个最终组执行；调用方不得事后再 `setTabGroup`
+    // 覆盖 —— 那会让展开判定用旧组（左排点 + 却弹出右侧 dock）。
     if (isRemoteWorkspaceAdminKind(kind)) {
       const existed = findRemoteWorkspaceAdminTab() !== null;
-      const adminTab = addRemoteWorkspaceAdminTab({
-        groupId: options?.groupId ?? preferredRemoteWorkspaceAdminGroup(),
+      openRemoteWorkspaceAdminTab({
+        sessionId: sessionId ?? null,
+        userInitiated: true,
+        ...(options?.groupId ? { targetGroup: options.groupId } : {}),
       });
-      if (adminTab) {
-        options?.onGlobalTabSelected?.(adminTab.id, existed);
-        setActiveGlobalTabId(adminTab.id);
-      }
+      const adminTab = findRemoteWorkspaceAdminTab();
+      // 激活位已由单入口设置；这里只把「此前是否已打开」交给宿主（弹出窗口据此聚焦）。
+      if (adminTab) options?.onGlobalTabSelected?.(adminTab.id, existed);
       return;
     }
-    if (!sessionId || !items.some(item => item.kind === kind && !item.disabled)) return;
+    if (!sessionId || !items.some((item) => item.kind === kind && !item.disabled)) return;
     if (kind === 'side-chat') {
       if (pending.current === sessionId) return;
       pending.current = sessionId;
@@ -136,7 +159,7 @@ export function useTabCreationMenu({
       });
       void opening.finally(() => {
         if (pending.current === sessionId) pending.current = null;
-        setOpeningSessionId(current => current === sessionId ? null : current);
+        setOpeningSessionId((current) => (current === sessionId ? null : current));
       });
       return;
     }
@@ -144,13 +167,24 @@ export function useTabCreationMenu({
   };
 
   // Keep unavailable future entries last on both surfaces.
-  return { items: [
-    ...items.filter(item => item.enabled),
-    ...pluginEntries.map(entry => ({
-      kind: entry.kind, labelKey: 'rightSidebar.tabs.menu.pluginsLabel', labelText: entry.title,
-      descriptionKey: 'rightSidebar.tabs.menu.pluginsLabel', icon: entry.icon, order: 0,
-      enabled: true, disabled: false, busy: false, group: 'plugins' as const, alreadyOpen: entry.open,
-    })),
-    ...items.filter(item => !item.enabled),
-  ], select };
+  return {
+    items: [
+      ...items.filter((item) => item.enabled),
+      ...pluginEntries.map((entry) => ({
+        kind: entry.kind,
+        labelKey: 'rightSidebar.tabs.menu.pluginsLabel',
+        labelText: entry.title,
+        descriptionKey: 'rightSidebar.tabs.menu.pluginsLabel',
+        icon: entry.icon,
+        order: 0,
+        enabled: true,
+        disabled: false,
+        busy: false,
+        group: 'plugins' as const,
+        alreadyOpen: entry.open,
+      })),
+      ...items.filter((item) => !item.enabled),
+    ],
+    select,
+  };
 }

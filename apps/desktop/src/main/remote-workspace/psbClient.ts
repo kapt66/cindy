@@ -29,6 +29,7 @@ import type {
   PsbSessionStreamStatus,
   PsbWorkspaceAccessState,
   PsbWorkspaceStreamSubscription,
+  PsbFailureFields,
 } from '../../shared/psb-remote-workspace.js';
 import {
   PSB_CINDY_API_PREFIX,
@@ -36,6 +37,9 @@ import {
   PSB_CINDY_ROUTES,
   PSB_CINDY_FAILURE_CODES,
   PSB_ERROR_CODES,
+  PSB_FAILURE_DESCRIPTORS,
+  PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
+  PSB_LOCAL_DIAGNOSTIC_CODES,
   PSB_NO_RUNNING_SESSION_CODE,
   PSB_WEB_ROUTES,
   isPsbWorkspaceAccessState,
@@ -45,14 +49,16 @@ import {
   parsePsbRemoteWorkspace,
   parsePsbSessionStreamStatus,
   parsePsbWorkspaceStreamSubscription,
+  psbFailureMessageKeyForPsbCode,
   psbNoRunningSessionMessageKey,
+  readPsbFailureFields,
 } from '../../shared/psb-remote-workspace.js';
 import { parseWorkspaceVcsNotice, readAdvisoryWorkspaceVcs } from '../../shared/psb-workspace-vcs.js';
 import type { WorkspaceVcsNotice } from '../../shared/psb-workspace-vcs.js';
 import { createIpcError } from '../../shared/ipc-errors.js';
-import { getPsbConnectionToken, invalidatePsbConnectionToken } from './psbAuth.js';
+import { getPsbConnectionToken, invalidatePsbConnectionToken, psbAuthFailure } from './psbAuth.js';
 import type { PsbConnectionTokenPort } from './psbAuth.js';
-import { psbHttpUrl } from './psbEndpoint.js';
+import { PsbUrlRejectedError, resolvePsbUrl } from './psbEndpoint.js';
 
 /** 单次 HTTP 调用的默认预算。列表类接口都不该更久；超时按网络失败处理。 */
 const DEFAULT_HTTP_TIMEOUT_MS = 20_000;
@@ -96,10 +102,14 @@ export interface PsbApiDeps {
   /**
    * `ensureWorkspaceAccess` 轮询 `GET …/access` 到 `running` 的预算。
    *
-   * 生产默认 {@link PSB_ACCESS_POLL_DEFAULT}（约 3s）；单测注入 `intervalMs: 0` 避免真实等待
+   * **总预算是 deadline 语义**（`totalMs`），不是「次数 × 单次超时」：每次请求的超时会被压到
+   * 「剩余预算」以内，所以最坏等待时间恒为 `totalMs`（旧实现 attempts=6 + 每次 20s 时最坏
+   * 可等 ~120s，用户点一次启动会卡两分钟）。
+   *
+   * 生产默认 {@link PSB_ACCESS_POLL_DEFAULT}（约 5s）；单测注入 `intervalMs: 0` 避免真实等待
    * （测试卫生要求不做 ≥100ms 真实等待）。
    */
-  accessPoll?: { attempts?: number; intervalMs?: number };
+  accessPoll?: { attempts?: number; intervalMs?: number; totalMs?: number };
 }
 
 /** 失败：`failure.messageKey` 是 i18n 键，`failure.message` 是 PSB 原文（兜底显示，不含凭据）。 */
@@ -111,36 +121,13 @@ export class PsbClientError extends Error {
   }
 }
 
-/** 把 PSB 错误码翻译成 Cindy 的 i18n 键。未知码落到通用文案，但原始码仍留在 `failure.code`。 */
+/**
+ * 把 PSB 原始错误码翻成本地化文案键（§4b 失败单表的投影；客户端不手写 switch / 字面键）。
+ *
+ * 未知码落到通用文案，但原始码仍留在 `failure.code`（诊断用）。
+ */
 export function psbMessageKeyForErrorCode(code: string): string {
-  switch (code) {
-    case PSB_ERROR_CODES.authRequired:
-    case PSB_ERROR_CODES.authInvalid:
-      return 'remoteWorkspace.error.auth';
-    case PSB_ERROR_CODES.authExpired:
-      return 'remoteWorkspace.error.authExpired';
-    case PSB_ERROR_CODES.identityNotLinked:
-      return 'remoteWorkspace.error.identityNotLinked';
-    case PSB_ERROR_CODES.occupiedByOther:
-      return 'remoteWorkspace.error.occupiedByOther';
-    case PSB_ERROR_CODES.clientOffline:
-      return 'remoteWorkspace.error.clientOffline';
-    case PSB_ERROR_CODES.notFound:
-      return 'remoteWorkspace.error.notFound';
-    // CINDY-RW-10：版本控制检查的三种拒绝各有下一步，绝不能落进「操作失败」。
-    case PSB_ERROR_CODES.workspaceVcsDirty:
-      return 'remoteWorkspace.vcs.dirty';
-    case PSB_ERROR_CODES.workspaceVcsUnavailable:
-      return 'remoteWorkspace.vcs.unavailable';
-    case PSB_ERROR_CODES.workspaceVcsUnsupported:
-      return 'remoteWorkspace.vcs.unsupported';
-    // 没有 running 桌面访问（订阅 409）：具体文案按 `details.state` 选，见
-    // `readNoRunningSessionFailure`；这里给 none 家族兜底（未知状态也落这一档）。
-    case PSB_CINDY_FAILURE_CODES.streamNoRunningSession:
-      return 'remoteWorkspace.admin.streamAccessNone';
-    default:
-      return 'remoteWorkspace.error.unknown';
-  }
+  return psbFailureMessageKeyForPsbCode(code) ?? PSB_FAILURE_UNKNOWN_MESSAGE_KEY;
 }
 
 /** 被他人占用时，`details.name`（或 `occupiedByName`）里带占用人名，用于文案插值。 */
@@ -229,7 +216,7 @@ function psbFailureFromResponse(input: {
     // 版本控制检查失败相反：`details.vcs.messageZh` 才是给用户看的事实（「工作区有未提交
     // 修改：2 个检出」），PSB 的 `error.message` 常常是空的，所以这里用它兜底。
     message:
-      messageKey === 'remoteWorkspace.error.occupiedByOther'
+      messageKey === PSB_FAILURE_DESCRIPTORS.PSB_WORKSPACE_OCCUPIED_BY_OTHER.messageKey
         ? (occupiedName ?? '')
         : vcs
           ? input.message.trim() || vcs.messageZh
@@ -253,8 +240,8 @@ function readWorkspaceVcsNotice(details: unknown) {
 
 function unreachableFailure(detail: string): PsbRemoteFailure {
   return {
-    code: 'PSB_UNREACHABLE',
-    messageKey: 'remoteWorkspace.error.unreachable',
+    code: PSB_FAILURE_DESCRIPTORS.PSB_UNREACHABLE.psbCode,
+    messageKey: PSB_FAILURE_DESCRIPTORS.PSB_UNREACHABLE.messageKey,
     message: detail,
   };
 }
@@ -265,17 +252,20 @@ const REMOTE_ACTION_METHODS: readonly string[] = ['GET', 'POST', 'DELETE'];
 /**
  * 服务端给的 action 路径在**发请求前**的本地校验（第二道，第一道在 `vcsNotice.ts`）。
  *
- * 只允许 Cindy 命名空间的相对路径：绝对 URL / 协议 / 反斜杠 / `..` / `#` / 控制字符全部拒绝。
+ * 只允许 Cindy 命名空间的相对路径：绝对 URL / 协议 / 反斜杠 / `..` / `#` / 控制字符全部拒绝，
+ * 且**按 URL 归一化后的结果**判定（`%2e%2e` 会被 URL 解析器当作 `..`，只查字面 `..` 会漏）。
  * 这条判断必须与 workspaceId 无关地生效——即使上层漏了工作区绑定校验，也不能被指去任意主机。
  */
 export function isAllowedPsbRemoteActionPath(path: string): boolean {
   if (typeof path !== 'string' || path.length === 0 || path.length > 2_048) return false;
   if (!path.startsWith(`${PSB_CINDY_API_PREFIX}/`)) return false;
-  if (path.includes('://') || path.includes('\\') || path.includes('..') || path.includes('#')) {
+  // 归一化判据唯一来源：`resolvePsbUrl`（origin / 归一化 pathname / 命名空间三道）。
+  try {
+    resolvePsbUrl(path);
+    return true;
+  } catch {
     return false;
   }
-  // eslint-disable-next-line no-control-regex
-  return !/[\u0000-\u001f\u007f\s]/.test(path);
 }
 
 function assertRemoteAction(input: { method: string; path: string }): void {
@@ -333,32 +323,15 @@ interface ResponseEnvelope {
   readonly details?: unknown;
 }
 
-interface FailureFields {
-  readonly code: string | null;
-  readonly message: string;
-  readonly details: unknown;
-}
-
 /**
- * 从失败外壳取 `code` / `message` / `details`：`{ error: { … } }` 优先，平铺形态兜底。
+ * 从失败外壳取 `code` / `message` / `details`：**唯一实现在共享契约**
+ * （`readPsbFailureFields`，`streamViewer` 的 WS 升级失败也用它）。
  *
- * 两种都是 PSB 侧真实存在过的形状（Cindy 入口统一 `{error}`；0.1.180 的 access 路由在网页
- * 命名空间上见过平铺），所以两种都读——但**只读这两种**，不递归猜。
+ * 两种外壳都是 PSB 侧真实存在过的形状（Cindy 入口统一 `{error}`；0.1.180 的 access 路由
+ * 在网页命名空间上见过平铺），所以两种都读——但**只读这两种**，不递归猜。
  */
-function readFailureFields(envelope: ResponseEnvelope | null): FailureFields {
-  const nested = envelope?.error;
-  if (typeof nested === 'object' && nested !== null) {
-    return {
-      code: typeof nested.code === 'string' ? nested.code : null,
-      message: typeof nested.message === 'string' ? nested.message : '',
-      details: nested.details,
-    };
-  }
-  return {
-    code: typeof envelope?.code === 'string' ? envelope.code : null,
-    message: typeof envelope?.message === 'string' ? envelope.message : '',
-    details: envelope?.details,
-  };
+function readFailureFields(envelope: ResponseEnvelope | null): PsbFailureFields {
+  return readPsbFailureFields(envelope);
 }
 
 function parseEnvelope(text: string): ResponseEnvelope | null {
@@ -406,6 +379,10 @@ export interface PsbApi {
     body?: Readonly<Record<string, unknown>>;
   }): Promise<unknown>;
   listSessions(workspaceId: string): Promise<PsbRemoteSession[]>;
+  /**
+   * 新建会话。返回里的 `workspace` 是**创建前读到的**那一行：读工作区失败会发生在创建之前，
+   * 绝不会「会话建好了却拿不到工作区，于是把 sessionId 丢掉」（见实现注释）。
+   */
   createSession(input: PsbCreateSessionRequest): Promise<{
     session: PsbRemoteSession;
     workspace: PsbRemoteWorkspace;
@@ -482,18 +459,24 @@ export interface PsbWorkspaceOperationOutcome {
 }
 
 /**
- * `ensureWorkspaceAccess` 轮询预算（生产默认）。
+ * `ensureWorkspaceAccess` 的**总预算**（生产默认）。
  *
- * 约 3s：既够 Unity / 虚拟桌面把 `starting` 走完的常见时间，又不至于让用户点「启动」后等太久。
- * 超过预算不是错误，只是返回 `timeout` 让调用方继续走原路径（订阅 409 会带 `starting`，
- * 界面侧还有一次 ~2s 自动重试）。
+ * `totalMs` 是硬 deadline：无论轮询次数与单次请求超时怎么配，整条「拉起桌面访问」最多占用
+ * 这么久。`attempts` / `intervalMs` 只是节奏（短预算时提前结束）。约 5s：够 Unity / 虚拟桌面
+ * 走完常见启动，又不至于让用户点「启动」后长时间没有结果——超时不是错误，调用方继续走
+ * 原有订阅路径（订阅 409 会带 `starting`，界面侧还有一次自动重试）。
  */
-export const PSB_ACCESS_POLL_DEFAULT = { attempts: 6, intervalMs: 500 } as const;
+export const PSB_ACCESS_POLL_DEFAULT = {
+  attempts: 6,
+  intervalMs: 500,
+  totalMs: 5_000,
+} as const;
 
 /**
  * 从 `GET …/access`（或 `POST …/access/start`）的响应里读桌面访问状态。
  *
- * **响应形状 PSB 还没给最终示例**（`联动需求.md` 已登记要它），所以只认三种同义字段
+ * **响应形状 PSB 还没给最终示例**（跟进项登记在
+ * `docs/collaboration/psb-remote-workspace-contract.md`），所以只认三种同义字段
  * （`state` / `desktopSession` / 嵌套 `access.state`），都是「访问实例自身状态」这一个概念；
  * 读不到 / 未知值一律 `null`，由调用方按「没拿到」处理，**不猜**。
  */
@@ -516,8 +499,8 @@ function isAccessEnsureRouteUnavailable(error: unknown): boolean {
   if (!(error instanceof PsbClientError)) return false;
   if (error.status === 403 || error.status === 404 || error.status === 405) return true;
   switch (error.failure.code) {
-    case 'FORBIDDEN':
-    case 'NOT_FOUND':
+    case PSB_ERROR_CODES.forbidden:
+    case PSB_ERROR_CODES.notFound:
     case 'UNSUPPORTED':
     case 'NOT_IMPLEMENTED':
     case 'ROUTE_NOT_FOUND':
@@ -540,13 +523,45 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
 
   async function requestOnce(
     path: string,
-    init: { method: string; body?: unknown; token: string },
+    init: {
+      method: string;
+      body?: unknown;
+      token: string;
+      timeoutMs?: number;
+      /** 仅「拉起桌面访问」的 `POST /api/remote/…/access/start` 打开（见 `resolvePsbUrl`）。 */
+      allowPsbWebNamespace?: boolean;
+    },
   ): Promise<{ response: Response; text: string }> {
+    // URL 解析与越界判定只走 `resolvePsbUrl`（origin / 归一化 pathname / 命名空间三道）：
+    // 外部下发的路径（VCS actions）不能靠字符串白名单拦，归一化会把 `%2e%2e` 变成 `..`。
+    let url: string;
+    try {
+      url = resolvePsbUrl(path, {
+        ...(init.allowPsbWebNamespace === true ? { allowPsbWebNamespace: true } : {}),
+      });
+    } catch (error) {
+      if (error instanceof PsbUrlRejectedError) {
+        deps.logger.warn('psb request path was rejected before sending', {
+          label: init.method,
+          reason: error.reason,
+        });
+        throw new PsbClientError(
+          {
+            code: PSB_LOCAL_DIAGNOSTIC_CODES.protocol,
+            messageKey: PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
+            message: `rejected PSB path (${error.reason})`,
+          },
+          null,
+        );
+      }
+      throw error;
+    }
+    const budgetMs = Math.max(1, init.timeoutMs ?? timeoutMs);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), budgetMs);
     timer.unref?.();
     try {
-      const response = await deps.fetch(psbHttpUrl(path), {
+      const response = await deps.fetch(url, {
         method: init.method,
         headers: {
           authorization: `Bearer ${init.token}`,
@@ -595,23 +610,30 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
        * 允许**没有 `{ data }` 外壳**的成功响应（返回 `undefined`，不判协议错）。
        *
        * 只给「尽力拉起桌面访问」这两条**可选增强**接口用：PSB 0.1.180 的 access 路由还没有
-       * 给最终响应示例（`联动需求.md` 已登记），202/200 可能是空对象或平铺对象。这里拿不到
+       * 给最终响应示例（跟进项登记在 `docs/collaboration/psb-remote-workspace-contract.md`），
+       * 202/200 可能是空对象或平铺对象。这里拿不到
        * `state` 只意味着「没观察到状态」，不该把一次 202 判成契约违约——调用方继续轮询 / 继续
        * 走原来的订阅路径。Cindy 命名空间的常规接口**不**开这个口子（外壳缺失必须响亮失败）。
        */
       allowMissingDataEnvelope?: boolean;
       /** 订阅串流专用：把 409「没有 running 桌面访问」解析成结构化失败（见 `call` 的调用点）。 */
       mapNoRunningSession?: boolean;
+      /**
+       * 本次请求的超时上限（毫秒）。生产只有「拉起桌面访问」的轮询会传：它必须服从一个
+       * **总预算**，不能让每次请求各自吃满 20s（见 `ensureWorkspaceAccess`）。
+       */
+      timeoutMs?: number;
+      /** 只给「拉起桌面访问」的 `POST /api/remote/…/access/start`（见 `resolvePsbUrl`）。 */
+      allowPsbWebNamespace?: boolean;
     },
   ): Promise<T> {
     const method = options.method ?? 'GET';
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const auth = await getPsbConnectionToken(deps);
       if (!auth.ok) {
-        throw new PsbClientError(
-          { code: 'AUTH_REQUIRED', messageKey: auth.reasonKey, message: auth.detail },
-          null,
-        );
+        // 取 token 失败的归因只有一份（`psbAuthFailure`）：未登录 / 非企业组织 → AUTH_REQUIRED，
+        // 签发通道抖动 → PSB_UNREACHABLE。**不失效缓存**（见 psbAuth 的说明）。
+        throw new PsbClientError(psbAuthFailure(auth), null);
       }
       let outcome: { response: Response; text: string };
       try {
@@ -619,8 +641,12 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
           method,
           ...(options.body === undefined ? {} : { body: options.body }),
           token: auth.token,
+          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+          ...(options.allowPsbWebNamespace === true ? { allowPsbWebNamespace: true } : {}),
         });
       } catch (error) {
+        // 已经是可归因失败（例如 URL 越界被判协议违约）：原样上抛，不再包成网络失败。
+        if (error instanceof PsbClientError) throw error;
         if (error instanceof PsbResponseTooLargeError) {
           // 超限不是网络失败：用户查网络没有意义，按契约违约归因，也不重试。
           deps.logger.warn('psb response exceeded the size limit', {
@@ -630,8 +656,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
           });
           throw new PsbClientError(
             {
-              code: 'PSB_PROTOCOL',
-              messageKey: 'remoteWorkspace.error.unknown',
+              code: PSB_LOCAL_DIAGNOSTIC_CODES.protocol,
+              messageKey: PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
               message: `response from ${label} is too large`,
             },
             null,
@@ -648,7 +674,7 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
 
       if (status === 401 || status === 403) {
         const code =
-          fields.code ?? (status === 401 ? PSB_ERROR_CODES.authRequired : 'FORBIDDEN');
+          fields.code ?? (status === 401 ? PSB_ERROR_CODES.authRequired : PSB_ERROR_CODES.forbidden);
         // 403 `IDENTITY_NOT_LINKED` 不是"token 坏了"，重签没有意义 —— 只有鉴权类 401 才重试。
         const retriable =
           attempt === 0 &&
@@ -703,8 +729,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
         deps.logger.warn('psb response is missing the data envelope', { label, status });
         throw new PsbClientError(
           {
-            code: 'PSB_PROTOCOL',
-            messageKey: 'remoteWorkspace.error.unknown',
+            code: PSB_LOCAL_DIAGNOSTIC_CODES.protocol,
+            messageKey: PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
             message: `missing data envelope from ${label}`,
           },
           status,
@@ -715,8 +741,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
         deps.logger.warn('psb returned an unexpected payload', { label, status });
         throw new PsbClientError(
           {
-            code: 'PSB_PROTOCOL',
-            messageKey: 'remoteWorkspace.error.unknown',
+            code: PSB_LOCAL_DIAGNOSTIC_CODES.protocol,
+            messageKey: PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
             message: `unexpected payload from ${label}`,
           },
           status,
@@ -726,23 +752,46 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
     }
     // 循环只有两轮且第二轮不会 continue；走到这里说明重签后仍被判 401 却没有抛错，属实现错误。
     throw new PsbClientError(
-      { code: 'PSB_AUTH_LOOP', messageKey: 'remoteWorkspace.error.auth', message: null },
+      {
+        code: PSB_LOCAL_DIAGNOSTIC_CODES.authLoop,
+        messageKey: PSB_FAILURE_DESCRIPTORS.PSB_AUTH_REQUIRED.messageKey,
+        message: null,
+      },
       401,
     );
   }
 
+  /**
+   * 列表外壳解析：`{ data: { <key>: [...] } }`。
+   *
+   * **返回 `null` = 协议错**（外壳 / 键不是数组），由 `call` 统一抛 `PSB_PROTOCOL`：旧实现把
+   * 缺键 / 畸形外壳静默变成 `[]`，界面显示「没有工作区」，而真实原因是服务端契约违约——
+   * 这正是 2026-11-26 联调里「列表永远空」类问题的温床。单行格式不对（缺 id）仍按行丢弃，
+   * 但会记一条 warn（行级容错与整表契约违约是两类事实）。
+   */
   const readArray = <T,>(
     key: string,
     parseItem: (value: unknown) => T | null,
-  ): ((data: unknown) => T[]) => {
-    return (data: unknown): T[] => {
-      if (typeof data !== 'object' || data === null) return [];
+  ): ((data: unknown) => T[] | null) => {
+    return (data: unknown): T[] | null => {
+      if (typeof data !== 'object' || data === null || Array.isArray(data)) return null;
       const list = (data as Record<string, unknown>)[key];
-      if (!Array.isArray(list)) return [];
-      return list.flatMap((entry) => {
-        const parsed = parseItem(entry);
-        return parsed === null ? [] : [parsed];
-      });
+      if (!Array.isArray(list)) return null;
+      const parsed: T[] = [];
+      let dropped = 0;
+      for (const entry of list) {
+        const item = parseItem(entry);
+        if (item === null) dropped += 1;
+        else parsed.push(item);
+      }
+      if (dropped > 0) {
+        deps.logger.warn('psb list contained rows that could not be parsed', {
+          key,
+          dropped,
+          total: list.length,
+        });
+      }
+      return parsed;
     };
   };
 
@@ -764,6 +813,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
   /**
    * 会话所属工作区：PSB 没有「读单个工作区」路由（只有列表），所以从列表里按 id 取。
    *
+   * **真实请求数 = 1 次列表 HTTP**（调用方自己的会话请求另算）：`getSession` 实际是
+   * 2 次请求（会话行 + 工作区列表），`createSession` 是 2 次（工作区列表 + 建会话，见该方法）。
    * `unusableReason` / 占用是**列表的视角**，与创建/读会话时同一时刻的数据可能差几十毫秒；
    * 这一点可以接受（渲染层本来也在轮询），不允许的是"拿不到工作区就静默返回半个结果"。
    */
@@ -782,8 +833,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       });
       throw new PsbClientError(
         {
-          code: 'PSB_PROTOCOL',
-          messageKey: 'remoteWorkspace.error.notFound',
+          code: PSB_LOCAL_DIAGNOSTIC_CODES.protocol,
+          messageKey: PSB_FAILURE_DESCRIPTORS.PSB_NOT_FOUND.messageKey,
           message: `workspace ${workspaceId} is not visible`,
         },
         null,
@@ -801,19 +852,19 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       const path = query.length > 0
         ? `${PSB_CINDY_ROUTES.workspaces}?${query}`
         : PSB_CINDY_ROUTES.workspaces;
-      return (await call('list-workspaces', path, {
+      return call('list-workspaces', path, {
         parse: readArray('workspaces', parsePsbRemoteWorkspace),
-      })) as unknown as PsbRemoteWorkspace[];
+      });
     },
     async listClients() {
-      return (await call('list-clients', PSB_CINDY_ROUTES.clients, {
+      return call('list-clients', PSB_CINDY_ROUTES.clients, {
         parse: readArray('clients', parsePsbRemoteClient),
-      })) as unknown as PsbRemoteClient[];
+      });
     },
     async listProjectTemplates() {
-      return (await call('list-templates', PSB_CINDY_ROUTES.projectTemplates, {
+      return call('list-templates', PSB_CINDY_ROUTES.projectTemplates, {
         parse: readArray('templates', parsePsbProjectTemplate),
-      })) as unknown as PsbProjectTemplate[];
+      });
     },
     async createWorkspace(input) {
       return call('create-workspace', PSB_CINDY_ROUTES.workspaces, {
@@ -857,11 +908,24 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       return result === undefined ? null : result.value;
     },
     async listSessions(workspaceId) {
-      return (await call('list-sessions', PSB_CINDY_ROUTES.sessions(workspaceId), {
+      return call('list-sessions', PSB_CINDY_ROUTES.sessions(workspaceId), {
         parse: readArray('sessions', parsePsbRemoteSession),
-      })) as unknown as PsbRemoteSession[];
+      });
     },
+    /**
+     * 新建会话。
+     *
+     * **先读工作区快照、再建会话**：PSB 的会话响应只有单行（不带工作区），而工作区行是
+     * createSession 返回值的一部分。旧实现「先建、后补列表」在列表请求失败时会把**已经建好
+     * 的 PSB 会话丢掉**（抛错 → 调用方认为没建成 → 远端留下一条没人认领的会话，本地也不落
+     * `remoteHostId`）。现在查询失败发生在创建**之前**：读不到工作区就一个请求都不发；
+     * 读到了就带着快照建，创建失败照常抛（不产生任何本地副作用）。
+     *
+     * 请求数：新建会话固定 2 次 HTTP（列表 + 创建）。会话创建是用户点一次的动作，不是热路径；
+     * 用一次额外读换「绝不产生孤儿会话」是划算的。
+     */
     async createSession(input) {
+      const workspace = await requireWorkspaceById(input.workspaceId, 'create-session-preflight');
       const session = await call('create-session', PSB_CINDY_ROUTES.sessions(input.workspaceId), {
         method: 'POST',
         body: {
@@ -874,7 +938,15 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
         },
         parse: parseSessionRow,
       });
-      const workspace = await requireWorkspaceById(session.workspaceId, 'create-session');
+      if (session.workspaceId !== workspace.id) {
+        // 服务端把会话建到了别的工作区：契约违约，但会话已经存在——不能在这里抛错把它变成
+        // 「没建成」（否则又回到「丢 sessionId」）。保留创建前读到的工作区行并留诊断。
+        deps.logger.warn('psb returned a session for a workspace other than requested', {
+          requestedWorkspaceId: workspace.id,
+          sessionWorkspaceId: session.workspaceId,
+          sessionId: session.id,
+        });
+      }
       return { session, workspace };
     },
     async subscribeWorkspaceStream(workspaceId) {
@@ -910,6 +982,10 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
         0,
         deps.accessPoll?.intervalMs ?? PSB_ACCESS_POLL_DEFAULT.intervalMs,
       );
+      const totalMs = Math.max(1, deps.accessPoll?.totalMs ?? PSB_ACCESS_POLL_DEFAULT.totalMs);
+      const deadline = Date.now() + totalMs;
+      /** 剩余预算；每次请求的超时都压到它以内，保证整条流程不越过 deadline。 */
+      const remainingBudgetMs = (): number => Math.max(1, deadline - Date.now());
       const startPath =
         deps.workspaceAccessStartPath?.(workspaceId) ??
         PSB_WEB_ROUTES.workspaceAccessStart(workspaceId);
@@ -923,6 +999,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
             method: 'POST',
             allowEmptyResult: true,
             allowMissingDataEnvelope: true,
+            timeoutMs: remainingBudgetMs(),
+            allowPsbWebNamespace: true,
             parse: (data) => ({ state: readWorkspaceAccessState(data) }),
           },
         );
@@ -960,7 +1038,11 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       }
 
       for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
-        if (attempt > 0 && pollIntervalMs > 0) await waitForAccessPoll(pollIntervalMs);
+        if (Date.now() >= deadline) break;
+        if (attempt > 0 && pollIntervalMs > 0) {
+          await waitForAccessPoll(Math.min(pollIntervalMs, remainingBudgetMs()));
+        }
+        if (Date.now() >= deadline) break;
         let state: PsbWorkspaceAccessState | null;
         try {
           const read = await call<{ state: PsbWorkspaceAccessState | null }>(
@@ -968,6 +1050,7 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
             PSB_CINDY_ROUTES.workspaceAccess(workspaceId),
             {
               allowMissingDataEnvelope: true,
+              timeoutMs: remainingBudgetMs(),
               parse: (data) => ({ state: readWorkspaceAccessState(data) }),
             },
           );
@@ -1025,8 +1108,8 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
 export function toPsbRemoteFailure(error: unknown): PsbRemoteFailure {
   if (error instanceof PsbClientError) return error.failure;
   return {
-    code: 'PSB_UNKNOWN',
-    messageKey: 'remoteWorkspace.error.unknown',
+    code: PSB_LOCAL_DIAGNOSTIC_CODES.unknown,
+    messageKey: PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
     message: error instanceof Error ? error.message : String(error),
   };
 }
@@ -1082,11 +1165,11 @@ export async function readWorkspaceWebUrl(
 function isUserActionablePsbFailure(error: unknown): boolean {
   if (!(error instanceof PsbClientError)) return false;
   switch (error.failure.code) {
-    case 'AUTH_REQUIRED':
-    case 'AUTH_INVALID':
-    case 'AUTH_EXPIRED':
-    case 'IDENTITY_NOT_LINKED':
-    case 'PSB_UNREACHABLE':
+    case PSB_ERROR_CODES.authRequired:
+    case PSB_ERROR_CODES.authInvalid:
+    case PSB_ERROR_CODES.authExpired:
+    case PSB_ERROR_CODES.identityNotLinked:
+    case PSB_FAILURE_DESCRIPTORS.PSB_UNREACHABLE.psbCode:
       return true;
     default:
       return false;
@@ -1100,7 +1183,10 @@ function isUserActionablePsbFailure(error: unknown): boolean {
 function isSingleWorkspaceRouteUnavailable(error: unknown): boolean {
   if (!(error instanceof PsbClientError)) return false;
   if (error.status === 403 || error.status === 404 || error.status === 405) return true;
-  return error.failure.code === 'NOT_FOUND' || error.failure.code === 'FORBIDDEN';
+  return (
+    error.failure.code === PSB_ERROR_CODES.notFound ||
+    error.failure.code === PSB_ERROR_CODES.forbidden
+  );
 }
 
 /** 隧道/串流 WS 地址（供 main 侧隧道与串流观看端使用，避免两处各拼一次）。 */

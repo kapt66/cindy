@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  WORKSPACE_VCS_TEXT_LIMITS,
   findWorkspaceVcsAction,
   parseWorkspaceVcsNotice,
   readAdvisoryWorkspaceVcs,
@@ -177,15 +178,115 @@ describe('readAdvisoryWorkspaceVcs：2xx 响应的建议性通知', () => {
   });
 });
 
+describe('远端输入的只读长度预算（进推送缓存之前）', () => {
+  const baseProject = { pathInWorkspace: '.', kind: 'p4', changes: 1 };
+  const cleanAction = {
+    kind: 'clean-workspace',
+    method: 'POST',
+    path: '/api/cindy/remote/workspaces/ws-1/vcs/revert',
+  };
+
+  it('projectId 文本超限 → 整条检出丢弃（截断会让两个检出撞成同一个 id）', () => {
+    const maxLength = parseWorkspaceVcsNotice({
+      ...DIRTY_ADVISORY,
+      projects: [
+        { ...baseProject, projectId: 'x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.projectId) },
+      ],
+    });
+    expect(maxLength?.projects).toHaveLength(1);
+
+    const tooLong = parseWorkspaceVcsNotice({
+      ...DIRTY_ADVISORY,
+      projects: [
+        { ...baseProject, projectId: 'x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.projectId + 1) },
+      ],
+    });
+    expect(tooLong?.projects).toHaveLength(0);
+
+    // 数字 id 是 PSB 的正常形态，不受文本长度预算影响。
+    const numeric = parseWorkspaceVcsNotice({
+      ...DIRTY_ADVISORY,
+      projects: [{ ...baseProject, projectId: 123456789 }],
+    });
+    expect(numeric?.projects[0]?.projectId).toBe(123456789);
+  });
+
+  it('检出路径超限 → 整条检出丢弃（路径是按钮的定位标识，不截断）', () => {
+    const tooLong = parseWorkspaceVcsNotice({
+      ...DIRTY_ADVISORY,
+      projects: [
+        {
+          ...baseProject,
+          pathInWorkspace: 'x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.projectPath + 1),
+        },
+      ],
+    });
+    expect(tooLong?.projects).toHaveLength(0);
+  });
+
+  it('action body 的 projectIds / revert / confirm 有界：越界整条 action 丢弃', () => {
+    const withBody = (body: unknown) =>
+      parseWorkspaceVcsNotice({
+        ...DIRTY_ADVISORY,
+        actions: [{ ...cleanAction, body }],
+      });
+
+    // 边界内仍保留（上限本身合法）。
+    expect(
+      withBody({
+        projectIds: Array.from(
+          { length: WORKSPACE_VCS_TEXT_LIMITS.projectIds },
+          (_, index) => index + 1,
+        ),
+        confirm: 'revert',
+      })?.actions.map((action) => action.kind),
+    ).toEqual(['clean-workspace']);
+    expect(
+      withBody({ projectIds: ['x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.projectId)] })?.actions,
+    ).toHaveLength(1);
+
+    // 数组超一条 / 单项文本超限 / 空数组 / 值为非布尔 / confirm 超长 → 整条 action 丢弃。
+    expect(
+      withBody({
+        projectIds: Array.from(
+          { length: WORKSPACE_VCS_TEXT_LIMITS.projectIds + 1 },
+          (_, index) => index + 1,
+        ),
+      })?.actions,
+    ).toHaveLength(0);
+    expect(
+      withBody({ projectIds: ['x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.projectId + 1)] })?.actions,
+    ).toHaveLength(0);
+    expect(withBody({ projectIds: [] })?.actions).toHaveLength(0);
+    expect(withBody({ projectIds: [1], revert: 'true' })?.actions).toHaveLength(0);
+    expect(
+      withBody({
+        revert: true,
+        confirm: 'x'.repeat(WORKSPACE_VCS_TEXT_LIMITS.confirm + 1),
+      })?.actions,
+    ).toHaveLength(0);
+  });
+});
+
 describe('notice 的本地化兜底键覆盖全部错误码', () => {
   it('三种码都有文案键（渲染层不会显示裸 key）', async () => {
-    const { workspaceVcsNoticeMessageKey } = await import('../psb-workspace-vcs');
-    for (const code of [
+    const { WORKSPACE_VCS_NOTICE_CODES, workspaceVcsNoticeMessageKey } = await import(
+      '../psb-workspace-vcs'
+    );
+    // 通知码集合由失败单表派生：这里只断言「遍历得到的码 → 文案键」没有缺口，
+    // 不再从源码里复制一份码表（复制会让「加了码但漏改映射」测不出来）。
+    expect([...WORKSPACE_VCS_NOTICE_CODES].sort()).toEqual([
       'WORKSPACE_VCS_DIRTY',
       'WORKSPACE_VCS_UNAVAILABLE',
       'WORKSPACE_VCS_UNSUPPORTED',
-    ] as const) {
-      expect(workspaceVcsNoticeMessageKey(code)).toBe(`remoteWorkspace.vcs.${code === 'WORKSPACE_VCS_DIRTY' ? 'dirty' : code === 'WORKSPACE_VCS_UNAVAILABLE' ? 'unavailable' : 'unsupported'}`);
+    ]);
+    const expectedKeys: Record<string, string> = {
+      WORKSPACE_VCS_DIRTY: 'remoteWorkspace.vcs.dirty',
+      WORKSPACE_VCS_UNAVAILABLE: 'remoteWorkspace.vcs.unavailable',
+      WORKSPACE_VCS_UNSUPPORTED: 'remoteWorkspace.vcs.unsupported',
+    };
+    for (const code of WORKSPACE_VCS_NOTICE_CODES) {
+      expect(workspaceVcsNoticeMessageKey(code)).toBe(expectedKeys[code]);
     }
     const notice: WorkspaceVcsNotice = parseWorkspaceVcsNotice(DIRTY_ADVISORY)!;
     expect(notice.code).toBe('WORKSPACE_VCS_DIRTY');

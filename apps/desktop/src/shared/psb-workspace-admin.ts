@@ -30,7 +30,17 @@
  * 不放实现（HTTP / WS / Electron）、不放文案（文案走 i18n 的 `remoteWorkspace.admin.*`）。
  */
 
-import type { PsbSessionStreamStatus, PsbStreamEvent } from './psb-remote-workspace';
+import {
+  isPsbDesktopSessionState,
+  isPsbStreamReasonCode,
+} from './psb-remote-workspace';
+import type {
+  PsbDesktopSessionState,
+  PsbSessionStreamStatus,
+  PsbStreamEvent,
+  PsbStreamReasonCode,
+  PsbWorkspaceState,
+} from './psb-remote-workspace';
 
 /* ============================== 1. IPC 通道 ============================== */
 
@@ -95,11 +105,12 @@ export interface PsbWorkspaceAdminOccupancy {
 /**
  * 该工作区的桌面会话状态（PSB 下发的三态 + `null` = 不知道）。
  *
+ * 与 `PSB_DESKTOP_SESSION_STATES` **同一个枚举**：这里只加 `null`（= 这次没读到）。
  * `null` **不是** `none`：`none` 是 PSB 明确说「没有桌面会话」，`null` 是「这次没读到」
  * （还没有可借用的会话去问 PSB、或 PSB 暂时不可达）。把两者混起来会让界面把网络抖动
  * 显示成「没有桌面会话，请去 PSB 网页启动」。
  */
-export type PsbWorkspaceAdminDesktopSession = 'none' | 'starting' | 'running' | null;
+export type PsbWorkspaceAdminDesktopSession = PsbDesktopSessionState | null;
 
 /**
  * 「当前工作区」是从哪解析出来的。
@@ -137,7 +148,14 @@ export type PsbWorkspaceAdminStaleReason =
   | 'list-failed'
   | 'workspace-missing'
   | 'session-unreadable'
-  | 'snapshot-only';
+  | 'snapshot-only'
+  /**
+   * 占位身份（`workspaceIdKnown:false`，只有目录名 / 会话标题这类启发式线索）。
+   *
+   * 与 `session-unreadable` 分开：那个是「会话读不到但工作区 id 是真的」，这个连工作区 id
+   * 都不可写（下一步只能回 PSB 网页或重新从当前任务进入），文案与可行动入口不同。
+   */
+  | 'unknown-workspace';
 
 /**
  * 管理页描述的**工作区**（不是会话）。
@@ -167,12 +185,20 @@ export interface PsbWorkspaceAdminContext {
   readonly templateTitle: string | null;
   /** 服务端分配的目录名（例如 `saga2_project-2`；没给时 `''`）。 */
   readonly directoryName: string;
-  /** PSB 工作区状态词（`ready` / `provisioning` / …，原样透传，Cindy 不另造一套）。 */
-  readonly state: string;
+  /**
+   * PSB 工作区状态词（`ready` / `provisioning` / …，原样透传，Cindy 不另造一套）。
+   *
+   * **类型与工作区行同一个枚举**：未知 PSB 新词是 `null`，不是 `''`，也不是某个已知状态。
+   */
+  readonly state: PsbWorkspaceState | null;
   readonly occupancy: PsbWorkspaceAdminOccupancy;
   readonly desktopSession: PsbWorkspaceAdminDesktopSession;
-  /** 「此刻为什么没有画面」的 PSB 机器码（`NO_DESKTOP_SESSION` / …）；没有则 `null`。 */
-  readonly reasonCode: string | null;
+  /**
+   * 「此刻为什么没有画面」的 PSB 机器码（`NO_DESKTOP_SESSION` / …）；没有则 `null`。
+   *
+   * 与 `PsbSessionStreamStatus.reasonCode` 同一个枚举（未知 PSB 新码 → `null`）。
+   */
+  readonly reasonCode: PsbStreamReasonCode | null;
   /** PSB 给的可读原因（中文原话，兜底展示）；没有则 `null`。 */
   readonly lastErrorZh: string | null;
   readonly source: PsbWorkspaceAdminContextSource;
@@ -246,31 +272,21 @@ export interface PsbWorkspaceAdminContextChangedEvent {
 /* ============================== 3. 串流状态（工作区级） ============================== */
 
 /**
- * 管理页看到的串流状态。
+ * 管理页看到的串流状态 = **会话级串流状态 DTO**（纯别名）。
  *
- * 字段名按 PSB 的 Cindy 串流契约（`capability` / `encoder` / `lastErrorZh` 那套）归一，
- * 渲染层不需要知道 PSB 内部拼写（`psbAdminStreamStatusFromPsb` 是唯一映射点）。
+ * 历史原因这里曾另抄一份 8 字段接口（字段名还是 `capable`/`encoder`/`lastErrorZh` 的混拼），
+ * 结果是同一个 PSB 读数在两个类型上漂移。现在统一复用 `PsbSessionStreamStatus`
+ * （字段名 = PSB wire 名：`capability` / `encoder` / `lastErrorZh`），管理页只多一个
+ * 「读不到 → `status:null`」的外层语义（见 `PsbWorkspaceAdminStreamStatusResult`）。
  */
-export interface PsbWorkspaceAdminStreamStatus {
-  /** 客户端是否声明了串流能力。 */
-  readonly capable: boolean;
-  /** 当前是否有采集在跑（PSB 语义：本端订阅成功 **不** 等于有画面）。 */
-  readonly active: boolean;
-  readonly width: number | null;
-  readonly height: number | null;
-  readonly fps: number | null;
-  readonly encoder: string | null;
-  readonly lastErrorZh: string | null;
-  readonly desktopSession: PsbWorkspaceAdminDesktopSession;
-  readonly reasonCode: string | null;
-}
+export type PsbWorkspaceAdminStreamStatus = PsbSessionStreamStatus;
 
 /**
  * `STREAM_STATUS` invoke 的结果。
  *
  * `status: null` = **此刻读不到 PSB 的状态**（本机没有观看端绑定，或 PSB 不可达）。这与
- * `capable: false` 是两件事：把「读不到」当「客户端不支持串流」会让启动按钮永远不可用，正是
- * 本批要修的那类退化。已读到的历史状态会经 `CONTEXT_CHANGED` / `STREAM_EVENT` 先行到达，
+ * `capability: false` 是两件事：把「读不到」当「客户端不支持串流」会让启动按钮永远不可用，
+ * 正是本批要修的那类退化。已读到的历史状态会经 `CONTEXT_CHANGED` / `STREAM_EVENT` 先行到达，
  * 渲染层保留自己的最后一次快照即可。
  *
  * ## 读路径不订阅、不创建会话、不占用工作区（2026-11-26 审查修正 + 0.1.172 服务接口）
@@ -330,7 +346,7 @@ export const PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE = 'Cindy 观看端 · 内�
 /** `null` 状态：读不到时内部使用的默认值（IPC 不返回它，而是返回 `status: null`）。 */
 export function psbAdminStreamStatusFallback(): PsbWorkspaceAdminStreamStatus {
   return {
-    capable: false,
+    capability: false,
     active: false,
     width: null,
     height: null,
@@ -343,24 +359,45 @@ export function psbAdminStreamStatusFallback(): PsbWorkspaceAdminStreamStatus {
 }
 
 /**
- * PSB 串流状态 → 管理页状态（唯一映射点）。
+ * PSB 串流状态 → 管理页状态（单一归一化点）。
  *
- * 只做字段归一，**不改写语义**：`active` 保持 PSB 的判断（订阅成功不等于有画面），
- * `desktopSession` / `reasonCode` 缺字段时是 `null`（未知），不猜 `none`。
+ * 类型收敛后两边是同一个 DTO，这里只做**可选字段归一**：`desktopSession` / `reasonCode`
+ * 缺省（旧服务端不带）补成 `null`（未知），不猜 `none`；其余字段原样透传（PSB 语义不被改写：
+ * `active` 保持 PSB 的判断——订阅成功不等于有画面）。
  */
 export function psbAdminStreamStatusFromPsb(
   status: PsbSessionStreamStatus,
 ): PsbWorkspaceAdminStreamStatus {
   return {
-    capable: status.capable === true,
+    ...status,
+    capability: status.capability === true,
     active: status.active === true,
+    desktopSession: status.desktopSession ?? null,
+    reasonCode: status.reasonCode ?? null,
+  };
+}
+
+/**
+ * 从 IPC 载荷里读串流状态（**唯一**「未知载荷 → DTO 或 `null`」入口）。
+ *
+ * 管理页桥的两种强度（`STREAM_STATUS` 结果不校验、`STREAM_START` 结果校验
+ * `typeof capable === 'boolean'`）在这里统一成一处：形状不认识 → `null` = 「此刻读不到」，
+ * 调用方保留上一次快照，**不得**当成 `capability:false`（那会让启动按钮永远不可用）。
+ */
+export function readPsbAdminStreamStatus(value: unknown): PsbWorkspaceAdminStreamStatus | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const status = value as Partial<Record<keyof PsbSessionStreamStatus, unknown>>;
+  if (typeof status.capability !== 'boolean' || typeof status.active !== 'boolean') return null;
+  return {
+    capability: status.capability,
+    active: status.active,
     width: typeof status.width === 'number' ? status.width : null,
     height: typeof status.height === 'number' ? status.height : null,
     fps: typeof status.fps === 'number' ? status.fps : null,
-    encoder: typeof status.codec === 'string' ? status.codec : null,
-    lastErrorZh: typeof status.lastError === 'string' ? status.lastError : null,
-    desktopSession: status.desktopSession ?? null,
-    reasonCode: status.reasonCode ?? null,
+    encoder: typeof status.encoder === 'string' ? status.encoder : null,
+    lastErrorZh: typeof status.lastErrorZh === 'string' ? status.lastErrorZh : null,
+    desktopSession: isPsbDesktopSessionState(status.desktopSession) ? status.desktopSession : null,
+    reasonCode: isPsbStreamReasonCode(status.reasonCode) ? status.reasonCode : null,
   };
 }
 
@@ -503,7 +540,8 @@ const streamInputTextEncoder = new TextEncoder();
  * 只做**形状与预算**这一层：`kind` 必须在允许集合内（未知 kind 说明渲染层在造新协议，
  * PSB 会把它计成非法消息）、必须可 JSON 序列化、完整帧 ≤ `PSB_STREAM_INPUT_MAX_FRAME_BYTES`。
  * 不校验 `x/y/button/key/code` 的必填与取值范围：PSB 的网页观看端 schema 还没有正式文档
- * （`联动需求.md` 已向 PSB 要），在这里猜字段只会在联调时把合法事件挡在门外。
+ * （字段 schema 已向 PSB 要，跟进项见 `docs/collaboration/psb-remote-workspace-contract.md`），
+ * 在这里猜字段只会在联调时把合法事件挡在门外。
  */
 export function validatePsbStreamInputEvent(raw: unknown): PsbStreamInputEventValidation {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {

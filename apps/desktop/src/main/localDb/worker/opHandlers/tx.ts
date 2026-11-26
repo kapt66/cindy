@@ -134,6 +134,8 @@ function dispatchTransaction(db: Database.Database, args: unknown): unknown {
       return compactSessionToolResults(db, txArgs);
     case 'session.agentSwitchFallback':
       return sessionAgentSwitchFallback(db, txArgs);
+    case 'session.remoteRebind':
+      return sessionRemoteRebind(db, txArgs);
     case 'context.rebuild':
       return contextRebuild(db, txArgs);
     case 'mcpApps.viewState.save':
@@ -1575,6 +1577,50 @@ function sessionAgentSwitchFallback(db: Database.Database, args: unknown): void 
     }
   });
   transaction();
+}
+
+/**
+ * 远端会话透明重建（`psb:`）的身份交接事务 —— 与 `contextRebuild` 同一条纪律：
+ * 「换远端身份 / 清旧原生绑定 / 写隐藏交接」必须一起提交，任一步缺失都是**静默**的
+ * 错误（身份换了但模型失忆，或交接喂给终态旧会话）。
+ *
+ * CAS 键是 `remote_host_id`（不是 `sdk_session_id`）：重绑保护的是「别把另一次并发
+ * 重绑刚写进去的新身份覆盖掉」，而旧原生 id 在该行里可能是 NULL（会话从未启动）。
+ * 冲突时不写任何东西，调用方按库里现值重新决策。
+ */
+function sessionRemoteRebind(db: Database.Database, args: unknown): unknown {
+  const payload = asRecord(args, 'session.remoteRebind args');
+  const sessionId = expectString(payload.sessionId, 'sessionId');
+  const expectedRemoteHostId = nullableString(payload.expectedRemoteHostId);
+  const remoteHostId = expectString(payload.remoteHostId, 'remoteHostId');
+  const clearNativeSession = payload.clearNativeSession === true;
+  const updatedAt = expectNumber(payload.updatedAt, 'updatedAt');
+  const marker = payload.marker === undefined || payload.marker === null
+    ? null
+    : asRecord(payload.marker, 'marker');
+  const transaction = db.transaction((): { status: 'persisted' | 'conflict' } => {
+    const result = db.prepare(
+      `UPDATE sessions
+          SET remote_host_id = ?, sdk_session_id = CASE WHEN ? = 1 THEN NULL ELSE sdk_session_id END,
+              updated_at = ?
+        WHERE id = ? AND ifnull(remote_host_id, '') = ifnull(?, '') AND status != 'deleted'`,
+    ).run(remoteHostId, clearNativeSession ? 1 : 0, updatedAt, sessionId, expectedRemoteHostId);
+    if (result.changes !== 1) return { status: 'conflict' as const };
+    if (marker) {
+      db.prepare(
+        "INSERT INTO messages (id, client_id, session_id, role, content, created_at, rewind_at) VALUES (?, ?, ?, 'context_rebuild', ?, ?, ?)",
+      ).run(
+        expectString(marker.id, 'marker.id'),
+        expectString(marker.clientId, 'marker.clientId'),
+        sessionId,
+        expectString(marker.content, 'marker.content'),
+        expectNumber(marker.createdAt, 'marker.createdAt'),
+        expectNumber(marker.createdAt, 'marker.createdAt'),
+      );
+    }
+    return { status: 'persisted' as const };
+  });
+  return transaction();
 }
 
 /** 同一任务换干净原生会话：清 SDK/旧用量 + 追加隐藏 context_rebuild，不改可见消息。 */

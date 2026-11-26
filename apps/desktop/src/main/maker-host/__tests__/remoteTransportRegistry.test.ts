@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  hasRemoteHostTransport,
   hasRemoteTransport,
+  listRemoteHostTransports,
   listRemoteTransports,
+  registerRemoteHostTransport,
   registerRemoteTransport,
+  releaseAllRemoteTransports,
+  releaseRemoteHostTransport,
   releaseRemoteTransport,
   resetRemoteTransportRegistryForTests,
   setRemoteTransportLogger,
@@ -66,5 +71,47 @@ describe('remote transport registry', () => {
       { sessionId: 'a', hostId: 'mcpr:x', openedAt: 1 },
       { sessionId: 'b', hostId: 'ssh:y', openedAt: 2 },
     ]);
+  });
+});
+
+/**
+ * `psb:` 的 Codex app-server 连接按**隧道身份**复用（Maker 会话可以在同一 PSB 会话上重建
+ * runtime），所以它有自己的作用域。两档登记都在同一张诊断表里，会话结束 / 应用退出都走
+ * 同一个释放入口 —— 少了任何一档，PSB 侧会一直把这条隧道算成「活动」，牵住 stop / commit。
+ */
+describe('remote transport registry (host scope)', () => {
+  it('registers and releases a host-scoped transport exactly once', async () => {
+    const dispose = vi.fn(async () => undefined);
+    registerRemoteHostTransport('psb:s1', dispose, 100);
+    expect(hasRemoteHostTransport('psb:s1')).toBe(true);
+    expect(listRemoteHostTransports()).toEqual([{ hostId: 'psb:s1', openedAt: 100 }]);
+
+    await expect(releaseRemoteHostTransport('psb:s1', 'session-end')).resolves.toBe(true);
+    await expect(releaseRemoteHostTransport('psb:s1', 'app-quit')).resolves.toBe(false);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(hasRemoteHostTransport('psb:s1')).toBe(false);
+  });
+
+  it('disposes the previous host transport when the same identity is re-registered', async () => {
+    const first = vi.fn(async () => undefined);
+    const second = vi.fn(async () => undefined);
+    registerRemoteHostTransport('psb:s1', first, 1);
+    registerRemoteHostTransport('psb:s1', second, 2);
+    await vi.waitFor(() => expect(first).toHaveBeenCalledTimes(1));
+    expect(listRemoteHostTransports()).toEqual([{ hostId: 'psb:s1', openedAt: 2 }]);
+    await releaseRemoteHostTransport('psb:s1', 'session-end');
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases both scopes on app quit', async () => {
+    const sessionDispose = vi.fn(async () => undefined);
+    const hostDispose = vi.fn(async () => undefined);
+    registerRemoteTransport('local-1', 'mcpr:instance-1', sessionDispose);
+    registerRemoteHostTransport('psb:s1', hostDispose);
+    await expect(releaseAllRemoteTransports('app-quit')).resolves.toEqual({ sessions: 1, hosts: 1 });
+    expect(sessionDispose).toHaveBeenCalledTimes(1);
+    expect(hostDispose).toHaveBeenCalledTimes(1);
+    expect(listRemoteTransports()).toEqual([]);
+    expect(listRemoteHostTransports()).toEqual([]);
   });
 });

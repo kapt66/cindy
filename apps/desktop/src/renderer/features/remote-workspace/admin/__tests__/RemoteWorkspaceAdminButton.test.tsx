@@ -73,11 +73,10 @@ function renderButton() {
 
 it('opens the global admin tab as a titled title-bar button', () => {
   const action = renderButton();
-  // 文字按钮：可见标签就在按钮里（不是 icon-only），高度走共享 Button 的 28px 档；
-  // 文案已按用户 2026-11-26 口径改为「远程工作区」。
+  // 文字按钮：可见标签就在按钮里（不是 icon-only），文案已按用户 2026-11-26 口径改为
+  // 「远程工作区」。28px 高度档是共享 Button 的规格，视觉由 `pnpm ui:check` 复核。
   expect(i18n.t('remoteWorkspace.admin.title')).toBe('Remote workspace');
   expect(action.textContent).toContain(i18n.t('remoteWorkspace.admin.title'));
-  expect(action.className).toContain('h-7');
   // 标题行是窗口拖拽区：按钮必须自挖 no-drag，否则点击被当成拖窗吞掉。
   expect((action.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion).toBe(
     'no-drag',
