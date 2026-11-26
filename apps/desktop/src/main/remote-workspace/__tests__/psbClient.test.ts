@@ -73,12 +73,14 @@ function jsonResponse(status: number, body: unknown): Response {
 function makeApi(
   fetchImpl: (input: string, init: RequestInit) => Promise<Response>,
   tokens: PsbConnectionTokenPort,
+  overrides: Partial<Parameters<typeof createPsbApi>[0]> = {},
 ) {
   return createPsbApi({
     fetch: fetchImpl,
     getAuthState: () => AUTH_STATE,
     tokens,
     logger: LOGGER,
+    ...overrides,
   });
 }
 
@@ -477,5 +479,383 @@ describe('工作区网页地址：列表口优先、单行仅兜底（2026-11-26
     await expect(readWorkspaceWebUrl(api, 'ws-1')).rejects.toMatchObject({
       failure: { code: 'PSB_UNREACHABLE' },
     });
+  });
+});
+
+/* ==================== 工作区级串流订阅与 purpose（PSB 0.1.172 新契约） ==================== */
+
+describe('工作区级串流订阅（stream/subscribe）与 purpose', () => {
+  /** 会话行（PSB 的 Cindy 入口回答单条会话行，见 `parseSessionRow`）。 */
+  function sessionRowJson(): Record<string, unknown> {
+    return {
+      id: 'psb-session-1',
+      workspaceId: 'ws-1',
+      clientId: 'client-1',
+      title: '用户任务',
+      agentKind: 'pi',
+      status: 'running',
+      createdAt: '2026-11-26T00:00:00.000Z',
+      updatedAt: '2026-11-26T00:00:00.000Z',
+      createdBy: { personId: '7', personName: '我', source: 'cindy' },
+    };
+  }
+
+  it('POST 工作区级订阅端点并解析桌面访问会话 id（不创建 Agent 会话）', async () => {
+    const tokens = makeTokens();
+    const requests: Array<{ url: string; method: string }> = [];
+    const api = makeApi(async (input, init) => {
+      requests.push({ url: input, method: String(init.method) });
+      return jsonResponse(200, {
+        data: {
+          workspaceId: 'ws-1',
+          sessionId: 'desktop-session-1',
+          streamPath: '/api/cindy/remote/sessions/desktop-session-1/stream?subscriberId=u4',
+          subscriberId: 'u4',
+        },
+      });
+    }, tokens.port);
+
+    const subscription = await api.subscribeWorkspaceStream('ws-1');
+
+    // 端点形状是契约正本（`POST /workspaces/:id/stream/subscribe`）：拼错路径会静默 404。
+    expect(requests).toEqual([
+      {
+        url: expect.stringMatching(/\/api\/cindy\/remote\/workspaces\/ws-1\/stream\/subscribe$/),
+        method: 'POST',
+      },
+    ]);
+    // `sessionId` 是**桌面访问会话** id；其余是可选诊断字段（缺 expiresAt 归一成 null）。
+    expect(subscription).toEqual({
+      sessionId: 'desktop-session-1',
+      streamPath: '/api/cindy/remote/sessions/desktop-session-1/stream?subscriberId=u4',
+      subscriberId: 'u4',
+      expiresAt: null,
+    });
+  });
+
+  it('订阅响应缺 sessionId → 协议错（不能拿空 id 去开观看端）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(async () => jsonResponse(200, { data: { workspaceId: 'ws-1' } }), tokens.port);
+
+    const error = await api
+      .subscribeWorkspaceStream('ws-1')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect((error as PsbClientError).failure.code).toBe('PSB_PROTOCOL');
+  });
+
+  it('409 NO_RUNNING_SESSION 保留 PSB 可读原因并带上 details.state（调用方转成可行动文案）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          error: {
+            code: 'NO_RUNNING_SESSION',
+            message: '该工作区还没有运行中的桌面访问会话，请先在 PSB 网页启动远程桌面。',
+            details: { code: 'NO_RUNNING_SESSION', state: 'none' },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api
+      .subscribeWorkspaceStream('ws-1')
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect(error.status).toBe(409);
+    // 收敛成 Cindy 的结构化失败：PSB 原始码不足以表达「按 state 决定下一步」。
+    expect(error.failure.code).toBe('PSB_STREAM_NO_RUNNING_SESSION');
+    expect(error.failure.streamAccessState).toBe('none');
+    // 原文是用户唯一的可行动线索（「先去 PSB 网页启动」），不能在映射里丢掉。
+    expect(error.failure.message).toContain('启动远程桌面');
+  });
+
+  it('createSession 省略 purpose 时不带该字段；purpose=internal 时原样带出', async () => {
+    const tokens = makeTokens();
+    const bodies: Array<Record<string, unknown>> = [];
+    const api = makeApi(async (input, init) => {
+      if (String(init.method) === 'POST') {
+        bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return jsonResponse(200, { data: sessionRowJson() });
+      }
+      return jsonResponse(200, { data: { workspaces: [{ id: 'ws-1' }] } });
+    }, tokens.port);
+
+    await api.createSession({
+      workspaceId: 'ws-1',
+      agentKind: 'pi',
+      clientRequestId: 'req-user-task',
+    });
+    await api.createSession({
+      workspaceId: 'ws-1',
+      agentKind: 'pi',
+      title: 'Cindy 观看端 · 内部串流订阅',
+      purpose: 'internal',
+      clientRequestId: 'req-internal',
+    });
+
+    // 用户任务保持与旧服务端逐字节一致的请求体（省略 = agent）。
+    expect(bodies[0]).not.toHaveProperty('purpose');
+    // 过渡兜底必须让 PSB 能把它排除在列表/计数之外（其它值 PSB 会 400）。
+    expect(bodies[1]).toMatchObject({
+      purpose: 'internal',
+      title: 'Cindy 观看端 · 内部串流订阅',
+    });
+  });
+});
+
+/* ==================== 订阅 409：按 details.state 分档（PSB 0.1.180） ==================== */
+
+/**
+ * 真机事故（2026-11-26）：访问未运行时点「启动串流」只显示「串流失败：操作失败，请稍后重试。」。
+ * 根因是 409 的 `details.code` / `details.state` 没有被解析，落到了通用错误。
+ */
+describe('订阅串流 409 NO_RUNNING_SESSION：state → 可行动失败码', () => {
+  /** 期望的状态映射（与 `PSB_NO_RUNNING_SESSION_IPC_CODES` 同口径）。 */
+  const STATE_CASES: ReadonlyArray<{
+    readonly state: string | null;
+    readonly ipcCode: string;
+    readonly messageKey: string;
+  }> = [
+    {
+      state: 'none',
+      ipcCode: 'PSB_STREAM_NO_RUNNING_SESSION',
+      messageKey: 'remoteWorkspace.admin.streamAccessNone',
+    },
+    {
+      state: 'stopped',
+      ipcCode: 'PSB_STREAM_NO_RUNNING_SESSION',
+      messageKey: 'remoteWorkspace.admin.streamAccessNone',
+    },
+    {
+      state: 'failed',
+      ipcCode: 'PSB_STREAM_NO_RUNNING_SESSION',
+      messageKey: 'remoteWorkspace.admin.streamAccessNone',
+    },
+    {
+      state: 'starting',
+      ipcCode: 'PSB_STREAM_ACCESS_STARTING',
+      messageKey: 'remoteWorkspace.admin.streamAccessStarting',
+    },
+    {
+      state: 'stopping',
+      ipcCode: 'PSB_STREAM_ACCESS_STOPPING',
+      messageKey: 'remoteWorkspace.admin.streamAccessStopping',
+    },
+    // PSB 给了未知 / 缺省 state：按「去网页启动访问」那一档，不猜「正在启动」。
+    { state: null, ipcCode: 'PSB_STREAM_NO_RUNNING_SESSION', messageKey: 'remoteWorkspace.admin.streamAccessNone' },
+    {
+      state: 'weird-future-state',
+      ipcCode: 'PSB_STREAM_NO_RUNNING_SESSION',
+      messageKey: 'remoteWorkspace.admin.streamAccessNone',
+    },
+  ];
+
+  it.each(STATE_CASES)(
+    'details.state=$state → $ipcCode（main 失败形状带 state，渲染层按码选文案）',
+    async ({ state, ipcCode, messageKey }) => {
+      const tokens = makeTokens();
+      const api = makeApi(
+        async () =>
+          jsonResponse(409, {
+            error: {
+              code: 'NO_RUNNING_SESSION',
+              message: '该工作区还没有运行中的桌面访问会话，请先在 PSB 网页启动远程桌面。',
+              details: { code: 'NO_RUNNING_SESSION', workspaceId: 'ws-1', state },
+            },
+          }),
+        tokens.port,
+      );
+
+      const error = (await api
+        .subscribeWorkspaceStream('ws-1')
+        .catch((cause: unknown) => cause)) as PsbClientError;
+      const failure = error.failure;
+
+      expect(failure.code).toBe('PSB_STREAM_NO_RUNNING_SESSION');
+      expect(failure.messageKey).toBe(messageKey);
+      expect(failure.message).toContain('启动远程桌面');
+      // 状态只在 main 侧保存；跨 IPC 时由 `psbIpcCodeForFailure` 翻成三条码之一。
+      expect(psbIpcCodeForFailure(failure)).toBe(ipcCode);
+    },
+  );
+
+  it('平铺失败外壳（{ code, message, details }）同样解析（PSB 0.1.180 的另一形态）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          code: 'NO_RUNNING_SESSION',
+          message: '工作区访问正在启动（Unity 还没就绪），请稍等再试。',
+          details: { code: 'NO_RUNNING_SESSION', state: 'starting' },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api
+      .subscribeWorkspaceStream('ws-1')
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.streamAccessState).toBe('starting');
+    expect(error.failure.message).toContain('请稍等再试');
+    expect(psbIpcCodeForFailure(error.failure)).toBe('PSB_STREAM_ACCESS_STARTING');
+  });
+
+  it('其它 409 不被误标成「没有运行中的访问」', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          error: {
+            code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+            message: '张三',
+            details: { name: '张三' },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api
+      .subscribeWorkspaceStream('ws-1')
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('WORKSPACE_OCCUPIED_BY_OTHER');
+    expect(error.failure.streamAccessState).toBeUndefined();
+    expect(psbIpcCodeForFailure(error.failure)).toBe('PSB_WORKSPACE_OCCUPIED_BY_OTHER');
+  });
+});
+
+/* ==================== 尽力拉起桌面访问（通用网页接口，待 PSB 放行） ==================== */
+
+describe('ensureWorkspaceAccess：幂等拉起 + 轮询，入口未开放时非致命', () => {
+  /** 记录每次请求的 URL 与方法（断言「只打这两条路径」）。 */
+  function recordingFetch(
+    respond: (input: string, init: RequestInit) => Response,
+  ): {
+    fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
+    requests: Array<{ url: string; method: string }>;
+  } {
+    const requests: Array<{ url: string; method: string }> = [];
+    return {
+      requests,
+      fetchImpl: async (input, init) => {
+        requests.push({ url: input, method: String(init.method) });
+        return respond(input, init);
+      },
+    };
+  }
+
+  const POLL_FAST = { attempts: 2, intervalMs: 0 };
+
+  it('200 且已在 running → ok，只 POST 一次、不轮询', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() =>
+      jsonResponse(200, { data: { state: 'running' } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: false });
+    expect(requests).toEqual([
+      {
+        url: expect.stringMatching(/\/api\/remote\/workspaces\/ws-1\/access\/start$/),
+        method: 'POST',
+      },
+    ]);
+  });
+
+  it('202 受理后轮询 GET …/access 直到 running（走 Cindy 命名空间的读口）', async () => {
+    const tokens = makeTokens();
+    let polls = 0;
+    const { fetchImpl, requests } = recordingFetch((input, init) => {
+      if (String(init.method) === 'POST') return jsonResponse(202, {});
+      polls += 1;
+      return jsonResponse(200, { data: { state: polls >= 2 ? 'running' : 'starting' } });
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: true });
+    expect(requests.map((entry) => entry.method)).toEqual(['POST', 'GET', 'GET']);
+    expect(requests[1]?.url).toMatch(/\/api\/cindy\/remote\/workspaces\/ws-1\/access$/);
+  });
+
+  it('403（Cindy 白名单未放行）→ cindy-entry-not-open，非致命且不轮询', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() =>
+      jsonResponse(403, {
+        error: { code: 'FORBIDDEN', message: '这个 Cindy 身份不能访问该接口' },
+      }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: 'cindy-entry-not-open',
+      failure: { code: 'FORBIDDEN' },
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('404（旧 PSB 没有这条路由）→ cindy-entry-not-open，非致命', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() =>
+      jsonResponse(404, { error: { code: 'NOT_FOUND', message: '接口不存在' } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toMatchObject({ ok: false, reason: 'cindy-entry-not-open' });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('轮询预算内没到 running → timeout（不是异常，调用方继续走订阅）', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl } = recordingFetch((input, init) => {
+      if (String(init.method) === 'POST') return jsonResponse(202, {});
+      return jsonResponse(200, { data: { state: 'starting' } });
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: false, reason: 'timeout', failure: null });
+  });
+
+  it('幂等 ensure 说「没在运行也没在启动」→ 不再轮询，交给订阅的 409 报原因', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() =>
+      jsonResponse(200, { data: { state: 'none' } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toMatchObject({ ok: false, reason: 'failed', failure: null });
+    expect(requests).toHaveLength(1);
+  });
+
+  it('网络失败 → failed（非致命），且永久只打一次（不在增强接口上重试）', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() => {
+      throw new Error('ECONNRESET');
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: 'failed',
+      failure: { code: 'PSB_UNREACHABLE' },
+    });
+    expect(requests).toHaveLength(1);
   });
 });

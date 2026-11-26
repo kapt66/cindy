@@ -26,6 +26,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/lib/ccAgent.types';
+import { toast } from '@/lib/toast';
 import type { MekaProject } from '../../../../../shared/meka-projects';
 import type { PsbRemoteWorkspace } from '../../../../../shared/psb-remote-workspace';
 import type { UseSidebarFilterReturn } from '../../../cc-agent/hooks/useSidebarFilter';
@@ -391,6 +392,30 @@ describe('远程工作区会话行装饰', () => {
       expect(bridge.openWebWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' }),
     );
     expect(OPENED_WORKSPACE_IDS).toEqual(['ws-a']);
+  });
+
+  it('打开网页失败时显示可行动文案，而不是通用「操作失败，请稍后重试。」', async () => {
+    // 2026-11-26 真机事故：旧实现 catch 后写死 `remoteWorkspace.error.unknown`，用户点两次
+    // 行首图标就看到两条通用 toast。已知失败码必须映射成可行动文案（`psbFailureText`）。
+    const bridge = installBridge([fakeWorkspace()]);
+    await refreshRemoteWorkspaces(true);
+    vi.mocked(toast.error).mockClear();
+    bridge.openWebWorkspace.mockRejectedValueOnce(new Error('[PSB_UNREACHABLE] 连不上 PSB'));
+    render(
+      <RemoteWorkspaceOpenButton
+        session={{ id: 'psb-1', remoteHostId: 'psb:psb-session-1', workingDir: '/psb-remote/checkout' }}
+        isActive={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'remoteWorkspace.session.openWorkspace' }),
+    );
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('remoteWorkspace.error.unreachable'),
+    );
+    expect(toast.error).not.toHaveBeenCalledWith('remoteWorkspace.error.unknown');
   });
 });
 

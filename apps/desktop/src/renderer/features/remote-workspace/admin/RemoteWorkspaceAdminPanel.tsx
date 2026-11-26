@@ -19,8 +19,14 @@
  *      - 远程连接 = 横条控制区（启动 / 停止同一个按钮切换、详情浮层、串流信息、全屏 + 状态文案）+ 占满剩余高度的
  *        串流画面；详情是 Popover 浮层，不改变任何布局高度；
  *      - 版本控制 / 设置 = 统一风格的「后续提供」占位空态（不放假按钮）；
+ *        版本控制在 main 有版本控制检查通知时显示内联提示条 `WorkspaceVcsNoticeView
+ *        variant="inline"`（查看详情 / 一键清理 / 继续），没有通知时回落到同一个占位空态；
  *      - 没有可用工作区 / 读不到 / 旧 preload 没有管理桥时，内容区显示对应空态，但页头与
  *        分类导航**始终保留**（页面结构不变）。
+ *
+ * **stale（2026-11-26 真机事故）**：页头在 stale / 工作区不可见时仍显示名称、模板 · 机器
+ * （固定信息来自本机快照 / 历史会话行），并在页头下加一条降级说明；「还没有远程工作区」空态
+ * 只在 main 明确返回 `context: null`（本机完全没有线索）时出现。
  *
  * ## 页签形态
  *
@@ -43,8 +49,15 @@ import { Button } from '@/components/ui/button';
 import { SegmentedControl } from '@/components/ui/segmented-control';
 import { Spinner } from '@/components/ui/spinner';
 import type { TabKindBodyProps } from '@/features/right-sidebar/types';
-import type { PsbWorkspaceAdminContext } from '../../../../shared/psb-workspace-admin';
+import {
+  PSB_ADMIN_STALE_COPY_KEYS,
+  psbAdminContextIsStale,
+  psbAdminContextStaleCopyKind,
+  type PsbWorkspaceAdminContext,
+} from '../../../../shared/psb-workspace-admin';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
+import { useWorkspaceVcsNotice } from '../vcs/vcsNoticeStore';
+import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 
 import { RemoteWorkspaceAdminActions } from './RemoteWorkspaceAdminActions';
 import { RemoteWorkspaceAdminConnection } from './RemoteWorkspaceAdminConnection';
@@ -113,6 +126,11 @@ function AdminEmptyState({
  * 再是占用信息；**不再显示目录名**（目录仍留在上下文字段里给其它调用方，只是页头不展示）。
  * 信息组不用 `flex-1` / `justify-between` 撑开：固定 16px 间距依次紧挨；每段 `min-w-0 + truncate`，
  * 长名称截断、窄窗口只挤压信息，不换行、不推高布局、不压右侧按钮。
+ *
+ * **stale（读不到工作区 / 工作区已不可见）口径（2026-11-26 真机事故）**：名称 / 模板 · 机器是
+ * 固定信息，**仍照常显示**（它们来自本机快照）；占用是状态信息，未知时显示「无法获取」，
+ * 不把快照里过期的占用人当成事实。历史会话没有快照时，名称退化成会话标题、模板 · 机器段
+ * 退化成目录名 —— 有可展示的字段就展示，绝不整段留白。
  */
 function WorkspaceHeader({
   context,
@@ -122,18 +140,26 @@ function WorkspaceHeader({
   readonly actions?: ReactNode;
 }) {
   const { t } = useTranslation();
+  const stale = context ? psbAdminContextIsStale(context) : false;
   const name = context?.title.trim() || EMPTY_VALUE;
   // 模板与机器合成一个次要信息段（模板为空时只剩机器；两者都空时显示占位）。
+  // stale 且模板 / 机器都没有（历史会话种子）时退回目录名：它是唯一还能确认「哪个工作区」的字段。
   const meta = context
     ? [context.templateTitle?.trim(), context.clientName.trim()].filter(Boolean).join(' · ') ||
-      EMPTY_VALUE
+      (stale && context.directoryName.trim() ? context.directoryName.trim() : EMPTY_VALUE)
     : EMPTY_VALUE;
   // 占用展示与侧栏锁共用同一格式函数：有名字显示名字，自己占用追加「（你）」。
-  const occupancy = context ? formatWorkspaceOccupancy(context.occupancy, t) : EMPTY_VALUE;
+  // stale 时占用是「无法获取」——不能拿本机快照里过期的占用人去误导用户。
+  const occupancy = context
+    ? stale
+      ? t('remoteWorkspace.admin.staleOccupancy')
+      : formatWorkspaceOccupancy(context.occupancy, t)
+    : EMPTY_VALUE;
 
   return (
     <div
       data-testid="remote-workspace-admin-workspace-line"
+      data-stale={context ? String(stale) : undefined}
       className="flex h-10 shrink-0 flex-nowrap items-center gap-2 overflow-hidden whitespace-nowrap border-b border-[var(--border-default)] px-2.5"
     >
       <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden">
@@ -168,6 +194,57 @@ function WorkspaceHeader({
   );
 }
 
+/**
+ * 降级说明条：固定信息来自本机快照 / 历史会话行时，页头照旧显示名称、模板 · 机器，这一条
+ * 负责说清「为什么现在读不到实时状态」以及用户下一步能做什么。
+ *
+ * 2026-11-26 真机事故的口径：读不到 / 工作区被删时**不能**退回「还没有远程工作区」空态；
+ * 固定信息 + 降级原因要一起出现。PSB 原文只当诊断行（用户能看懂的中文由 i18n 提供）。
+ */
+function WorkspaceStaleNotice({
+  context,
+  onRefresh,
+}: {
+  readonly context: PsbWorkspaceAdminContext;
+  readonly onRefresh: () => void;
+}) {
+  const { t } = useTranslation();
+  const kind = psbAdminContextStaleCopyKind(context);
+  if (!kind) return null;
+  const copy = PSB_ADMIN_STALE_COPY_KEYS[kind];
+  const diagnostic = context.lastErrorZh?.trim() || null;
+  return (
+    <div
+      data-testid="remote-workspace-admin-stale-notice"
+      data-stale-availability={kind}
+      role="status"
+      className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-default)] bg-[var(--surface-elevated)] px-2.5 py-1.5"
+    >
+      <TriangleAlert
+        size={13}
+        className="mt-0.5 shrink-0 text-[var(--warning-fg)]"
+        aria-hidden
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 text-11 leading-4">
+        <p className="font-medium text-[var(--text-primary)]">{t(copy.title)}</p>
+        <p className="text-[var(--text-secondary)]">{t(copy.hint)}</p>
+        {diagnostic ? (
+          <p
+            data-testid="remote-workspace-admin-stale-detail"
+            className="break-words text-[var(--text-tertiary)]"
+          >
+            {diagnostic}
+          </p>
+        ) : null}
+      </div>
+      <Button size="xs" compact variant="secondary" tone="quiet" onClick={onRefresh}>
+        <RefreshCw size={13} aria-hidden />
+        {t('remoteWorkspace.dialog.refresh')}
+      </Button>
+    </div>
+  );
+}
+
 export function RemoteWorkspaceAdminPanel({
   ctx,
   active,
@@ -182,6 +259,14 @@ export function RemoteWorkspaceAdminPanel({
     enabled: visible,
   });
   const [category, setCategory] = useState<RemoteWorkspaceAdminCategory>('connection');
+  /**
+   * 当前工作区的版本控制检查通知（CINDY-RW-10，2026-11-26）。
+   *
+   * 数据来自 main 的广播（占用 / 释放时缓存后广播）与本 hook 首次挂载 / 换工作区时的兜底读；
+   * 页面**不解析也不拼** method/path/body——「查看详情 / 一键清理 / 继续」由 View 按 kind 调
+   * `runWorkspaceVcsAction`。有 notice 时版本控制分类显示内联提示条，没有则保留原占位空态。
+   */
+  const vcsNotice = useWorkspaceVcsNotice(context?.workspaceId ?? null);
 
   const options = useMemo(
     () =>
@@ -242,13 +327,36 @@ export function RemoteWorkspaceAdminPanel({
       );
     }
     if (category === 'versionControl') {
+      // 版本控制分类的挂载点（CINDY-RW-10）：main 广播过 advisory / 旧版 409 时，展示内联
+      // 提示与处置动作；没有通知时保留统一占位空态（不放假按钮）。
+      // stale 上下文里工作区事实不可用，但通知本身来自 main 的缓存，照旧可展示与处置。
+      if (!vcsNotice) {
+        return (
+          <AdminEmptyState
+            testId="remote-workspace-admin-version-control"
+            icon={GitBranch}
+            title={t('remoteWorkspace.admin.categories.versionControl')}
+            hint={t('remoteWorkspace.admin.placeholderComingSoon')}
+          />
+        );
+      }
       return (
-        <AdminEmptyState
-          testId="remote-workspace-admin-version-control"
-          icon={GitBranch}
-          title={t('remoteWorkspace.admin.categories.versionControl')}
-          hint={t('remoteWorkspace.admin.placeholderComingSoon')}
-        />
+        <div
+          data-testid="remote-workspace-admin-version-control"
+          className="flex min-h-0 flex-1 flex-col overflow-y-auto p-2.5"
+        >
+          <WorkspaceVcsNoticeView
+            workspaceId={vcsNotice.workspaceId}
+            notice={vcsNotice.notice}
+            operation={vcsNotice.operation}
+            variant="inline"
+            onResolved={(result) => {
+              // 清理已接受（202 异步）：重新读一次工作区上下文；不猜轮询端点，具体结果由
+              // 用户点 View 里的「刷新」重新读工作区列表。
+              if (result.kind === 'clean-workspace' && result.accepted) refresh();
+            }}
+          />
+        </div>
       );
     }
     if (category === 'settings') {
@@ -282,6 +390,10 @@ export function RemoteWorkspaceAdminPanel({
           ) : undefined
         }
       />
+      {/* stale 降级说明：固定信息仍在上方页头显示，这里只解释「为什么状态读不到」+ 重试。 */}
+      {status === 'ready' && context && psbAdminContextIsStale(context) ? (
+        <WorkspaceStaleNotice context={context} onRefresh={refresh} />
+      ) : null}
       {/* 分类导航：左对齐紧凑排列 —— inline 轨道按内容宽度排布，靠左，不拉伸铺满，
           也不参与 space-between（用户 2026-11-26 口径）。 */}
       <div

@@ -35,6 +35,11 @@ import {
   type PsbWorkspaceAdminStreamStartResult,
   type PsbWorkspaceAdminStreamStatusResult,
 } from '../../shared/psb-workspace-admin.js';
+import {
+  WORKSPACE_VCS_ACTION_KINDS,
+  type PsbRunWorkspaceVcsActionResponse,
+  type PsbWorkspaceVcsNoticeResult,
+} from '../../shared/psb-workspace-vcs.js';
 import { isIpcError } from '../../shared/ipc-errors.js';
 import { assertTrustedAppRendererEvent } from '../security/trustedAppRenderer.js';
 import {
@@ -160,8 +165,9 @@ const watchedSenders = new Set<number>();
 /**
  * 管理页串流：workspaceId → 启动它的 webContents.id。
  *
- * 管理页的串流订阅挂在**内部观看端会话**上（每工作区一条，跨窗口共享），所以释放点必须按
- * 工作区而不是会话 id 记；窗口销毁同样要停流，否则会白占 PSB 的观看名额。
+ * 管理页的串流观看挂在**工作区级绑定**上（每个工作区一条，跨窗口共享），观看端绑定的会话 id
+ * 是主进程的事实（正常 = PSB 桌面访问会话 id），所以释放点必须按工作区而不是会话 id 记；
+ * 窗口销毁同样要停流，否则会白占 PSB 的观看名额。
  */
 const adminStreamOwners = new Map<string, number>();
 /** 已挂过管理页 `destroyed` 监听的 webContents.id。 */
@@ -235,6 +241,34 @@ export function registerPsbRemoteIpc(
   handleInvoke(PSB_REMOTE_CHANNELS.RELEASE_WORKSPACE, async (_event, payload) => {
     const workspace = await service().releaseWorkspace(readWorkspaceRef(payload).workspaceId);
     return { workspace } satisfies PsbOccupyWorkspaceResult;
+  });
+
+  /* ---------------------- CINDY-RW-10：占用/释放的版本控制检查 ---------------------- */
+
+  // 为什么这组通道存在：占用 / 解除占用被版本控制检查拒绝时，PSB 的 `details.vcs` 里有
+  // `projects` 与可执行 `actions`，而 invoke 抛错跨进程只保留 code+message。main 在抛错前已把
+  // notice 写进有界缓存并广播；渲染层用这两个通道兜底读取 + 执行处置动作（只传 kind，
+  // method/path/body 由 main 从缓存取，绝不接受渲染层自报 URL）。
+  handleInvoke(PSB_REMOTE_CHANNELS.WORKSPACE_VCS_NOTICE_GET, (_event, payload) => {
+    const { workspaceId } = readWorkspaceRef(payload);
+    const notice = service().readWorkspaceVcsNotice(workspaceId);
+    return { workspaceId, notice } satisfies PsbWorkspaceVcsNoticeResult;
+  });
+
+  handleInvoke(PSB_REMOTE_CHANNELS.WORKSPACE_VCS_ACTION, async (_event, payload) => {
+    const body = requireObject(payload);
+    const workspaceId = requireString(body['workspaceId'], 'workspaceId');
+    const kind = requireEnum(body['kind'], WORKSPACE_VCS_ACTION_KINDS, 'kind');
+    const confirm = body['confirm'];
+    if (confirm !== undefined && typeof confirm !== 'boolean') {
+      throwIpcError('INVALID_PARAMS', 'confirm must be a boolean');
+    }
+    const result = await service().runWorkspaceVcsAction({
+      workspaceId,
+      kind,
+      ...(confirm === undefined ? {} : { confirm }),
+    });
+    return result satisfies PsbRunWorkspaceVcsActionResponse;
   });
 
   handleInvoke(PSB_REMOTE_CHANNELS.CREATE_SESSION, (_event, payload) => {
@@ -344,7 +378,8 @@ export function registerPsbRemoteIpc(
   /* ---------------------- 「远程工作区」管理页（工作区级） ---------------------- */
 
   // 这一组 handler 与上面「会话级」通道**分属两组常量**（`PSB_ADMIN_CHANNELS`）：
-  // 页面围绕一个 PSB 工作区工作，观看端用我们自己身份的内部会话订阅，与用户任务是否结束无关
+  // 页面围绕一个 PSB 工作区工作，观看端走工作区级 `stream/subscribe` 返回的桌面访问会话
+  // （**不建 Agent 会话**），与用户任务是否结束无关
   // （见 `shared/psb-workspace-admin.ts` 与 docs/dev-rules/psb-remote-session-transport.md §11）。
   const admin = () => getPsbWorkspaceAdminService();
 
@@ -377,7 +412,7 @@ export function registerPsbRemoteIpc(
   });
 
   handleInvoke(PSB_ADMIN_CHANNELS.STREAM_INPUT, async (_event, payload) => {
-    // 入参是**工作区级**的：渲染层不持有内部观看端会话 id（那是 main 的事实），事件形状在
+    // 入参是**工作区级**的：渲染层不持有观看端会话 id（那是 main 的事实），事件形状在
     // 产生任何副作用之前先校验（规则见 `readStreamInputEvent`）。
     const body = requireObject(payload);
     const workspaceId = requireString(body['workspaceId'], 'workspaceId');

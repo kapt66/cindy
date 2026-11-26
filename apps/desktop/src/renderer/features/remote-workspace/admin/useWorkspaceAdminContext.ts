@@ -9,6 +9,11 @@
  *   兜底）。页面不可见时不发请求。
  * - 读取失败保留上一次上下文（一次网络抖动不把页面打回空态）；从未读到过才进入
  *   `failed`，让用户看到「读取失败」+ 重试，而不是一直「正在读取」。
+ *
+ * **stale 不是 failed / empty**（2026-11-26 真机事故）：main 在 PSB 读不到但有本机快照时会返回
+ * `stale: true` 的上下文，这里照旧进入 `ready` —— 固定信息（名称 / 模板 / 机器）必须继续显示，
+ * 由 `RemoteWorkspaceAdminPanel` 用降级说明条与「无法获取」表达状态未知。`empty` 只表示
+ * main 明确返回 `context: null`（本机完全没有线索）。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';

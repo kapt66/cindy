@@ -14,9 +14,16 @@
  *
  * 新建入口不在这里重复实现表单：直接回调上层打开弹窗的「新建工作区」页签（同一份客户端 /
  * 模板表单），成功后弹窗回调把新工作区落进同一个 `psbTarget`。
+ *
+ * ## 版本控制检查通知（CINDY-RW-10）
+ *
+ * 选中即占用，因此占用被旧版 409 `WORKSPACE_VCS_*` 拒绝（或 0.1.180 成功响应带 advisory）时
+ * main 会缓存并广播通知。下拉在失败后兜底读一次，并在行列表下方以内联形态
+ * （`WorkspaceVcsNoticeView variant="inline"`）展示「查看详情 / 一键清理 / 继续」或旧版
+ * 「重试 / 还原」；成功占用后的 advisory 由全局宿主 / 管理页展示。渲染层不解析 method/path/body。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, CircleAlert, Lock, Plus, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -27,6 +34,8 @@ import { cn } from '@/lib/utils';
 import type { PsbRemoteWorkspace } from '../../../../shared/psb-remote-workspace';
 import { tryGetPsbRemoteBridge } from '../bridge';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
+import { hydrateWorkspaceVcsNotice, useWorkspaceVcsNotices } from '../vcs/vcsNoticeStore';
+import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 import {
   psbFailureText,
   psbWorkspaceCreatedPayload,
@@ -84,6 +93,16 @@ export function PsbWorkspacePicker({
   const [loadError, setLoadError] = useState<PsbFailureInfo | null>(null);
   const [actionError, setActionError] = useState<PsbFailureInfo | null>(null);
   const [occupyingId, setOccupyingId] = useState<string | null>(null);
+  /**
+   * 本次占用尝试的工作区 id：占用失败后用它把 main 缓存的版本控制通知拉进 store 并在下拉内
+   * 内联展示；不在打开下拉时给每个工作区各读一次通知。
+   */
+  const [vcsNoticeWorkspaceId, setVcsNoticeWorkspaceId] = useState<string | null>(null);
+  const vcsNoticeStates = useWorkspaceVcsNotices();
+  const vcsNotice = useMemo(
+    () => vcsNoticeStates.find((entry) => entry.workspaceId === vcsNoticeWorkspaceId) ?? null,
+    [vcsNoticeStates, vcsNoticeWorkspaceId],
+  );
   const aliveRef = useRef(true);
   /** 同步占用守卫：禁用态要等下一帧渲染，双击/连点必须靠 ref 立刻拒绝。 */
   const occupyRef = useRef(false);
@@ -119,6 +138,7 @@ export function PsbWorkspacePicker({
   useEffect(() => {
     if (!open) return;
     setActionError(null);
+    setVcsNoticeWorkspaceId(null);
     void refresh();
   }, [open, refresh]);
 
@@ -154,13 +174,19 @@ export function PsbWorkspacePicker({
       occupyRef.current = true;
       setOccupyingId(workspace.id);
       setActionError(null);
+      setVcsNoticeWorkspaceId(null);
       try {
         // 选中即占用（PSB 协作锁，与弹窗同一条动作链）；成功后调用方只写草稿目标。
         await bridge.occupyWorkspace({ workspaceId: workspace.id });
         if (!aliveRef.current) return;
+        // 0.1.180 advisory 兜底读：推送与 invoke 返回的先后顺序不可依赖（幂等）。
+        void hydrateWorkspaceVcsNotice(workspace.id);
         onSelect(psbWorkspaceCreatedPayload(workspace));
       } catch (error) {
         const failure = readPsbFailure(error);
+        // 旧版 409 兼容：main 已缓存 + 广播通知；兜底读一次并在下拉内以内联形态展示。
+        setVcsNoticeWorkspaceId(workspace.id);
+        void hydrateWorkspaceVcsNotice(workspace.id);
         // 409 占用：刷新列表让「谁抢走了」从工作区行的 occupancy.personName 取，
         // 并把占用人补进错误文案（与弹窗同一套可行动提示）。
         let enriched = failure;
@@ -309,6 +335,17 @@ export function PsbWorkspacePicker({
           );
         })}
       </div>
+
+      {vcsNotice ? (
+        <div className="mx-1 mt-1" data-testid="psb-picker-vcs-notice-slot">
+          <WorkspaceVcsNoticeView
+            workspaceId={vcsNotice.workspaceId}
+            notice={vcsNotice.notice}
+            operation={vcsNotice.operation}
+            variant="inline"
+          />
+        </div>
+      ) : null}
 
       {actionError ? (
         <ErrorNotice

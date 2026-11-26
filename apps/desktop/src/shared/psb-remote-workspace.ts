@@ -12,6 +12,14 @@
  *   - IPC 通道名与请求/响应 DTO（renderer ↔ main）；
  *   - 展示口径的纯函数（状态词、可用性、锁、虚拟工作目录）。
  *
+ * ## 跨仓映射契约（CINDY-RW-09，2026-11-26）
+ *
+ * `stream.cursor` 的形状（XFixes `name`）→ 观看端 CSS 关键字的映射**逐条一致**于 PSB
+ * `@psb/shared` 的 `packages/shared/src/stream-cursor.ts`：36 个 CSS 关键字、64 条 X11 别名、
+ * 归一化与回退顺序相同（PSB 源检出 0.1.127，2026-11-26 工作区快照）。PSB 的 `host` 位图是
+ * **可选**外观策略，Cindy 固定 `system`（宿主风格、只变形态）；未知 / 缺名 → `default`，
+ * 绝不 `none`。本仓**不 import PSB 包**，版本、来源与后续替换点见 §5b 的文件头。
+ *
  * 不放实现（HTTP、隧道、Electron），也不放文案（文案走 i18n 的 `remoteWorkspace` 命名空间）。
  *
  * ## 三条硬约束（改动前先读）
@@ -26,6 +34,7 @@
  */
 
 import { extractIpcError } from './ipcError';
+import type { WorkspaceVcsNotice } from './psb-workspace-vcs';
 
 /* ============================== 1. 传输身份 ============================== */
 
@@ -126,6 +135,27 @@ export const PSB_CINDY_ROUTES = {
     `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/occupy`,
   sessions: (workspaceId: string): string =>
     `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/sessions`,
+  /**
+   * 工作区级串流订阅（PSB 0.1.172）。
+   *
+   * 语义是**服务接口调用**、不是建会话：解析该工作区当前 `running` 的桌面访问会话并返回它的
+   * id；不创建 Agent 会话、不写库。观看端（WS `…/sessions/:sessionId/stream`）与
+   * `…/stream/status` 在过渡期同时接受 agent 会话 id 与桌面访问会话 id（PSB 口径）。
+   */
+  streamSubscribe: (workspaceId: string): string =>
+    `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/stream/subscribe`,
+  /**
+   * 工作区**桌面访问状态**读口（PSB 0.1.180，`GET …/workspaces/:id/access`）。
+   *
+   * 只在「Cindy 自己拉起了桌面访问」之后用来轮询到 running（见 `ensureWorkspaceStart`；
+   * main `psbClient.ensureWorkspaceAccess`）。Cindy 侧**不**用它做常规状态展示：页面上的
+   * 桌面会话状态仍来自 `stream/status.desktopSession`（那是已配对的观看端会话视角）。
+   *
+   * 响应形状 PSB 尚未给最终示例（`联动需求.md` 已登记），所以解析按 `state` /
+   * `desktopSession` / `access.state` 三种同义字段宽松读取，**不猜更多路径**。
+   */
+  workspaceAccess: (workspaceId: string): string =>
+    `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/access`,
   clients: `${PSB_CINDY_API_PREFIX}/clients`,
   projectTemplates: `${PSB_CINDY_API_PREFIX}/project-templates`,
   session: (sessionId: string): string =>
@@ -140,6 +170,33 @@ export const PSB_CINDY_WS = {
     `${PSB_CINDY_API_PREFIX}/sessions/${encodeURIComponent(sessionId)}/agent-tunnel`,
   stream: (sessionId: string): string =>
     `${PSB_CINDY_API_PREFIX}/sessions/${encodeURIComponent(sessionId)}/stream`,
+} as const;
+
+/* ====================== 3b. PSB 通用网页接口（待 Cindy 白名单放行） ====================== */
+
+/**
+ * PSB **浏览器网页**命名空间（`/api/remote/**`）。
+ *
+ * Cindy 复用它的**唯一**一个接口是工作区桌面访问的幂等拉起：
+ * `POST /api/remote/workspaces/:id/access/start`（200/202/409，幂等 ensure）。语义在 PSB 的
+ * 网页路由里已经存在，Cindy 不再自造一条等价逻辑。
+ *
+ * ## 当前状态：Cindy Bearer **尚未**被放行（2026-11-26，PSB 0.1.180）
+ *
+ * PSB 的 Cindy 命名空间白名单是**精确形状**（只放行 `/api/cindy/remote/**`），所以这条路由
+ * 现在对 Cindy 恒返回 **403**。PSB 台账（`联动需求.md`）记的是「Cindy 入口下一轮加」：
+ * 要么放行 Cindy 的 `access/start`，要么在 `/api/cindy/remote/**` 下提供命名空间入口。
+ *
+ * 因此调用方必须把这条路径当成**可选增强**：403 / 404（旧 PSB）/ 405 都收敛成
+ * 「Cindy 入口尚未开放」的**非致命**标记，继续走原有错误路径（subscribe 的 409 会给出
+ * 可行动文案）。**不要**再猜别的路径来「拉起访问」——猜错的路径只会得到更多 404。
+ */
+export const PSB_WEB_API_PREFIX = '/api/remote';
+
+export const PSB_WEB_ROUTES = {
+  /** 幂等 ensure 工作区桌面访问（200/202 成功，409 见契约）。 */
+  workspaceAccessStart: (workspaceId: string): string =>
+    `${PSB_WEB_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/access/start`,
 } as const;
 
 /* ============================== 4. PSB 响应 DTO ============================== */
@@ -201,6 +258,7 @@ export interface PsbWorkspaceOccupancy {
 /** 列表 / 详情 / 创建 / 占用共用的工作区行（PSB 仓 `协作需求.md` §4.1）。 */
 export interface PsbRemoteWorkspace {
   readonly id: string;
+  /** 工作区**名称**（PSB 工作区标题，创建时可填、之后可在 PSB 侧改）：Cindy 的实例标签主标题用它。 */
   readonly title: string;
   readonly clientId: string;
   readonly clientName: string;
@@ -330,6 +388,45 @@ export function isPsbDesktopSessionState(value: unknown): value is PsbDesktopSes
 }
 
 /**
+ * 工作区**桌面访问**的生命周期状态（PSB 0.1.180 `POST …/stream/subscribe` 的 409
+ * `details.state`，以及 `GET …/access` 的读数）。
+ *
+ * 与 `PSB_DESKTOP_SESSION_STATES` **不是同一套词**，不要互换：
+ *   - `PSB_DESKTOP_SESSION_STATES` 是 `stream/status` 视角的三态（PSB 已把 `stopping` 并进
+ *     `starting`、`stopped`/`failed` 并进 `none`），只用于「为什么现在没有画面」的展示；
+ *   - 这套是**访问实例自己**的五态 + `running`，订阅 409 时 PSB 原样下发 `details.state`，
+ *     Cindy 按它决定文案与是否值得自动重试（`starting` 等一会儿会好，`stopping` 也会落定，
+ *     `none`/`stopped`/`failed` 必须由人去 PSB 网页启动访问）。
+ *
+ * 解析时**不解析中文**、不从其它字段推导。
+ */
+export const PSB_WORKSPACE_ACCESS_STATES = [
+  'none',
+  'starting',
+  'running',
+  'stopping',
+  'stopped',
+  'failed',
+] as const;
+
+export type PsbWorkspaceAccessState = (typeof PSB_WORKSPACE_ACCESS_STATES)[number];
+
+export function isPsbWorkspaceAccessState(value: unknown): value is PsbWorkspaceAccessState {
+  return (
+    typeof value === 'string' &&
+    (PSB_WORKSPACE_ACCESS_STATES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * 订阅 409 里「**没有 running 桌面访问**」的机器码（PSB `details.code`）。
+ *
+ * 另外两个同类机器码（`NO_DESKTOP_SESSION`）属于 WS 4004 / `stream/status.reasonCode` 那套，
+ * 不是这个 409；不要混用（见 `PSB_STREAM_REASON_CODES`）。
+ */
+export const PSB_NO_RUNNING_SESSION_CODE = 'NO_RUNNING_SESSION';
+
+/**
  * 「此刻为什么没有画面」的机器码（PSB `CINDY_REMOTE_STREAM_REASON_CODES`）。
  *
  * 同一套词出现在两个读口：`stream/status.reasonCode` 与 WS 4004 的结构化 close reason
@@ -385,6 +482,34 @@ export interface PsbSessionStreamStatus {
   readonly reasonCode?: PsbStreamReasonCode | null;
 }
 
+/**
+ * 工作区级串流订阅的结果（PSB 0.1.172
+ * `POST /api/cindy/remote/workspaces/:workspaceId/stream/subscribe`）。
+ *
+ * ## `sessionId` 是桌面访问会话，不是 Agent 会话
+ *
+ * PSB 的框架规则：**Agent 会话只装用户任务**；串流 / 工作区读取 / 访问起停走服务接口。
+ * 该端点只解析工作区当前 `running` 的**桌面访问会话**（PSB `remote_sessions.id`）并把句柄
+ * 返回给接入端，**不创建任何 Agent 会话**。既有观看端 WS（`…/sessions/:sessionId/stream`）
+ * 与 `…/stream/status` 过渡期同时接受 agent 会话 id 与桌面访问会话 id，所以观看端直接用它。
+ *
+ * ## 生命周期
+ *
+ * 订阅生命周期 = 观看端 WS 连接（连上即订阅、断开即退订），**没有需要续期的票据**；桌面访问
+ * 被重建后旧 id 不再指向 running 会话，按工作区语义重新调用本端点拿新 id 即可，不要把它当
+ * 长期句柄保存（Cindy 只把它当「当前观看绑定」持久化，失效就重新订阅）。
+ *
+ * `streamPath` 是 PSB 建议的 WS 路径（含它生成的订阅参数）；Cindy 观看端自己拼同一条路径并
+ * 带本端稳定的 `subscriberId`，这里只保留给诊断，不作为唯一依据。
+ */
+export interface PsbWorkspaceStreamSubscription {
+  readonly sessionId: string;
+  readonly streamPath: string | null;
+  readonly subscriberId: string | null;
+  /** PSB 当前不发放过期时间（订阅生命周期 = WS 连接）；字段保留只为契约兼容。 */
+  readonly expiresAt: string | null;
+}
+
 /** PSB 错误外壳（与 PSB 既有 `{ error: { code, message, details? } }` 一致）。 */
 export interface PsbApiErrorShape {
   readonly code: string;
@@ -401,7 +526,51 @@ export const PSB_ERROR_CODES = {
   occupiedByOther: 'WORKSPACE_OCCUPIED_BY_OTHER',
   clientOffline: 'CLIENT_OFFLINE',
   notFound: 'NOT_FOUND',
+  /**
+   * CINDY-RW-10 更正版：占用 / 解除占用那一刻的版本控制检查（PSB 已把 `p4 reconcile` 与 git
+   * 状态算完）。**三种都是拒绝**，没有 force 分支：
+   *
+   * - `DIRTY`：检出脏（`error.details.vcs.dirty=true` + 可执行 actions）
+   * - `UNAVAILABLE`：无法检查（客户端离线 / 超时）
+   * - `UNSUPPORTED`：旧客户端不支持检查
+   *
+   * 后两种语义是「不能确认干净」，不是「干净」；`retry` 是唯一安全的下一步。
+   */
+  workspaceVcsDirty: 'WORKSPACE_VCS_DIRTY',
+  workspaceVcsUnavailable: 'WORKSPACE_VCS_UNAVAILABLE',
+  workspaceVcsUnsupported: 'WORKSPACE_VCS_UNSUPPORTED',
+  /**
+   * 「这个工作区此刻没有 running 的桌面访问会话」——订阅串流的 409（PSB 0.1.180）。
+   *
+   * 服务端原文是 `details.code='NO_RUNNING_SESSION'`；Cindy 把它收敛成**自己的**失败码
+   * `PSB_STREAM_NO_RUNNING_SESSION`（见 `PSB_CINDY_FAILURE_CODES`），因为下一步动作由
+   * `details.state` 决定，而 PSB 的原始码不带这个分支语义。
+   */
+  noRunningSession: 'NO_RUNNING_SESSION',
 } as const;
+
+/**
+ * Cindy 自己产出的 PSB 失败码（不是 PSB 的 `error.code`）。
+ *
+ * 只有「PSB 的事实需要 Cindy 补一层可行动归因」时才出现在这里：原始码不足以表达下一步。
+ * 目前唯一一条是订阅串流的 `NO_RUNNING_SESSION`（要按 `details.state` 分文案与自动重试）。
+ */
+export const PSB_CINDY_FAILURE_CODES = {
+  /** 没有 running 桌面访问会话：`failure.streamAccessState` 携带 PSB 的 `details.state`。 */
+  streamNoRunningSession: 'PSB_STREAM_NO_RUNNING_SESSION',
+} as const;
+
+/** PSB 版本控制检查失败码集合（占用 / 解除占用 / 自动占用都可能返回）。 */
+export const PSB_WORKSPACE_VCS_ERROR_CODES: readonly string[] = [
+  PSB_ERROR_CODES.workspaceVcsDirty,
+  PSB_ERROR_CODES.workspaceVcsUnavailable,
+  PSB_ERROR_CODES.workspaceVcsUnsupported,
+];
+
+/** 是否是 PSB 版本控制检查失败码（渲染层 / main 共用一份判断）。 */
+export function isPsbWorkspaceVcsErrorCode(code: unknown): boolean {
+  return typeof code === 'string' && PSB_WORKSPACE_VCS_ERROR_CODES.includes(code);
+}
 
 /* ============================== 5. PSB 响应解析（纯函数，主/渲染共用） ============================== */
 
@@ -581,7 +750,65 @@ export function parsePsbSessionStreamStatus(value: unknown): PsbSessionStreamSta
   };
 }
 
+/**
+ * 解析工作区级串流订阅的结果。
+ *
+ * `sessionId` 是唯一的必需字段：没有它这条响应就没有意义（协议违约 → `null`，调用方按
+ * `PSB_PROTOCOL` 处理）。`streamPath` / `subscriberId` / `expiresAt` 都是可选诊断字段，缺失
+ * 时归一成 `null`，不猜也不报错——PSB 当前不发放 `expiresAt`，`streamPath` 也由本端自己拼。
+ */
+export function parsePsbWorkspaceStreamSubscription(
+  value: unknown,
+): PsbWorkspaceStreamSubscription | null {
+  if (!isRecord(value)) return null;
+  const sessionId = readString(value['sessionId']);
+  if (!sessionId) return null;
+  return {
+    sessionId,
+    streamPath: readString(value['streamPath']),
+    subscriberId: readString(value['subscriberId']),
+    expiresAt: readString(value['expiresAt']),
+  };
+}
+
 /* ============================== 5b. 串流宿主光标形状（stream.cursor，2026-11-26） ============================== */
+
+/**
+ * ## CINDY-RW-09：映射语义的权威来源、版本与替换点（先读）
+ *
+ * PSB 已把「`stream.cursor` 形状 → 观看端 CSS」收进 `@psb/shared` 的
+ * `packages/shared/src/stream-cursor.ts`（2026-11-26）：`remoteStreamCursorKeywordOf` /
+ * `remoteStreamCursorCssOf` / `remoteStreamCursorStyleOf`，形状的边界校验只有
+ * `remote-clients.ts` 的 `normalizeRemoteStreamCursorShape` 一份。本文件的
+ * {@link PSB_STREAM_CURSOR_CSS_KEYWORDS} / {@link PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME} /
+ * {@link psbStreamCursorKeyword} 是它的**只读副本**，必须与上游逐条一致；本仓**不 import PSB
+ * 包**（不引入跨仓依赖），表是带版本注明的契约副本：
+ *
+ * | 项 | PSB 共享核心（权威） | Cindy（本文件） |
+ * | --- | --- | --- |
+ * | CSS 关键字白名单 | 36 项 | 同 36 项，逐字相同 |
+ * | X11 别名表 | 64 条 | 同 64 条，逐字相同 |
+ * | 归一化 | 大小写、首尾空白、`-` / 空格当 `_` | 相同（顺序相同） |
+ * | 已是合法关键字 | 直接沿用 | 相同 |
+ * | 未知 / 缺 `name` | `default`（**绝不 `none`**） | 相同 |
+ * | 非法形状 | `remoteStreamCursorCssOf` → `null` | `psbStreamCursorKeyword` → `null` |
+ * | 外观策略 | `system` 默认、`host` 可选位图 | **固定 `system`**（用户 2026-11-26 口径：永远是宿主指针风格），不渲染位图 |
+ *
+ * **版本 / 来源快照**：PSB 源检出根 `package.json` = **0.1.127**（2026-11-26）；本副本对照的
+ * `packages/shared/src/stream-cursor.ts` 在 PSB 工作区**尚未提交**（PSB `git status` 为 `??`，
+ * HEAD `edd6d4b`，2026-11-26），因此只能记「工作区快照」而无法引用 commit；网页薄层
+ * `packages/web/src/features/remote-clients/stream/cursor-shape.ts` 最近提交 `236926e`
+ * （2026-11-26，只保留「写到哪个 DOM 元素」）。PSB shared `stream-cursor.test.ts` 的四类映射 /
+ * 别名 / 容错 / 未知回退用例已移植到
+ * `shared/__tests__/psbRemoteWorkspaceStreamCursor.test.ts`（同一形状断言同一 CSS 值）。
+ *
+ * **后续替换点**：PSB 已表示可发布共享包或给出版本化快照（`联动需求.md` CINDY-RW-09 第 4 点；
+ * 跟进项记在 `docs/collaboration/psb-remote-workspace-contract.md` §2）。拿到版本化快照后，把这两
+ * 张表与归一化逻辑改为「对照 pinned 快照的差异测试」；若将来允许跨仓依赖，改为 import PSB
+ * 共享包、这里只保留 Cindy 特有的 DTO / IPC。**在那之前不要在本文件自行增删别名或改映射顺序**：
+ * 改表 = 改协议，必须先改 PSB 共享核心并同批同步
+ * `docs/dev-rules/psb-remote-session-transport.md` §12.9（含漂移检查方式）。
+ */
 
 /**
  * 宿主光标形状（PSB 中继把客户端上报的宿主光标作为**文本帧**转发给同会话所有观看者）。
@@ -706,9 +933,11 @@ export function parsePsbStreamCursorTextFrame(record: unknown): PsbStreamCursorS
  * 未知一律 {@link DEFAULT_PSB_STREAM_CURSOR_KEYWORD}。多一项不会坏（浏览器忽略未知值），
  * 少一项会退化成箭头。
  *
- * 移植自 PSB 网页 `remote-clients/stream/cursor-shape.ts`（2026-11-26）；PSB 2026-11-26 又把
- * 表上收到 `@psb/shared` 的 `stream-cursor.ts`（网页只保留「写到哪个 DOM 元素」）。两个观看端
- * 必须从同一张表得到同一个光标，所以这里照抄，不自行增删。
+ * **与 PSB `@psb/shared` 的 `stream-cursor.ts` 逐字相同**（`REMOTE_STREAM_CURSOR_CSS_KEYWORDS`，
+ * 36 项；PSB 0.1.127 / 2026-11-26 工作区快照，见本节文件头「CINDY-RW-09」）。历史：先移植自
+ * PSB 网页 `remote-clients/stream/cursor-shape.ts`（2026-11-26），PSB 当天把表上收到共享核心，
+ * 网页只留 DOM 落点——所以权威来源是共享核心，不是网页。两个观看端必须从同一张表得到同一个
+ * 光标，本文件照抄，不自行增删。
  */
 export const PSB_STREAM_CURSOR_CSS_KEYWORDS: ReadonlySet<string> = new Set([
   'auto',
@@ -756,11 +985,15 @@ export const PSB_STREAM_CURSOR_CSS_KEYWORDS: ReadonlySet<string> = new Set([
  * `sb_h_double_arrow`…），CSS 关键字是另一套词汇。直接搬宿主位图会把观看端用户的指针换成
  * Linux 外观（用户明确反对），所以只做关键字映射、外观交给本机主题。
  *
- * 移植自 PSB 网页 `remote-clients/stream/cursor-shape.ts`（2026-11-26）；表的来源是 PSB 打包机
- * （Fedora 默认主题 `psb-cursor -once` 实测）+ X11 常见别名（cursorfont.h / 各主题惯用名），
- * 覆盖 I-beam / 手形 / resize / 忙等待四类用户可感知场景。表外 → `default`。
+ * **与 PSB `@psb/shared` 的 `stream-cursor.ts` 逐字相同**
+ * （`REMOTE_STREAM_CURSOR_KEYWORD_BY_X11_NAME`，64 条；PSB 0.1.127 / 2026-11-26 工作区快照）。
+ * 表的来源是 PSB 打包机（Fedora 默认主题 `psb-cursor -once` 实测）+ X11 常见别名（cursorfont.h /
+ * 各主题惯用名），覆盖 I-beam / 手形 / resize / 忙等待四类用户可感知场景。**表外 → `default`**；
+ * 归一化（大小写 / 首尾空白 / `-` / 空格当 `_`）与「名字本身已是关键字直接沿用」在
+ * {@link psbStreamCursorKeyword}，顺序与共享核心相同。
  *
- * **改动必须与 PSB 同步**：这张表是两个观看端「同一个远端看起来是同一种鼠标」的唯一保证。
+ * **改动必须与 PSB 同步**：这张表是两个观看端「同一个远端看起来是同一种鼠标」的唯一保证；
+ * PSB 侧改表后按 `docs/dev-rules/psb-remote-session-transport.md` §12.9 的漂移检查逐条对照。
  */
 export const PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME: Readonly<Record<string, string>> = {
   // 文本 / 箭头 / 手形
@@ -854,14 +1087,19 @@ export function psbStreamCursorName(shape: PsbStreamCursorShape): string | null 
 /**
  * 形状 → CSS 光标关键字（渲染层写进**画面区域**的 `style.cursor`）。
  *
- * 规则（与 PSB 网页 `systemCursorKeywordOf` 逐条一致）：
+ * 规则与 PSB `@psb/shared` 的 `stream-cursor.ts`（2026-11-26 共享核心）**逐条一致**；本函数
+ * 的完整语义 = 共享核心 `remoteStreamCursorCssOf(shape)`（默认 `system` 策略）：
  * 1. `name` 归一：大小写、首尾空白、`-` / 空格当 `_`；
  * 2. 归一后本身已是合法 CSS 关键字 → 直接沿用（`zoom-in` / `col-resize` 之类不必进表）；
  * 3. 否则查 X11→CSS 别名表（{@link PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME}）；
- * 4. 未知 / 缺 `name` → {@link DEFAULT_PSB_STREAM_CURSOR_KEYWORD}（箭头）；
- * 5. **形状不合法 → `null`**：调用方不写样式、保持现状（远端畸形数据不能伪造出一个光标）。
+ * 4. 未知 / 缺 `name` → {@link DEFAULT_PSB_STREAM_CURSOR_KEYWORD}（箭头，**绝不 `none`**）；
+ * 5. **形状不合法 → `null`**（对应共享核心 `remoteStreamCursorCssOf` 对非法形状返回 `null`）：
+ *    调用方不写样式、保持现状（远端畸形数据不能伪造出一个光标）。
  *
- * 外观由本机指针主题渲染（永远是宿主风格）：这里只变**形态**，不复刻远端位图。
+ * 外观由本机指针主题渲染（永远是宿主风格）：这里只变**形态**，不复刻远端位图。PSB 共享核心还有
+ * 一个显式 `host` 位图策略（`url("data:image/png;base64,…") <xhot> <yhot>, auto`），Cindy 当前
+ * **没有**实现也不使用（用户口径是永远保持宿主指针风格）；将来若要做，CSS 值必须照
+ * `remoteStreamCursorCssOf(shape, 'host')` 拼，不自行发明格式。
  */
 export function psbStreamCursorKeyword(shape: PsbStreamCursorShape): string | null {
   const valid = readCursorShape(shape);
@@ -1078,6 +1316,18 @@ export const PSB_REMOTE_CHANNELS = {
   /** main → renderer：某工作区占用/在线状态变更（其他窗口占用了工作区等）。 */
   WORKSPACE_CHANGED: 'psb-remote:workspace-changed',
   /**
+   * main → renderer：某工作区在占用/解除占用时被版本控制检查拒绝（CINDY-RW-10）。
+   *
+   * 载荷是 `PsbWorkspaceVcsNoticeEvent`。IPC 错误只能带 code + message，`details.vcs` 里的
+   * `projects` / `actions` 无法随 invoke 失败跨进程；main 在抛错**之前**把它写进有界缓存并广播，
+   * 渲染层用 `WORKSPACE_VCS_NOTICE_GET` 兜底读一次（避免推送与 invoke 失败的到达顺序竞争）。
+   */
+  WORKSPACE_VCS_NOTICE: 'psb-remote:workspace-vcs-notice',
+  /** 读某工作区当前的版本控制通知（`null` = 没有；用于推送未到时兜底）。 */
+  WORKSPACE_VCS_NOTICE_GET: 'psb-remote:workspace-vcs-notice:get',
+  /** 执行一个版本控制处置动作（渲染层只传 kind；method/path/body 由 main 从服务端 notice 取）。 */
+  WORKSPACE_VCS_ACTION: 'psb-remote:workspace-vcs-action',
+  /**
    * main → renderer：本地任务在**发送时**透明重建了 PSB 会话并完成重绑。
    *
    * 触发条件：本地会话的 `remoteHostId` 是 `psb:<id>`，该 PSB 会话已终态（或已读不到），
@@ -1106,10 +1356,53 @@ export interface PsbRemoteStatus {
 /** 统一失败形状：IPC 错误既要有可翻译的键，也要保留 PSB 原始码便于日志与联调。 */
 export interface PsbRemoteFailure {
   readonly code: string;
-  /** i18n key（`remoteWorkspace.error.*`）。 */
+  /** i18n key（`remoteWorkspace.error.*` / `remoteWorkspace.vcs.*` / `remoteWorkspace.admin.streamAccess*`）。 */
   readonly messageKey: string;
-  /** PSB 原始 message（兜底显示；不含凭据）。 */
+  /** PSB 原始 message（兜底显示；不含凭据）。VCS 失败时是 `details.vcs.messageZh`。 */
   readonly message: string | null;
+  /**
+   * 版本控制检查通知（仅 `WORKSPACE_VCS_*` 失败带）。
+   *
+   * 只在 main 进程内部与推送载荷里流转：`ipcMain.handle` 抛错跨进程**只保留 message**，
+   * 所以渲染层拿到的 notice 来自 `WORKSPACE_VCS_NOTICE` 推送 / `WORKSPACE_VCS_NOTICE_GET` 读取，
+   * 不依赖这个字段跨 IPC（见 `shared/psb-workspace-vcs.ts` 文件头）。
+   */
+  readonly vcs?: WorkspaceVcsNotice;
+  /**
+   * 桌面访问状态（仅 `PSB_STREAM_NO_RUNNING_SESSION` 带，来自 PSB 409 的 `details.state`）。
+   *
+   * `null` = PSB 没给 / 给了未知值（按 none 家族处理）。**这个字段不跨 IPC**：跨进程只有
+   * `[CODE] message`，所以 main 把它翻成三条不同的 IPC 码（`PSB_NO_RUNNING_SESSION_IPC_CODES`），
+   * 渲染层按码选文案，不解析本字段。
+   */
+  readonly streamAccessState?: PsbWorkspaceAccessState | null;
+}
+
+/**
+ * 「没有 running 桌面访问」按状态分的 IPC 失败码（main → renderer 的唯一携带方式）。
+ *
+ * 为什么不把 `state` 塞进 message：跨 IPC 只剩 `[CODE] message`，把状态编码进 message 会让
+ * 诊断原文变成机器串；本仓既有口径是「语义由码名承载」（见 §8）。三种码对应三种下一步：
+ *
+ * - `PSB_STREAM_NO_RUNNING_SESSION`（none / stopped / failed / 未知）：让用户去 PSB 网页的
+ *   「远程控制」启动访问，再回来点「启动」——UI 同时提供「在网页启动访问」入口；
+ * - `PSB_STREAM_ACCESS_STARTING`：访问正在启动（Unity / 虚拟桌面还没就绪）——等一会儿再试，
+ *   UI 会自动重试一次；
+ * - `PSB_STREAM_ACCESS_STOPPING`：访问正在结束——等它落定后重试。
+ */
+export const PSB_NO_RUNNING_SESSION_IPC_CODES = {
+  none: 'PSB_STREAM_NO_RUNNING_SESSION',
+  starting: 'PSB_STREAM_ACCESS_STARTING',
+  stopping: 'PSB_STREAM_ACCESS_STOPPING',
+} as const;
+
+/** 状态 → IPC 失败码；`running` / `null` / 未知值都落到「去网页启动访问」那一档。 */
+export function psbNoRunningSessionIpcCode(
+  state: PsbWorkspaceAccessState | null | undefined,
+): (typeof PSB_NO_RUNNING_SESSION_IPC_CODES)[keyof typeof PSB_NO_RUNNING_SESSION_IPC_CODES] {
+  if (state === 'starting') return PSB_NO_RUNNING_SESSION_IPC_CODES.starting;
+  if (state === 'stopping') return PSB_NO_RUNNING_SESSION_IPC_CODES.stopping;
+  return PSB_NO_RUNNING_SESSION_IPC_CODES.none;
 }
 
 export interface PsbListWorkspacesResult {
@@ -1142,6 +1435,18 @@ export interface PsbOccupyWorkspaceResult {
   readonly workspace: PsbRemoteWorkspace;
 }
 
+/**
+ * 会话用途（PSB 0.1.172 加性字段 `purpose`）。
+ *
+ * PSB 的框架规则：**Agent 会话只装用户任务**。`internal` 是接入端服务用途（过渡兜底用），
+ * 默认不进会话列表、不增加工作区 `sessionCount`，但详情 / 停止 / 转录照旧可用。其它值
+ * （含空串、大小写不对）PSB 会 400，所以 Cindy 侧只用这两个词、且不把 `agent` 显式传出去
+ * （省略 = agent，保持与旧服务端逐字节一致的请求体）。
+ */
+export const PSB_SESSION_PURPOSES = ['agent', 'internal'] as const;
+
+export type PsbSessionPurpose = (typeof PSB_SESSION_PURPOSES)[number];
+
 export interface PsbCreateSessionRequest {
   readonly workspaceId: string;
   readonly agentKind: PsbAgentKind;
@@ -1151,6 +1456,13 @@ export interface PsbCreateSessionRequest {
    * 去重键：Cindy 侧生成（每次用户点击一次），PSB 用它在"双击/重试"时只建一条会话。
    */
   readonly clientRequestId: string;
+  /**
+   * 会话用途（PSB 0.1.172 加性字段，见 `PSB_SESSION_PURPOSES`）。
+   *
+   * **省略 = `agent`（用户任务）**，这是所有用户任务的创建路径；只有「过渡兜底」的内部
+   * 串流会话才显式传 `internal`。不要把内部用途伪装成用户任务：标题要写明内部语义。
+   */
+  readonly purpose?: PsbSessionPurpose;
 }
 
 export interface PsbCreateSessionResult {
@@ -1273,6 +1585,13 @@ export const PSB_IPC_FAILURE_MESSAGE_KEYS = {
   PSB_WORKSPACE_NOT_READY: 'remoteWorkspace.input.workspaceNotReady',
   PSB_NOT_FOUND: 'remoteWorkspace.error.notFound',
   PSB_UNREACHABLE: 'remoteWorkspace.error.unreachable',
+  /**
+   * CINDY-RW-10：占用 / 解除占用被版本控制检查拒绝。三种码都**不是**「操作失败」：
+   * 用户有明确的下一步（看详情 / 还原后重试 / 重试检查），所以必须各有可行动文案。
+   */
+  PSB_WORKSPACE_VCS_DIRTY: 'remoteWorkspace.vcs.dirty',
+  PSB_WORKSPACE_VCS_UNAVAILABLE: 'remoteWorkspace.vcs.unavailable',
+  PSB_WORKSPACE_VCS_UNSUPPORTED: 'remoteWorkspace.vcs.unsupported',
   PSB_STREAM_UNAVAILABLE: 'remoteWorkspace.session.streamUnsupported',
   /**
    * 本端此刻没有活动的串流连接（还没启动 / 已停止 / 连接已断开），所以输入无处可发。
@@ -1282,6 +1601,16 @@ export const PSB_IPC_FAILURE_MESSAGE_KEYS = {
    * 「本机不能串流」，否则用户会去做无效动作。
    */
   PSB_STREAM_NOT_ACTIVE: 'remoteWorkspace.session.streamIdle',
+  /**
+   * 订阅串流时该工作区**没有 running 的桌面访问会话**（PSB 409 `NO_RUNNING_SESSION`）。
+   *
+   * 三条码按 `details.state` 分开：下一步动作不同（去网页启动 / 等启动 / 等结束），
+   * 合并成一条会让用户对着「正在启动」去做「去网页启动」这种无效动作。
+   * 文案正本见产品 §2.4。
+   */
+  PSB_STREAM_NO_RUNNING_SESSION: 'remoteWorkspace.admin.streamAccessNone',
+  PSB_STREAM_ACCESS_STARTING: 'remoteWorkspace.admin.streamAccessStarting',
+  PSB_STREAM_ACCESS_STOPPING: 'remoteWorkspace.admin.streamAccessStopping',
 } as const;
 
 export type PsbIpcFailureCode = keyof typeof PSB_IPC_FAILURE_MESSAGE_KEYS;
@@ -1312,6 +1641,14 @@ export function psbIpcCodeForFailure(failure: PsbRemoteFailure): PsbIpcFailureCo
     // `failed` / `deleting` 时不能写，等它就绪后重试即可 —— 与「找不到工作区」是不同的下一步。
     case 'WORKSPACE_NOT_READY':
       return 'PSB_WORKSPACE_NOT_READY';
+    // CINDY-RW-10：版本控制检查的三种拒绝各有下一步（详情 / 还原后重试 / 重试检查），
+    // 不能并进通用失败，否则用户只看到「操作失败，请稍后重试」。
+    case 'WORKSPACE_VCS_DIRTY':
+      return 'PSB_WORKSPACE_VCS_DIRTY';
+    case 'WORKSPACE_VCS_UNAVAILABLE':
+      return 'PSB_WORKSPACE_VCS_UNAVAILABLE';
+    case 'WORKSPACE_VCS_UNSUPPORTED':
+      return 'PSB_WORKSPACE_VCS_UNSUPPORTED';
     // 403「不是归属人」按找不到呈现（PSB-RW-08：不泄漏会话存在性）。
     case 'NOT_FOUND':
     case 'FORBIDDEN':
@@ -1324,6 +1661,9 @@ export function psbIpcCodeForFailure(failure: PsbRemoteFailure): PsbIpcFailureCo
     // 输入没有可用的活动连接：可恢复（先启动观看），因此不并进「不支持串流」。
     case 'PSB_STREAM_NOT_ACTIVE':
       return 'PSB_STREAM_NOT_ACTIVE';
+    // 没有 running 桌面访问会话（订阅 409）：按 PSB 的 details.state 分三条码，下一步动作不同。
+    case 'PSB_STREAM_NO_RUNNING_SESSION':
+      return psbNoRunningSessionIpcCode(failure.streamAccessState);
     default:
       return null;
   }
@@ -1332,6 +1672,21 @@ export function psbIpcCodeForFailure(failure: PsbRemoteFailure): PsbIpcFailureCo
 /** 失败码 → 文案键；不是 PSB 失败码返回 `null`（调用方回落通用文案）。 */
 export function psbFailureMessageKeyForIpcCode(code: string): string | null {
   return (PSB_IPC_FAILURE_MESSAGE_KEYS as Record<string, string>)[code] ?? null;
+}
+
+/**
+ * 「没有 running 桌面访问」按状态取文案键（main 的失败形状与渲染层共用同一映射）。
+ *
+ * 两边都用它：main 写进 `PsbRemoteFailure.messageKey`，渲染层遇到对应 IPC 码时用同一张表
+ * （`psbFailureMessageKeyForIpcCode`）拿到同一个键——不会出现「main 说 A、界面显示 B」。
+ */
+export function psbNoRunningSessionMessageKey(
+  state: PsbWorkspaceAccessState | null | undefined,
+): string {
+  return (
+    psbFailureMessageKeyForIpcCode(psbNoRunningSessionIpcCode(state)) ??
+    'remoteWorkspace.admin.streamAccessNone'
+  );
 }
 
 /**

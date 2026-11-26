@@ -4019,22 +4019,25 @@ typecheck 证据，打包后仍须按「实机验证」逐条确认）；② Pi 
    名额不释放）；失焦 / 退出全屏 / 断连必须补发 release-all。**名额与浏览器页面共用，默认 4**
    （部署级 `PSB_STREAM_MAX_SUBSCRIBERS`），不是每会话上限 2。输入授权由 PSB 权限模型（0.1.172）
    判定，Cindy 不做客户端互斥。
-7. 工作区级「远程工作区」页按**工作区**工作，不依赖当前任务的 PSB 会话生命周期；页面维护的内部
-   「Cindy 观看端」会话是**已知偏差**：PSB 已要求改用工作区级
-   `POST /api/cindy/remote/workspaces/:id/stream/subscribe` 并删除该内部会话，Cindy 尚未适配
-   （原因 / 影响 / 迁移条件见工程契约 §11.7），验收时不得按最终设计描述。
+7. 工作区级「远程工作区」页按**工作区**工作，不依赖当前任务的 PSB 会话生命周期；串流观看端走
+   **工作区级服务接口**（PSB 0.1.172）：`POST /api/cindy/remote/workspaces/:id/stream/subscribe`
+   返回的**桌面访问会话** id 用于起观看端，**不创建 Agent 会话**（Agent 会话只装用户任务）；绑定
+   落本机记录（`desktopSessions`），重复「启动」先读状态复用、失效再重新订阅，读状态不订阅不建
+   会话。旧 PSB 的过渡回退带 `purpose:'internal'`（列表不可见 / 不计数），灰度面收窄后删除。
+   工程细节见工程 §11.3 / §11.7。
 
 **代码锚点**
 - 共享契约：`apps/desktop/src/shared/psb-remote-workspace.ts`（`psb:` 身份前缀与纯函数、PSB 路径、
   DTO 解析、IPC 通道、状态 / 锁 / 输入判据、`PSB_*` 失败码映射）与
-  `apps/desktop/src/shared/psb-workspace-admin.ts`（工作区级上下文 / 管理页通道 / 内部会话标题 /
-  输入事件校验）。
+  `apps/desktop/src/shared/psb-workspace-admin.ts`（工作区级上下文 / 管理页通道 / 过渡回退内部会话
+  标题 / 输入事件校验）。
 - main：`apps/desktop/src/main/remote-workspace/psbAuth.ts`（宿主直签 Connection JWT）、
   `psbEndpoint.ts`（正式 / 测试站点根）、`psbClient.ts`（HTTP 与错误映射）、`psbTunnel.ts`
   （agent-tunnel + 就绪帧 + 系统代理）、`streamViewer.ts`（串流观看端）、
   `workspaceLock.ts`（写操作前的占用闸门，TTL 缓存）、`sessionRebind.ts`（发送前透明重建）、
   `streamCapture.ts`（全屏捕获态的宿主快捷键抑制）、`adminService.ts` + `adminRuntime.ts`
-  （工作区级管理页；**内部会话是已知偏差**，见工程 §11.7）、`index.ts`（服务单例）与 `push.ts`
+  （工作区级管理页；观看端绑定走工作区级 `stream/subscribe` 的桌面访问会话，见工程 §11.3）、
+  `index.ts`（服务单例）与 `push.ts`
   （推送）。
 - transport 分类：`apps/desktop/src/main/maker-host/remote-session-routing.ts`（`'psb'` 分支与
   `isTunnelRemoteSessionTransport`）；渲染层镜像判据在
@@ -4081,9 +4084,10 @@ IPC 面、串流观看端与工作区页都在本仓；上游同步时按本项�
 `remoteHostId` 都是 SSH 主机」，也不得把 PSB 客户端退化成 MCPR 的别名。
 
 **未验证**：
-1. **工作区级 `stream/subscribe` 未适配（已知偏差，P0）**：用户点「启动」时仍会创建 / 复用内部
-   「Cindy 观看端」Agent 会话（读状态已不创建，见工程 §11.2 / §11.7）；PSB 已交付该端点契约
-   （上线状态以 PSB 部署为准）并要求删除。原因、影响、迁移条件见工程契约 §11.7，验收时按偏差登记。
+1. **串流改工作区级订阅后的真机复验（P0 已适配，待真机）**：启动串流后 PSB 会话列表只有用户任务
+   （无「Cindy 观看端」行、`sessionCount` 不增加）；重启后仍能读状态并复用同一条桌面访问会话；
+   `409 NO_RUNNING_SESSION` 可行动文案；旧 PSB 回退路径 `purpose:'internal'` 列表不可见。实现与
+   单测见工程 §11.3 / §11.6 / §11.7。
 2. **宿主光标形状同步**（`stream.cursor`）：文本区 I-beam / 窗口边缘 resize / 忙碌 loading 的
    **形态**变化（外观保持宿主本机主题：CSS 关键字映射，不用远端位图）、移出画面恢复宿主默认、
    HUD / 按钮不受远端形状影响、全屏内只在画面区域生效——均未真机复验（需要 running 桌面会话，

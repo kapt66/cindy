@@ -5,38 +5,35 @@
  * 内存 fake；本文件是它唯一的宿主接线点：
  *
  *   - PSB 远程端口 → `getPsbRemoteService()` 单例（账号边界会换实例，服务自己按实例身份失效）；
- *   - 「当前打开任务的 `remoteHostId`」→ localDb 的会话行快照（懒加载，见下）；
- *   - 最近使用记录 → 本机 profile 的小 JSON（原子替换 + 跨进程锁，不新增 DB 列/migration）；
+ *   - 「当前打开任务」的会话行快照 → localDb（懒加载，见下）：`remoteHostId` 解析工作区，
+ *     `title` / `workingDir` 是历史会话在 PSB 读不到时的固定信息种子；
+ *   - 最近使用记录 + 固定信息快照 → 本机 profile 的小 JSON（单例在 `adminRecentRuntime.ts`，
+ *     与 `index.ts` 的工作区会话启动写入点共用同一个实例）；
  *   - 两条推送 → `push.ts`（只发受信窗口）。
  */
 
 import { randomUUID } from 'node:crypto';
 
 import { createLogger } from '../logger.js';
-import { createOverrideSettingsFile } from '../maker-host/override-settings-file.js';
-import { userDataPath } from '../userDataPath.js';
 import {
-  normalizePsbAdminRecentState,
-  createPsbAdminRecentWorkspaceStore,
-  type PsbAdminRecentWorkspaceFile,
-  type PsbAdminRecentWorkspaceIo,
-  type PsbAdminRecentWorkspaceStore,
-} from './adminRecentStore.js';
+  PSB_ADMIN_RECENT_WORKSPACE_FILE,
+  getPsbAdminRecentWorkspaceStore,
+} from './adminRecentRuntime.js';
 import {
   createPsbWorkspaceAdminService,
+  type PsbAdminLocalSessionHint,
   type PsbWorkspaceAdminService,
   type PsbWorkspaceAdminServiceDeps,
 } from './adminService.js';
 import { getPsbRemoteService } from './index.js';
 import { broadcastPsbAdminContextChanged, broadcastPsbAdminStreamEvent } from './push.js';
 
-/** 本机记录文件名（`<userData>/psb-remote-workspace-admin.json`）。 */
-export const PSB_ADMIN_RECENT_WORKSPACE_FILE = 'psb-remote-workspace-admin.json';
+export { PSB_ADMIN_RECENT_WORKSPACE_FILE };
 
 const log = createLogger('psb-remote-admin');
 
 /**
- * 「当前打开任务的 PSB 会话」→ `remoteHostId`。
+ * 当前打开任务的 PSB 会话行快照。
  *
  * 懒加载 localDb 的会话行快照模块：本模块在启动期随 `registerPsbRemoteIpc()` 一起被求值，
  * 静态 import DB 客户端会把 `localDb` 整张模块图拉进 PSB 的加载链；真正需要读库只在
@@ -45,74 +42,54 @@ const log = createLogger('psb-remote-admin');
 type SessionSnapshotModule = typeof import('../localDb/sessionDispatchSnapshot.js');
 let sessionSnapshotModule: Promise<SessionSnapshotModule> | null = null;
 
-async function readLocalSessionRemoteHostId(localSessionId: string): Promise<string | null> {
+async function readSessionRowSnapshot(
+  localSessionId: string,
+): Promise<Awaited<ReturnType<SessionSnapshotModule['getSessionRowSnapshot']>>> {
   sessionSnapshotModule ??= import('../localDb/sessionDispatchSnapshot.js');
   const { getSessionRowSnapshot } = await sessionSnapshotModule;
-  const row = await getSessionRowSnapshot(localSessionId);
+  return getSessionRowSnapshot(localSessionId);
+}
+
+async function readLocalSessionRemoteHostId(localSessionId: string): Promise<string | null> {
+  const row = await readSessionRowSnapshot(localSessionId);
   const value = row?.remoteHostId;
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
-/** 本机记录的读写端口（走既有的 override settings 文件：原子替换、跨进程锁、有大小上限）。 */
-function createRecentWorkspaceIo(): PsbAdminRecentWorkspaceIo {
-  const defaults: PsbAdminRecentWorkspaceFile = {
-    lastWorkspaceId: null,
-    sessions: [],
-    viewers: [],
-  };
-  const file = createOverrideSettingsFile<PsbAdminRecentWorkspaceFile>({
-    filePath: () => userDataPath(PSB_ADMIN_RECENT_WORKSPACE_FILE),
-    defaults,
-    normalize: (raw) => {
-      const state = normalizePsbAdminRecentState(raw);
-      return {
-        lastWorkspaceId: state.lastWorkspaceId,
-        sessions: [...state.sessions],
-        viewers: [...state.viewers],
-      };
-    },
-    log,
-    label: 'psb-remote-admin',
-    // 一份偏好文件不该被无界分配：容量上限在 `adminRecentStore` 里也有（32 条映射）。
-    maxBytes: 64 * 1024,
-  });
-  return {
-    read: () => {
-      try {
-        return file.read();
-      } catch (error) {
-        log.warn('psb admin: reading the recent-workspace record failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      }
-    },
-    write: (next) => {
-      // 偏好写失败**不能**冒泡到管理页的读/动作路径：丢了只是「最近使用」不准，
-      // 页面本身照常工作（见 `adminRecentStore` 的写纪律）。
-      try {
-        file.writePatch(next);
-      } catch (error) {
-        log.warn('psb admin: writing the recent-workspace record failed', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-  };
-}
-
-function createRecentWorkspaceStore(): PsbAdminRecentWorkspaceStore {
-  return createPsbAdminRecentWorkspaceStore(createRecentWorkspaceIo());
+/**
+ * 本机会话行的固定信息线索（2026-11-26 真机事故：历史会话没有快照时也要能显示「当初是哪个
+ * 工作区」）。`title` 是任务标题、`workingDir` 是 `/psb-remote/<目录名>` 虚拟路径 —— 都不是
+ * PSB 工作区的权威名称，但足以让页面不退化成空态，并明确标注是降级信息。
+ */
+async function readLocalSessionHint(
+  localSessionId: string,
+): Promise<PsbAdminLocalSessionHint | null> {
+  const row = await readSessionRowSnapshot(localSessionId);
+  if (!row) return null;
+  const remoteHostId =
+    typeof row.remoteHostId === 'string' && row.remoteHostId.trim()
+      ? row.remoteHostId.trim()
+      : null;
+  const title = typeof row.title === 'string' && row.title.trim() ? row.title.trim() : null;
+  const workingDir =
+    typeof row.workingDir === 'string' && row.workingDir.trim() ? row.workingDir.trim() : null;
+  if (!remoteHostId && !title && !workingDir) return null;
+  return { remoteHostId, title, workingDir };
 }
 
 function createDefaultDeps(): PsbWorkspaceAdminServiceDeps {
   return {
     resolveRemote: () => getPsbRemoteService(),
     readLocalSessionRemoteHostId,
-    store: createRecentWorkspaceStore(),
+    readLocalSessionHint,
+    // 与 `index.ts`（工作区会话启动 / 占用成功时的快照写入）共用同一个 store 实例：
+    // 两个实例各自缓存整份 JSON、覆盖写，会互相丢更新。
+    store: getPsbAdminRecentWorkspaceStore(),
     emitContextChanged: broadcastPsbAdminContextChanged,
     emitStreamEvent: broadcastPsbAdminStreamEvent,
     log,
+    // 只有「工作区级订阅不可用 → 过渡回退到内部 Agent 会话」这一条路径会真正创建会话，
+    // 所以幂等键也只为它生成（每次真正发起创建新生成一个）。
     createRequestId: () => randomUUID(),
   };
 }

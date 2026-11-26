@@ -6,9 +6,12 @@
  *   胶囊内容），通过 `window.electronAPI.psbRemote` 注入 PSB 桥，断言：可用行选中时**先占用**
  *   再回传工作区级载荷；不可用行（他人占用/离线）禁用并显示原因；占用失败**不选中**且错误带
  *   占用人名；「新建远程工作区」入口回调上层；上层传 `disabled`（发送 / 目录恢复在途）时行与
- *   新建入口都点不动；次要行是 i18n key + 目录值（不写死中文）。
+ *   新建入口都点不动；主标题是**工作区名称**（缺名才回退机器-短 id），次要行是 i18n key +
+ *   目录值（不写死中文），名称与目录同名时去重。
+ * - 版本控制检查通知（CINDY-RW-10）：占用成功后的 advisory 兜底读一次；占用被旧版 409 拒绝时，
+ *   下拉把 main 缓存的通知以内联形态（`variant="inline"`）展示并与错误一起可行动，占用仍不选中。
  * - Bug／规则依据：产品口径 2026-11-25（远程工作区 = 位置渠道；选中工作区即占用，失败不留在
- *   草稿里）+ docs/product-rules/psb-remote-workspace-sessions.md §2.2/§2.5。
+ *   草稿里）+ 2026-11-26（实例标签只显示工作区名称）+ docs/product-rules/psb-remote-workspace-sessions.md §2.2/§2.5。
  * - 现有覆盖缺口：弹窗测试覆盖「弹窗本身」；草稿页路由太大不能挂载，工作区下拉是草稿页唯一
  *   的换工作区入口，必须单独钉住「占用失败不选中」这条产品边界。
  * - 最小失败输入：若省略 `occupyWorkspace` 直接回传，用户会带着一个未占用的工作区进草稿（发送
@@ -24,9 +27,11 @@ import type {
   PsbOccupyWorkspaceResult,
   PsbRemoteWorkspace,
 } from '../../../../../shared/psb-remote-workspace';
+import type { WorkspaceVcsNotice } from '../../../../../shared/psb-workspace-vcs';
 
 import { PsbWorkspacePicker } from '../PsbWorkspacePicker';
 import { psbWorkspaceDisplayName, shortPsbWorkspaceId } from '../../dialog/psbDialogModel';
+import { resetWorkspaceVcsNoticeStoreForTest } from '../../vcs/vcsNoticeStore';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -43,6 +48,10 @@ interface FakeBridge {
   listWorkspaces: ReturnType<typeof vi.fn>;
   occupyWorkspace: ReturnType<typeof vi.fn>;
   onWorkspaceChanged: ReturnType<typeof vi.fn>;
+  /** 版本控制检查通知（CINDY-RW-10）：推送 / 兜底读 / 动作。 */
+  workspaceVcsNotice: ReturnType<typeof vi.fn>;
+  onWorkspaceVcsNotice: ReturnType<typeof vi.fn>;
+  runWorkspaceVcsAction: ReturnType<typeof vi.fn>;
 }
 
 function makeWorkspace(overrides: Partial<PsbRemoteWorkspace> = {}): PsbRemoteWorkspace {
@@ -90,6 +99,29 @@ function occupiedByOther(): PsbRemoteWorkspace {
   });
 }
 
+/** 旧版 PSB（<0.1.180）409 携带的版本控制检查通知：`advisory:false` = 操作被拒。 */
+const LEGACY_VCS_NOTICE: WorkspaceVcsNotice = {
+  code: 'WORKSPACE_VCS_DIRTY',
+  advisory: false,
+  messageZh: '工作区有未提交修改：1 个检出',
+  dirty: true,
+  projects: [{ projectId: 1, pathInWorkspace: '.', kind: 'p4', changes: 3 }],
+  actions: [
+    {
+      kind: 'inspect-vcs',
+      method: 'GET',
+      path: '/api/cindy/remote/workspaces/workspace-1/vcs',
+      descriptionZh: '查看详情',
+    },
+    {
+      kind: 'retry',
+      method: 'POST',
+      path: '/api/cindy/remote/workspaces/workspace-1/vcs/check',
+      descriptionZh: '重试检查',
+    },
+  ],
+};
+
 function installBridge(overrides: Partial<FakeBridge> = {}): FakeBridge {
   const bridge: FakeBridge = {
     listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({
@@ -97,6 +129,9 @@ function installBridge(overrides: Partial<FakeBridge> = {}): FakeBridge {
     })),
     occupyWorkspace: vi.fn(),
     onWorkspaceChanged: vi.fn(() => () => undefined),
+    workspaceVcsNotice: vi.fn(async () => ({ workspaceId: 'workspace-1', notice: null })),
+    onWorkspaceVcsNotice: vi.fn(() => () => undefined),
+    runWorkspaceVcsAction: vi.fn(),
     ...overrides,
   };
   (window as unknown as { electronAPI?: { psbRemote?: FakeBridge } }).electronAPI = {
@@ -122,6 +157,7 @@ function renderPicker(overrides: Partial<Parameters<typeof PsbWorkspacePicker>[0
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetWorkspaceVcsNoticeStoreForTest();
 });
 
 afterEach(() => {
@@ -149,6 +185,10 @@ describe('PsbWorkspacePicker', () => {
 
     await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
     expect(bridge.occupyWorkspace).toHaveBeenCalledWith({ workspaceId: 'workspace-1' });
+    // 0.1.180：占用成功可能带 advisory（检出脏）→ 兜底读一次（推送已覆盖时幂等）。
+    await waitFor(() =>
+      expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
+    );
     // 只回工作区级事实；sessionId / agentKind 属于首条消息懒建阶段，不在选择时决定。
     expect(onSelect).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
@@ -209,6 +249,44 @@ describe('PsbWorkspacePicker', () => {
     expect(screen.queryByText('remoteWorkspace.error.unknown')).toBeNull();
   });
 
+  /**
+   * 版本控制检查通知（CINDY-RW-10）：旧版 409 拒绝占用时，main 已缓存 + 广播通知。下拉在失败后
+   * 兜底读一次并以内联形态展示可行动作（查看详情 / 重试检查），用户不会只看到一句通用失败、
+   * 也不知道清理入口在哪；占用仍不选中（不带着注定发不出消息的工作区进草稿）。
+   */
+  it('hydrates the legacy 409 notice and shows it inline when occupying is rejected', async () => {
+    const workspace = makeWorkspace({});
+    const bridge = installBridge({
+      listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({
+        workspaces: [workspace],
+      })),
+      occupyWorkspace: vi.fn(async () => {
+        throw Object.assign(new Error('[WORKSPACE_VCS_DIRTY] 工作区有未提交修改'), {
+          code: 'WORKSPACE_VCS_DIRTY',
+          message: '工作区有未提交修改',
+        });
+      }),
+      workspaceVcsNotice: vi.fn(async () => ({
+        workspaceId: 'workspace-1',
+        notice: LEGACY_VCS_NOTICE,
+      })),
+    });
+
+    const { onSelect } = renderPicker();
+    fireEvent.click(await screen.findByTestId('psb-picker-workspace-row-workspace-1'));
+
+    await waitFor(() => expect(bridge.occupyWorkspace).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
+    );
+    const inline = await screen.findByTestId('workspace-vcs-notice');
+    expect(inline.dataset['variant']).toBe('inline');
+    expect(inline.dataset['advisory']).toBe('false');
+    expect(inline.textContent).toContain(LEGACY_VCS_NOTICE.messageZh);
+    expect(inline.textContent).toContain('重试检查');
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
   it('opens the existing create-workspace form through the create entry', async () => {
     installBridge({ listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({ workspaces: [] })) });
     const { onCreate } = renderPicker();
@@ -239,10 +317,12 @@ describe('PsbWorkspacePicker', () => {
   });
 
   /**
-   * 显示名口径（2026-11-25 用户实机反馈）：模板名辨识度太低，选择器主标题必须是
-   * `<客户端名>-<工作区短 id>`；项目胶囊与下拉行共用同一份 `psbWorkspaceDisplayName`。
+   * 显示名口径（2026-11-26 用户实机反馈，取代 2026-11-25 的「机器-短 id」）：选择器主标题直接
+   * 显示**工作区名称**；机器-短 id 只在名称缺失时兜底。项目胶囊与下拉行共用同一份
+   * `psbWorkspaceDisplayName`。次要行仍是单行去重：目录与名称同名时退回机器名（同名工作区
+   * 跨机器靠它区分），目录与名称不同时显示目录。
    */
-  it('labels rows as client-短id, with the template/title kept as secondary text', async () => {
+  it('labels rows with the workspace name, keeping directory/machine as the single secondary line', async () => {
     installBridge({
       listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({
         workspaces: [
@@ -252,40 +332,74 @@ describe('PsbWorkspacePicker', () => {
             clientName: '打包机',
             directoryName: 'saga2_project',
           }),
+          // 同一名称、另一台机器：主标题相同，靠次要行的机器名区分。
+          makeWorkspace({
+            id: 'dd44ee55ff66',
+            title: 'saga2_project',
+            clientName: '设计机-01',
+            directoryName: 'saga2_project',
+          }),
+          // 名称被改过：次要行继续显示目录（前缀走 i18n key，不写死中文）。
+          makeWorkspace({
+            id: 'aa11bb22cc33',
+            title: '我的项目',
+            clientName: '打包机',
+            directoryName: 'saga2_design',
+          }),
         ],
       })),
     });
 
     renderPicker();
     const row = await screen.findByTestId('psb-picker-workspace-row-9c747178aabbccdd');
-    // 主标题：客户端名-短 id（前 8 位 + …），不是模板名。
-    expect(row.textContent).toContain('打包机-9c747178…');
-    // 次要行只有一行「目录：<目录名>」，前缀走 i18n key（不再是写死的中文），模板名不再重复两遍。
-    expect(row.textContent).toContain(
-      'remoteWorkspace.dialog.directorySecondary#saga2_project',
-    );
-    expect(row.textContent).not.toContain('目录：');
+    // 主标题 = 工作区名称（`title` 属性仍是完整工作区 id，悬停可取）。
+    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project');
+    // 名称与目录同名：次要行退回机器名，名称只出现一次（不再「目录：saga2_project」重复）。
+    expect(row.textContent).toContain('打包机');
+    expect(row.textContent).not.toContain('remoteWorkspace.dialog.directorySecondary');
     expect(row.textContent?.match(/saga2_project/g) ?? []).toHaveLength(1);
-    expect(row.querySelector('[title="9c747178aabbccdd"]')).toBeTruthy();
-    expect(row.textContent).not.toMatch(/^saga2_project/);
+
+    const sameName = screen.getByTestId('psb-picker-workspace-row-dd44ee55ff66');
+    expect(sameName.querySelector('[title="dd44ee55ff66"]')?.textContent).toBe('saga2_project');
+    expect(sameName.textContent).toContain('设计机-01');
+
+    const renamed = screen.getByTestId('psb-picker-workspace-row-aa11bb22cc33');
+    expect(renamed.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
+    expect(renamed.textContent).toContain('remoteWorkspace.dialog.directorySecondary#saga2_design');
+    expect(renamed.textContent).not.toContain('目录：');
   });
 });
 
 describe('psbWorkspaceDisplayName', () => {
-  it('prefers client-短id, falls back to the short id, then the workspace title', () => {
+  it('prefers the workspace name, falling back to client-短id only when the name is missing', () => {
+    // 名称是主标签（用户 2026-11-26：「具体的实例显示为工作区名称即可」）。
     expect(
       psbWorkspaceDisplayName({
         clientName: '打包机',
         workspaceId: '9c747178aabbccdd',
-        workspaceTitle: 'saga2_project',
+        workspaceTitle: '  saga2_project  ',
+      }),
+    ).toBe('saga2_project');
+    // 名称缺失（空串 / 只有空格 / 没有该字段）：退回「机器-短 id」，不再拿模板名顶替。
+    expect(
+      psbWorkspaceDisplayName({
+        clientName: '打包机',
+        workspaceId: '9c747178aabbccdd',
+        workspaceTitle: '   ',
       }),
     ).toBe('打包机-9c747178…');
+    expect(psbWorkspaceDisplayName({ clientName: '打包机', workspaceId: '9c747178aabbccdd' })).toBe(
+      '打包机-9c747178…',
+    );
     expect(shortPsbWorkspaceId('9c747178')).toBe('9c747178');
+    // 没有机器名时退回短 id；全空（只可能来自手改脏数据）返回空串但不抛。
     expect(
-      psbWorkspaceDisplayName({ clientName: '  ', workspaceId: '9c747178' }),
-    ).toBe('9c747178');
-    expect(
-      psbWorkspaceDisplayName({ clientName: '', workspaceId: '', workspaceTitle: 'saga2_project' }),
-    ).toBe('saga2_project');
+      psbWorkspaceDisplayName({
+        clientName: '  ',
+        workspaceId: '9c747178aabbccdd',
+        workspaceTitle: '',
+      }),
+    ).toBe('9c747178…');
+    expect(psbWorkspaceDisplayName({ clientName: '', workspaceId: '', workspaceTitle: '' })).toBe('');
   });
 });

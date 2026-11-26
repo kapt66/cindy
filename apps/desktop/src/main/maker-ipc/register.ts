@@ -1024,7 +1024,7 @@ import {
 import { getPsbRemoteService } from '../remote-workspace/index.js';
 import { broadcastPsbSessionsRebound } from '../remote-workspace/push.js';
 import { PsbClientError, toPsbRemoteFailure } from '../remote-workspace/psbClient.js';
-import { parsePsbRemoteHostId } from '../../shared/psb-remote-workspace.js';
+import { parsePsbRemoteHostId, psbIpcCodeForFailure } from '../../shared/psb-remote-workspace.js';
 import { normalizeSessionContextWindowBoundsRoute } from '../../shared/sessionContextWindowBounds.js';
 import { readWorkflowProgressForSession } from '../workflow-progress/reader.js';
 import { readSessionBackgroundTaskOutputTail } from '../background-task-output/reader.js';
@@ -19267,7 +19267,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         ?? (await readSessionRemoteHostIdCached(sessionId));
       const psbSessionId = parsePsbRemoteHostId(remoteHostId ?? null);
       if (!psbSessionId) return;
-      await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId);
+      try {
+        await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId);
+      } catch (error) {
+        // 跨 IPC 的 `ipcMain.handle` 失败只保留 message（`code` 字段会丢）：不在这一层把
+        // `PsbClientError` 收敛成带 `PSB_` 码的 IpcError，渲染层就只剩一段没有码的字符串，
+        // 只能落通用「操作失败，请稍后重试」——CINDY-RW-10 的版本控制检查（脏 / 无法检查）
+        // 会被彻底吞掉。与 `remote-workspace/ipc.ts` 的 `throwPsbFailure` 同一口径：
+        // 可行动失败保留命名空间码，其余落 INTERNAL（message 只放 PSB 原文做诊断）。
+        if (isIpcError(error)) throw error;
+        const failure = toPsbRemoteFailure(error);
+        throwIpcError(psbIpcCodeForFailure(failure) ?? 'INTERNAL', failure.message ?? '');
+      }
     },
     workdirDiagnostics: workdirLog,
     log,

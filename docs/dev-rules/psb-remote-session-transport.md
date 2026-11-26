@@ -14,8 +14,10 @@
 > PSB 鉴权 / 端点 / HTTP 客户端 / agent-tunnel（`apps/desktop/src/main/remote-workspace/`）、
 > `psb:` transport 分类与 maker-host 的隧道分派、main 服务装配与推送、preload 与
 > `vite-env.d.ts` 声明、侧栏分组、串流观看端与「远程工作区」页签（工作区级页签：页面按工作区
-> 工作、不跟随当前任务；内部观看端会话属已知偏差，见 §11.7）均已落地；定向测试在同一次交付中
-> 并行落地——**本文同时是它们的验收口径**，未落地项不得当作已完成。
+> 工作、不跟随当前任务）均已落地；**2026-11-26 PSB 0.1.172 起，工作区级观看端改走服务接口
+> `POST …/workspaces/:id/stream/subscribe`（返回桌面访问会话 id），Cindy 不再为串流创建 Agent
+> 会话**（旧 PSB 的过渡回退带 `purpose:'internal'`，见 §11.7）。定向测试在同一次交付中并行落地
+> ——**本文同时是它们的验收口径**，未落地项不得当作已完成。
 
 ## 1. `psb:` 是第三种远端身份
 
@@ -184,7 +186,8 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
 - **工作区级管理页通道**：`PSB_ADMIN_CHANNELS`，**8 条 = 6 invoke + 2 推送**。
   invoke：`admin-context` / `admin-stream-start` / `admin-stream-stop` / `admin-stream-status` /
   `admin-stream-input`（工作区级键鼠）/ `admin-stream-capture`（全屏捕获态）；
-  推送：`admin-context-changed` / `admin-stream-event`（`sessionId` = 内部观看端会话）。
+  推送：`admin-context-changed` / `admin-stream-event`（`sessionId` = 观看端绑定会话：正常是
+  桌面访问会话 id，旧 PSB 过渡回退是内部 Agent 会话 id，见 §11）。
   语义与生命周期见 §11。两组常量刻意分开、值不重叠：会话级推送与管理页推送混用会让同一帧被两处
   解码，guard 会拦下重名。
 - **main 侧的单一服务入口**：[remote-workspace/index.ts](../../apps/desktop/src/main/remote-workspace/index.ts)
@@ -312,8 +315,8 @@ Cindy 是 PSB 会话串流的**第二个观看端实现**（浏览器是第一�
      （切会话即重挂 → 本地状态重置 + 旧实例卸载时 `streamStop` 释放名额）；无会话 / 非 `psb:`
      显示提示态。页签 state 恒为空、不落任何会话 id —— 页签不跟随「打开它时的会话」。
 - **输入**：**可交互观看**（2026-11-26 用户口径，替换旧的「只读观看」）：渲染层把指针 / 键盘 /
-  滚轮采集成本地事件，经**工作区级** `psb-remote:admin-stream-input` 交给 main，main 解析出内部观看端
-  会话后用`{kind:'input', event}` 写进同一条观看端 WS。鉴权与「谁能输入」由 **PSB 服务端权限模型**
+  滚轮采集成本地事件，经**工作区级** `psb-remote:admin-stream-input` 交给 main，main 解析出观看端
+  绑定会话后用`{kind:'input', event}` 写进同一条观看端 WS。鉴权与「谁能输入」由 **PSB 服务端权限模型**
   （0.1.172）判定：工作区被占用 → 占用人可控制，未被占用 → 已登录用户可控制，其它情况服务端只丢弃
   输入、画面照旧；Cindy 不做客户端互斥，也不发 `role` / `takeover`。协商 `errors=frame` 时服务端会
   先发 `stream.control` 拒绝帧，Cindy 当前未启用该协商。全屏时宿主快捷键由 main 抑制，详见 §12。
@@ -465,8 +468,8 @@ dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSes
 | `main/remote-workspace/streamViewer.ts` | 串流观看端：`wss` + Bearer、帧原样转 `ArrayBuffer`、幂等 start、generation 防泄漏 | 帧不做任何解析（解码在渲染层） |
 | `main/remote-workspace/index.ts` | 服务单例装配（注入 auth/token/出网/推送/日志）、mutation 后推送工作区快照 | 登录边界 dispose（退出登录断流） |
 | `main/remote-workspace/ipc.ts` | 22 个 invoke handler（16 个会话级 + 6 个管理页）、来源校验、payload 校验、失败 `PSB_*` 码 | handler 每次现取单例（dispose 后自动重建） |
-| `main/remote-workspace/adminService.ts` | **工作区级管理页**：工作区解析、内部观看端会话的找/建/复用、串流订阅与 `STREAM_EVENT` 过滤、`CONTEXT_CHANGED` 判定。**内部会话是已知偏差**（PSB 要求改用工作区级 `stream/subscribe`，见 §11.7），改这块前先读 §11.7 | 不 import Electron/DB/真实 PSB 客户端；副作用全走注入端口（见 §11） |
-| `main/remote-workspace/adminRecentStore.ts` | 最近使用的远程工作区 + `PSB 会话→工作区`映射（有上限、幂等写） | 可丢的展示偏好，不写 DB、不新增 schema |
+| `main/remote-workspace/adminService.ts` | **工作区级管理页**：工作区解析、工作区级 `stream/subscribe` 拿桌面访问会话并建立观看端绑定、重复启动复用 / 失效重订阅、串流订阅与 `STREAM_EVENT` 过滤、`CONTEXT_CHANGED` 判定。**串流不创建 Agent 会话**；旧 PSB 的过渡回退见 §11.7 | 不 import Electron/DB/真实 PSB 客户端；副作用全走注入端口（见 §11） |
+| `main/remote-workspace/adminRecentStore.ts` | 最近使用的远程工作区 + `PSB 会话→工作区`映射 + `工作区→观看端绑定会话`（JSON 键 `desktopSessions`；有上限、幂等写） | 可丢的展示偏好，不写 DB、不新增 schema |
 | `main/remote-workspace/adminRuntime.ts` | 管理页服务的生产装配（PSB 服务单例、localDb 会话行懒读、本机记录文件、两条推送） | 宿主依赖只在这里出现 |
 | `main/remote-workspace/push.ts` | `WORKSPACE_CHANGED` / `STREAM_EVENT` / `SESSIONS_REBOUND` 广播（只发受信窗口） | 出站推送同样是授权边界 |
 | `main/remote-workspace/sessionRebind.ts` | 发送前透明重建的决策与幂等（终态/404 判定、同工作区新建、CAS 落库、并发去重） | 不 import Electron/DB/PSB：副作用全走注入（见 §6.1） |
@@ -519,11 +522,10 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
   此时「远程工作区」页签与插件页签一样不投影。
 - **占用无 TTL**：异常退出（强杀、退出登录、换账号）会留下占用，需在 PSB 网页手动释放；
   `dispose` 只断串流、不调用 `releaseWorkspace`（产品 §2.5 同口径）。
-- **工作区级 `stream/subscribe` 未适配（已知偏差，2026-11-26）**：PSB 已交付该端点契约（上线状态
-  以 PSB 部署为准），要求改用
-  `POST /api/cindy/remote/workspaces/:id/stream/subscribe` 并删除「Cindy 观看端」内部 Agent
-  会话；Cindy 当前仍借内部会话订阅 / 读 `stream/status`。原因、影响、迁移条件见 §11.7；在那之前
-  不要自己拼「工作区级订阅」，也不要再扩大对内部会话的依赖。
+- **工作区级 `stream/subscribe` 已适配（2026-11-26，PSB 0.1.172）**：串流观看端改走
+  `POST /api/cindy/remote/workspaces/:id/stream/subscribe`，拿**桌面访问会话** id 起观看端，
+  **不创建 Agent 会话**；绑定持久化、重复启动复用、失效重订阅、读路径不订阅不建会话。旧 PSB
+  （端点 404/405/`UNSUPPORTED`）的过渡回退带 `purpose:'internal'`，见 §11.7。
 - **输入仲裁改为 PSB 权限模型**（0.1.172）：取消 `role=control` 单控制者 / `takeover` 互斥，
   改由服务端按「工作区是否被占用 + 是否已登录」判定，其它情况只丢弃输入。Cindy 默认允许交互、
   不做客户端互斥；`errors=frame` 未启用（见 §12.5）。
@@ -752,7 +754,7 @@ maker-core 走 `event loop ended unexpectedly (likely remote daemon shutdown)` �
 **验证现状**：单测与受影响类型检查已过；**真机已通过**（cc 远端回合 2/2，根因修复后无
 `daemon closed the session`，见产品 §8.2）。
 
-## 11. 工作区级管理页与内部观看端会话（2026-11-26）
+## 11. 工作区级管理页与观看端绑定（2026-11-26）
 
 ### 11.1 为什么需要这一层
 
@@ -779,38 +781,61 @@ maker-core 走 `event loop ended unexpectedly (likely remote daemon shutdown)` �
 2. 读不到（PSB 已清记录 → 404/403，或网络失败）→ 用本机记录的 **`PSB 会话→工作区`映射**
    （见 11.5），`source: 'last-used'`。**不猜**工作区：映射也没有就退到 3。
 3. 没有远程任务 / 不是远程任务 / 上一步也没线索 → 用**最近使用过的远程工作区**。
-4. 都没有 → `context: null`（页面的空提示态）。
+4. 都没有 → `context: null`（页面的空提示态）。**只有这一步才允许空态** —— 只要本机还有
+   固定信息快照或会话行种子，就必须返回 `stale: true` 的上下文（2026-11-26 真机事故口径）。
 
-读 PSB 工作区列表失败但本机有记录时**不清空页面**：保留最后一次工作区快照并把 PSB 原话放进
-`lastErrorZh`（与 §5「读取失败保留最后一次快照」同一取舍）。记录里的工作区在列表里**确实
-不存在**时才清记录，避免「被删的工作区每次打开都白读一次」。
+**固定信息快照与 stale 降级（2026-11-26 真机事故修复）**：名称 / 模板 / 机器 / 目录名是
+**固定信息**，占用 / 在线 / 桌面会话是**状态信息**。main 在实时读成功时把它们落盘到
+`workspaceSnapshots[workspaceId]`（见 11.5），读不到时用快照构造同形状上下文：
+
+- `PsbWorkspaceAdminContext.stale`（加性字段）：固定信息来自本机快照时为 `true`；
+- `availability`：`'missing'` = PSB 工作区列表读成功但工作区已不在（被删 / 无权限）；
+  `'unavailable'` = 读不到 PSB（网络 / 鉴权 / PSB 不可达）或当前任务的 PSB 会话读不到；
+- `staleReason`：`list-failed` / `workspace-missing` / `session-unreadable` / `snapshot-only`；
+- `snapshotSavedAt`：固定信息本机落盘时间；`workspaceIdKnown: false` = 占位身份（历史会话
+  种子，写操作必须拒绝）；
+- stale 时 `occupancy` 是未知（全空，渲染层显示「无法获取」）、`desktopSession` / `reasonCode`
+  是 `null`、`viewerSessionId` 是 `null`；`lastErrorZh` 只放 PSB 原文做诊断；
+- 历史会话兜底（2026-11-26 真机复验修正）：本机会话行有 `remoteHostId=psb:*` /
+  `workingDir=/psb-remote/<目录名>` 时，**先**按目录名去实时工作区列表匹配（`directoryName`
+  或 `title` 相同；会话详情对终态也有效，可读时优先用详情的 workspace id）；匹配到就返回
+  live（名称 / 模板 / 机器 / 占用全部来自 PSB，并补记 `会话→工作区`映射与快照）。列表读失败
+  或确实匹配不到时才用降级种子：名称 = 目录名（**任务标题不是工作区名称，禁止冒充**），
+  机器 / 模板拿不到就留空；`workspaceIdKnown: false` 的占位身份拒绝写操作。列表刚失败时
+  不再重复请求一次（避免双倍超时），种子直接带 `list-failed` 归因与 PSB 原话；
+- 写操作闸门：`streamStart` 在已知 stale / 占位身份时直接抛可行动失败（`NOT_FOUND` /
+  `PSB_UNREACHABLE` + 可读原因），不再先打占用闸门；`streamStatus` 对 stale 返回
+  `status: null`，不拿可能已死的绑定去打网络。
+
+读 PSB 工作区列表失败但本机有记录时**不清空页面**：保留最后一次固定信息快照 / 会话行种子并把
+PSB 原话放进 `lastErrorZh`（与 §5「读取失败保留最后一次快照」同一取舍）。工作区在列表里**确实
+不存在**时只清**观看端绑定**与内存缓存，**保留** `会话→工作区`映射、`lastWorkspaceId` 与固定
+信息快照 —— 页面仍要显示「当初是哪个工作区」，且下一次解析还要靠映射找回快照（2026-11-26
+真机事故：旧实现清掉后整页变空态）。
 
 **桌面会话状态**（`desktopSession` / `reasonCode` / `lastErrorZh`）取工作区级 `stream/status`。
-PSB 把这条读数挂在会话路径上，所以 main 借一条**还能用的**会话去问：内部观看端会话优先，
-其次当前任务还活着的 PSB 会话；**终态会话不拿去做探针**（必被拒，白费一次请求）。
-读不到时 `desktopSession` 是 `null`（未知），**不是** `none` —— 把「不知道」显示成「没有桌面
-会话」会把网络抖动误导成用户要去 PSB 网页操作。
+PSB 把这条读数挂在会话路径上，所以 main 借**观看端绑定里的那条会话 id** 去问：正常是工作区级
+`stream/subscribe` 返回的**桌面访问会话** id，旧 PSB 的过渡回退时是内部 Agent 会话 id（两条
+路由 PSB 都接受，见 §11.7）。**不再借用户任务的 agent 会话读状态**（PSB 0.1.172：新代码只走
+工作区级绑定），也不拿终态会话做探针。读不到时 `desktopSession` 是 `null`（未知），**不是**
+`none` —— 把「不知道」显示成「没有桌面会话」会把网络抖动误导成用户要去 PSB 网页操作。
 
-**没有可用会话时只复用本机记录的内部观看端会话，绝不新建（2026-11-26 审查修正）**：应用重启后
-内存里的观看端绑定全丢，而「当前打开的任务」可能根本不是远程任务 —— 此时没有任何会话可借，
-`desktopSession` 就是 `null`（未知）。读路径的候选顺序固定为：
+**读路径只用绑定 id，绝不订阅、绝不创建会话（2026-11-26）**：应用重启后内存绑定全丢，此时
+**只复用本机记录里的绑定 id**（`<userData>/psb-remote-workspace-admin.json` 的
+`desktopSessions[workspaceId]`，见 11.5）发一次只读 HTTP `stream/status`，不订阅、不占观看名额。
+没有绑定（用户还没点过「启动」/重启后无记录）就返回 `status: null`，**不为了读状态去订阅或建
+会话**：订阅会占观看名额，建会话属于工作区写操作（写前占用闸门会把它顺带占用为当前身份）——
+打开「远程工作区」页签就静默占用一个空闲工作区是不可接受的副作用（2026-11-26 审查发现的原实现
+正是这种「读着读着就占用」）。代价是「首次打开页面」`desktopSession` 是 `null`（未知）：用户显式
+点一次「启动」才建立绑定并落盘，之后重启 / 重开页面就能靠记录自动读到状态。
 
-1. 内存里的内部观看端绑定（本进程启动过观看）；
-2. **本机记录里的内部观看端会话 id**（`<userData>/psb-remote-workspace-admin.json` 的
-   `viewers[workspaceId]`，见 11.5）：只读 HTTP `stream/status`，不订阅、不占观看名额；
-3. 最近一次上下文解析记下的、还活着的用户任务会话。
-
-三条都没有就返回 `status: null`。**读状态不再创建任何 PSB 会话**：新建会话属于工作区写操作，
-写前占用闸门会把它顺带占用为当前身份 —— 打开「远程工作区」页签就静默占用一个空闲工作区是
-不可接受的副作用（审查发现的原实现正是这种「读着读着就占用」）。代价是「首次打开页面」不再
-自动读出 `desktopSession`：用户显式点一次「启动」才创建内部会话并落盘，之后重启 / 重开页面
-就能靠记录自动读到状态。PSB 工作区级订阅端点落地后这一层可以整体移除（见 §9.6）。
-
-- 复用失败（会话终态 / 不存在 / 网络）**不抛错**：终态或 404 会**清掉记录**（下次启动重建），
-  网络失败保留记录（下次可能就好了）；`status` 仍是 `null`（未知），上下文照常返回工作区信息；
-- `STREAM_STATUS` 的返回值仍带 `viewerSessionId`（加性字段）：本次读数所用的内部会话（只来自内存
-  绑定 / 本机记录，没有则 `null`），渲染层可以立刻用它过滤 `STREAM_EVENT` / 判断输入是否可发；
-- 内部会话 id 从 `null` 变为有值（记录命中并复用成功）时 main 会推一次 `CONTEXT_CHANGED`。
+- 读数失败（绑定会话已不存在 / 网络）**不抛错**：PSB 明确回 404/403 时**清掉绑定与记录**
+  （下次启动重新订阅），网络失败保留记录（下次可能就好了）；`status` 仍是 `null`（未知），
+  上下文照常返回工作区信息；
+- `STREAM_STATUS` 的返回值仍带 `viewerSessionId`（加性字段）：本次读数所用的绑定会话 id（只来自
+  内存绑定 / 本机记录，没有则 `null`），渲染层可以立刻用它过滤 `STREAM_EVENT` / 判断输入是否
+  可发；
+- 绑定 id 从 `null` 变为有值（记录命中并复用成功）时 main 会推一次 `CONTEXT_CHANGED`。
 
 `CONTEXT_CHANGED` 只在 main「刚拿到新事实」且与**上次发出的完整上下文**不同时推送；载荷与
 invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流事件驱动的上下文重读有**合并窗口**：
@@ -825,37 +850,44 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 `useWorkspaceAdminContext` 按 `localSessionId` 过滤：不匹配丢弃，`null`（没有任务线索 → 最近使用
 兜底）与旧 main 不带该字段时照旧接受。evict/重建仍按工作区，不影响这份过滤。
 
-### 11.3 内部观看端会话（生命周期）
+### 11.3 工作区级订阅与观看端绑定（生命周期）
 
-> **已知偏差（2026-11-26）**：PSB 已要求串流 / 工作区读取走**工作区级**服务接口
-> （`POST /api/cindy/remote/workspaces/:id/stream/subscribe`），并明确要求**删除**这套内部 Agent
-> 会话逻辑；Cindy 本批仍按下面实现，属于**未适配**，不是最终设计。原因、影响、迁移条件见 §11.7。
+`adminStreamStart({ workspaceId })` 的路径（2026-11-26 起，PSB 0.1.172 服务接口）：
 
-`adminStreamStart({ workspaceId })` 时保证一条**我们自己身份**的 PSB 会话存在，用它订阅串流：
+1. **占用闸门**：`remote().ensureWorkspaceLocked(workspaceId)`（订阅/回退建会话都是工作区写操作，
+   见 §13）。失败即返回可行动原因，不建立订阅。
+2. **拿绑定**（`ensureBinding`）：内存绑定 → 本机记录里的绑定 id ✓ **先读一次 `stream/status`
+   确认还能用** → 都不可用才调用 `POST /api/cindy/remote/workspaces/:id/stream/subscribe`。
+   订阅返回的 `sessionId` 是**桌面访问会话** id（不是 agent 会话），绑定立刻落盘（11.5）。
+   同一工作区的并发启动共享一次「拿绑定」（in-flight map），不会订阅出两条绑定 / 建出两条内部
+   会话。
+3. **起观看端**：`startStream(绑定会话 id)`。失败时只有**明确指向会话失效**（404/409/410、
+   `NOT_FOUND` / `FORBIDDEN` / `PSB_STREAM_NOT_READY`）才丢掉绑定、重新订阅并重试一次（访问会话
+   被重建的竞态）；鉴权 / 网络 / 客户端不支持串流**原样上抛**，不重试。
+4. **提交状态**：`binding.status` 更新、`CONTEXT_CHANGED` 重读推送、返回
+   `{ status, workspaceId, viewerSessionId }`（`viewerSessionId` = 桌面访问会话 id）。
 
-- **复用只认本机记录的 id**：`main/remote-workspace/adminRecentStore.ts` 的
-  `viewers[workspaceId]` 记着**我们自己创建过**的内部观看端会话 id（持久化，见 11.5）。
-  `STREAM_START` 先读一次它的 `sessionStatus` 确认仍非终态、且 `workspaceId` 对得上，才复用；
-  没有记录 / 已终态 / 已不可见才新建。**不再按标题在 `listSessions` 里认领**：那个列表包含
-  同一工作区**其他人**的会话，按标题前缀认领会认到别人的会话上（订阅别人的流、把别人的会话
-  当成自己的复用；2026-11-26 审查阻断项）。标题 `PSB_ADMIN_VIEWER_SESSION_TITLE` 只剩「让用户
-  在 PSB 会话列表里辨认这条是 Cindy 观看端」的展示作用。
-- **创建**：没有可复用记录才建（`agentKind: 'pi'`、`title` 用该标记、`clientRequestId` 幂等），
-  并在创建成功的**同一调用里落盘**观看端 id。同一工作区的并发启动共享一次「复用/新建」
-  （in-flight map），绝不建出两条。
-- **终态竞态重试一次**：复用前看到的会话还在运行、订阅时已落定（被网页/别处停掉）时，
-  `startStream` 会失败。此时**再问一次**该会话状态，确认终态/不存在才重建内部会话并重试一次；
-  网络/鉴权失败**不重试**（重试只会重放同一个失败）。
-- **停流不停会话**：`adminStreamStop` 只断开观看（观看名额与浏览器页面共用、默认 4，不必为每次
-  开关重建远端会话），内部会话保留供下次复用。窗口销毁时 IPC 层按「工作区」记的 owner 补停一次。
-- **清理点**：工作区不可见（删/无权限）→ 丢掉绑定与记录；PSB 说内部会话结束（`closed.reason` ∈
-  `session-ended` / `session-not-found`）→ 丢掉绑定与记录，**下一次启动**重建；读状态发现会话
-  已终态同样只清记录、不重建（读路径不创建会话，见 §11.2）；账号边界换 PSB 服务实例 → 服务自己
-  按实例身份清空内存绑定与推送基线，本机记录保留——下一次启动会把记录里的 id 交给新实例校验，
-  新账号看不到它时（404/403）清掉并新建。
-  **应用退出不主动停远端内部会话**：它看起来就是 PSB 会话列表里的一条 `Cindy 观看端` 会话，
-  可在网页停掉；下次启动会复用或重建。
-- **串流事件**：观看端事件按 `sessionId` 过滤，只有内部会话的事件经
+其余口径：
+
+- **重复启动复用绑定**：先读绑定状态，正常就复用同一条桌面访问会话（不重复订阅、不重建任何
+  会话）；PSB 说它已不可用时才重新订阅。**停止只断本端观看**（`adminStreamStop` 调
+  `stopStream`），绑定保留供下次复用；窗口销毁时 IPC 层按「工作区」记的 owner 补停一次。
+- **桌面访问被重建**：旧绑定 id 读不到 → 丢掉绑定与本机记录，下一次启动重新订阅拿新 id
+  （PSB 契约：订阅没有 `expiresAt`，不要把它当长期句柄）。
+- **没有 running 桌面访问**：订阅返回 `409` + `NO_RUNNING_SESSION`，main 原样抛
+  （`PsbClientError` 保留 PSB 可读中文），渲染层显示「先在 PSB 网页启动桌面访问」这类可行动文案；
+  **不会**自动拉起桌面访问，也**不会**降级去建会话。
+- **过渡回退（仅旧 PSB）**：订阅端点 404/405/`UNSUPPORTED` → 允许临时回退创建**内部 Agent
+  会话**，必须 `purpose:'internal'` + 标题 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`
+  （`Cindy 观看端 · 内部串流订阅`）+ warn 日志；新端点可用时永不执行。详见 §11.7。
+- **清理点**：工作区不可见（删/无权限）→ 丢掉内存绑定与本机记录；PSB 说绑定会话结束
+  （`closed.reason` ∈ `session-ended` / `session-not-found`）→ 丢掉绑定与本机记录，**下一次启动**
+  重新订阅；读状态发现绑定已失效同样只清记录、不订阅（读路径，见 §11.2）；账号边界换 PSB 服务
+  实例 → 服务自己按实例身份清空内存绑定与推送基线，本机记录保留——下一次启动会把记录里的 id
+  交给新实例校验，新账号看不到它时（404/403）清掉并重新订阅。
+  **应用退出不主动停远端任何会话**：桌面访问会话归 PSB 与用户管理（PSB 网页可停），Cindy 只断
+  本端观看连接。
+- **串流事件**：观看端事件按 `sessionId` 过滤，只有绑定会话的事件经
   `psb-remote:admin-stream-event` 转发（`frame/status/cursor/closed/error` 复用 `PsbStreamEvent`，
   渲染层按 `context.viewerSessionId` 过滤）；`closed.detail` 的 `reasonCode` / `desktopSession`
   会写回管理页状态，随后触发一次合并后的上下文重读（§11.2「合并窗口」的「在途不并发、丢通知
@@ -863,6 +895,8 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
   `cursor`（宿主光标形状）只透传给渲染层映射成**宿主风格 CSS 关键字**（只在画面区域生效），没有
   管理页状态、也不触发上下文重读
   （契约见 §12.9）。用户任务会话的串流仍只走 `PSB_REMOTE_CHANNELS.STREAM_EVENT`。
+- **`viewerSessionId` 语义（字段名不变）**：正常是**桌面访问会话** id；只有旧 PSB 的过渡回退才
+  是内部 Agent 会话 id。渲染层只做等值过滤，不做 id 形状判断。
 
 ### 11.4 IPC 面（6 invoke + 2 推送）
 
@@ -871,11 +905,11 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 | `psb-remote:admin-context` | invoke | `{ localSessionId? }` → `{ context: PsbWorkspaceAdminContext \| null }` |
 | `psb-remote:admin-stream-start` | invoke | `{ workspaceId }` → `{ status, workspaceId, viewerSessionId }` |
 | `psb-remote:admin-stream-stop` | invoke | `{ workspaceId }` → `void`（幂等，只停观看） |
-| `psb-remote:admin-stream-status` | invoke | `{ workspaceId }` → `{ status: PsbWorkspaceAdminStreamStatus \| null, viewerSessionId: string \| null }`（**只借已有会话**：内存绑定 / 本机记录里的内部会话 / 活着的用户任务会话；**不创建会话、不占用工作区、不订阅**；见 §11.2） |
+| `psb-remote:admin-stream-status` | invoke | `{ workspaceId }` → `{ status: PsbWorkspaceAdminStreamStatus \| null, viewerSessionId: string \| null }`（**只用绑定里的会话 id**：内存绑定 / 本机记录里的 `desktopSessions[workspaceId]`；**不订阅、不创建会话、不占用工作区**；见 §11.2） |
 | `psb-remote:admin-stream-input` | invoke | `{ workspaceId, event }` → `void`（键鼠输入，见 §12.2） |
 | `psb-remote:admin-stream-capture` | invoke | `{ active, workspaceId? }` → `void`（捕获态开关，见 §12.4） |
 | `psb-remote:admin-context-changed` | push | `{ context, localSessionId: string \| null }`（`context` 与 invoke 结果同形；`localSessionId` 供渲染层按窗口过滤，见 §11.2） |
-| `psb-remote:admin-stream-event` | push | `PsbStreamEvent`（`sessionId` = 内部观看端会话；含 `frame/status/cursor/closed/error`，`cursor` 见 §12.9） |
+| `psb-remote:admin-stream-event` | push | `PsbStreamEvent`（`sessionId` = 观看端绑定会话：正常是桌面访问会话 id，旧 PSB 过渡回退是内部 Agent 会话 id；含 `frame/status/cursor/closed/error`，`cursor` 见 §12.9） |
 
 - **`status: null` 不是「不支持串流」**：`STREAM_STATUS` 读不到 PSB 状态时返回 `null`，渲染层
   不得据此禁用「启动」（`capable` 只在真的读到状态时才有意义）。这是本轮最容易写错的一处：
@@ -888,96 +922,180 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
   `PsbRemoteBridge` 的接口同步，`psbRemoteIpcWiring.guard.test.ts` 的
   `ADMIN_BRIDGE_METHODS` 守两边一致）。
 
-### 11.5 本机持久化（最近工作区 + 会话映射 + 观看端映射）
+### 11.5 本机持久化（最近工作区 + 会话映射 + 观看端绑定 + 固定信息快照）
 
 落点 `<userData>/psb-remote-workspace-admin.json`（走既有 `createOverrideSettingsFile`：原子
-替换、跨进程锁、64 KB 上限），内容三项：
+替换、跨进程锁、64 KB 上限），内容四项（顶层带 `version` schema 字段，加性、旧文件缺省按当前
+版本读）：
 
 - `lastWorkspaceId`：没有远程任务时页面的默认对象，重启后仍然生效；
-- `sessions[{ sessionId, workspaceId }]`：PSB 会话读不到时兜底解析工作区，容量 32、最近的在前、
-  超出淘汰最旧；
-- `viewers[{ workspaceId, sessionId }]`：该工作区**我们自己创建**的内部观看端 PSB 会话 id，容量
-  16、最近的在前。它是「重启后复用同一条内部会话」的唯一依据（读状态也只借它做只读 HTTP）；
+- `sessions[{ sessionId, workspaceId }]`：**agent** PSB 会话读不到时兜底解析工作区，容量 32、
+  最近的在前、超出淘汰最旧；
+- `desktopSessions[{ workspaceId, sessionId }]`：该工作区**观看端绑定**的会话 id，容量 16、最近的
+  在前。正常是工作区级 `stream/subscribe` 返回的**桌面访问会话** id；旧 PSB 的过渡回退是内部
+  Agent 会话 id。它是「重启后复用同一条桌面访问会话 + 只读地读 `stream/status`」的唯一依据；
   **不按标题认领** `listSessions` 里的会话——那是全工作区可见范围，可能含别人的会话。
+- `workspaceSnapshots[{ workspaceId, title, templateTitle, clientName, clientOnline,
+  directoryName, state, savedAt }]`（2026-11-26 真机事故后新增）：固定信息快照，容量 16、按
+  `workspaceId` 幂等（同 id 只留一条）、最近确认的在最前。**只存固定字段**，不存占用 / 桌面
+  会话等易变状态（`clientOnline` 仅作诊断，stale 时不当展示事实）。写入点：`createSession`
+  成功（工作区会话启动那一刻）、占用 / 释放成功、`adminContext` 实时读成功；固定字段不变
+  时 **0 次写**（`savedAt` 保留第一次确认时间），损坏行只丢该行、读坏整份文件回空记录。
+
+> **JSON 键变更（2026-11-26）**：由 `viewers` 改为 `desktopSessions`。旧值是「我们自己创建的内部
+> 观看端 Agent 会话」，语义已作废（那正是用户事故里不该出现在会话列表的行）；新代码按新键读，
+> 旧数据自然丢弃——**不迁移、不复用旧 Agent 会话**（下次启动会重新订阅拿桌面访问会话）。
+> `workspaceSnapshots` 是加性键：旧文件没有它就按空快照读，下一次实时读取会重新写入。
 
 为什么不用 DB 新列：加列要 migration（会阻断 dev 实例、也让发版多一道协调），而这份记录是
-**可丢的展示偏好**——丢了只回到空提示态，不损坏用户数据。写纪律：所有写入口**幂等**，值不变
-0 次写；管理页读路径会推进一次「最近使用」，但写次数不随轮询/刷新增长，也**不会**因为读状态
-写入观看端记录（观看端记录只在用户显式「启动」且真的复用了某条会话时写）。
+**可丢的展示偏好**——丢了只回到「本机无快照」的旧行为，不损坏用户数据。写纪律：所有写入口
+**幂等**，值不变 0 次写；管理页读路径会推进一次「最近使用」与固定信息快照，但写次数不随
+轮询/刷新增长，也**不会**因为读状态写绑定记录（绑定只在用户显式「启动」并真的订阅出会话时写）。
+实现上生产读写单例在 `main/remote-workspace/adminRecentRuntime.ts`：管理页服务与 PSB 远程服务
+（`index.ts` 的会话创建 / 占用写入点）**共用同一个 store 实例**，避免两个实例各缓存整份 JSON、
+覆盖写互相丢字段。
 
 ### 11.6 验证方式
 
 - 定向单测：`main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts`（工作区解析六个
-  分支、占用/在线/桌面会话映射、内部会话**按本机记录复用/新建**、不按标题认领、终态竞态重试一次、
-  网络失败不重试、事件过滤与上下文推送、`status: null` 语义、记录容量与幂等写（含观看端映射）、
-  账号边界丢绑定、键鼠输入转发与「没有活动连接」失败、**读路径不创建会话 / 不占用**：
-  `adminContext` / `adminStreamStatus` 在无记录时返回 `null` 且 `createSession` / 占用闸门
-  调用次数为 0、记录命中时只读复用、记录里的会话终态时清记录不重建、`viewerSessionId` 变化推送）。
+  分支、占用/在线/桌面会话映射、**无绑定启动 → 订阅一次 + 用桌面访问会话 id 起观看端 +
+  `createSession` 零调用**、重复启动复用绑定（只订阅一次）、失效后重新订阅、起观看端时的
+  会话失效竞态重试一次、网络失败不重试、旧 PSB 的三种「端点不可用」回退（`purpose:'internal'`
+  + 内部用途标题 + warn）、`409 NO_RUNNING_SESSION` 不建会话、事件过滤与上下文推送、`status: null`
+  语义、记录容量与幂等写（`desktopSessions`）、账号边界丢绑定、键鼠输入转发与「没有活动连接」
+  失败、**读路径不订阅 / 不建会话 / 不占用**：`adminContext` / `adminStreamStatus` 在无绑定时
+  返回 `null` 且订阅 / `createSession` / 占用闸门调用次数为 0、记录命中时只读复用、记录里的
+  绑定失效时清记录不重建、`viewerSessionId` 变化推送）。
+- 固定信息快照 / stale 降级（2026-11-26 真机事故修复，同一测试文件）：live 读取写入快照且同值
+  0 次写、目录名反查、损坏行 / 容量上限、PSB 读不到时用快照构造 `stale: true` / `availability:
+  'unavailable'` 的上下文（名称 / 模板 / 机器不变、占用与桌面会话未知）、工作区被删返回
+  `availability: 'missing'` 且只清易变记录、历史会话（无快照 / 无映射）用任务标题 +
+  `/psb-remote/<目录>` 种子、`streamStart` 在 stale 时直接可行动失败（0 次占用闸门 / 0 次订阅）；
+  renderer 侧 `RemoteWorkspaceAdminPanel.test.tsx` 覆盖「stale 仍显示名称 / 模板 · 机器、不出现
+  『还没有远程工作区』、降级说明条、stale 下启动 / 占用给可行动文案且不发 IPC」。
+- `main/remote-workspace/__tests__/psbClient.test.ts` 补新契约：工作区级订阅的路径 / 方法 /
+  `{ sessionId, streamPath?, subscriberId?, expiresAt? }` 解析、缺 `sessionId` 判 `PSB_PROTOCOL`、
+  409 `NO_RUNNING_SESSION` 保留 PSB 可读原因、`createSession` 省略 `purpose` 时不带该字段 /
+  `purpose:'internal'` 原样带出。
 - 接线守卫：`psbRemoteIpcWiring.guard.test.ts` 的 `ADMIN_BRIDGE_METHODS`（通道 ↔ 桥方法 ↔
   handler，且两组通道值不重名；另守输入事件共享校验器与捕获态自救允许清单没有被绕过）。
 - 宿主光标形状（`stream.cursor`，见 §12.9）：`shared/__tests__/psbRemoteWorkspaceStreamCursor.test.ts`
-  （帧校验 / 关键字映射与未知回退 / 非法形状 → `null` / 不生成位图 data URL）与
+  （帧校验 / 关键字映射与未知回退 / **PSB shared 测试移植的四类映射、别名、容错、非法形状用例** /
+  映射表 64 条别名与 36 个关键字计数 / 不生成位图 data URL）与
   `__tests__/streamViewer.test.ts` 的 cursor 用例
   （文本帧 → `{type:'cursor'}`、同 serial 去重、serial 回退照常 emit、`start`/`stop` 重置、文本帧
-  不进二进制帧路径）；`psbWorkspaceAdminService.test.ts` 另钉住「只转发内部会话的 cursor 事件」。
+  不进二进制帧路径）；`psbWorkspaceAdminService.test.ts` 另钉住「只转发绑定会话的 cursor 事件」。
 - 交互输入 / 捕获态：`__tests__/psbStreamInputEvent.test.ts`（事件形状与 4KiB 边界）、
   `__tests__/streamCapture.test.ts`（抑制清单、恢复路径、回滚）、`__tests__/streamViewer.test.ts`
   （上行只有 input 帧、每观看端 UUIDv4 `subscriberId`、`sendInput` 失败码、`errors=frame` 新关闭码）。
-- 真机已通过：用户任务终态后 `adminContext` 仍返回工作区与画面（内部会话是**已知偏差**，见
-  §11.7）；键鼠输入真的驱动远端（本机指针进入画面 / 全屏后按键与滚轮在远端生效，见 §12.7）；
-  全屏时 Ctrl+R 不再作用到宿主（§12.7），F5/F11/F12 与开发者工具组合的放行仍待真机走查。
-- 真机待验证：内部观看端会话在 PSB 会话列表里可辨认（未逐项目检）；**本机记录里有观看端会话的
-  那次重启后首次打开**「远程工作区」页，`adminContext.desktopSession` 能读到、`adminStreamStatus`
-  返回带 `viewerSessionId` 的状态；**从未启动过观看**时读路径不创建会话（`status: null`、不占用
-  工作区），点「启动」才创建 + 订阅、切走页签自动停止、回来是未启动态（旧「自动恢复画面」结论
-  已随口径作废）。无记录时 `STREAM_STATUS` 返回 `null`、且 `createSession` / 占用闸门零调用
-  目前只有单测。
+- 真机已通过（旧实现）：用户任务终态后 `adminContext` 仍返回工作区与画面；键鼠输入真的驱动远端
+  （本机指针进入画面 / 全屏后按键与滚轮在远端生效，见 §12.7）；全屏时 Ctrl+R 不再作用到宿主
+  （§12.7），F5/F11/F12 与开发者工具组合的放行仍待真机走查。
+- 真机待验证（2026-11-26 工作区级订阅改版）：**启动串流后 PSB 会话列表只有用户任务**
+  （不再出现「Cindy 观看端」行，也不增加到 `sessionCount`）；**本机记录里有绑定**的那次重启后
+  首次打开「远程工作区」页，`adminContext.desktopSession` 能读到、`adminStreamStatus` 返回带
+  `viewerSessionId` 的状态（值为桌面访问会话 id）；**从未启动过观看**时读路径不订阅不建会话
+  （`status: null`、不占用工作区），点「启动」才订阅、切走页签自动停止、回来是未启动态
+  （旧「自动恢复画面」结论已随口径作废）；旧 PSB（端点 404/405/`UNSUPPORTED`）的过渡回退路径
+  端到端可用且 `purpose:'internal'` 会话不可见。以上目前只有单测。
 
-### 11.7 已知偏差：工作区级 `stream/subscribe` 尚未适配（2026-11-26，登记为未完成）
+### 11.7 工作区级订阅契约与过渡回退（2026-11-26 已适配）
 
-> 这条是**跨仓契约偏差**，不是设计说明。改动 §11 或验收「远程工作区」页前先读；不得按现状写成
-> 最终设计。
+> 这条记录**新契约事实 + 过渡兜底规则**。曾经的「已知偏差：工作区级订阅未适配」已于 2026-11-26
+> 消除（见 §11.2 / §11.3 / §11.5），不要再把内部 Agent 会话写成最终设计。
 
-**对方要求（PSB 已交付的契约，上线状态以 PSB 部署为准）**：PSB 把「串流 / 工作区读取」定义为**服务接口**——Agent 会话只装
-用户任务（有对话、有转录、出现在会话列表、可停止），服务调用**不应创建任何会话**。工作区级端点
-`POST /api/cindy/remote/workspaces/:workspaceId/stream/subscribe` 解析当前 running 桌面访问会话并返回
-`{ workspaceId, sessionId, streamPath, subscriberId }`（不创建 Agent 会话、不写库）；没有 running 时
-`409` + `details.code = NO_RUNNING_SESSION`（`details.state` ∈ `none` / `starting` / `stopping` /
-`stopped` / `failed`）；**没有 `expiresAt`**（订阅生命周期 = 观看端 WS），桌面访问重建后要按工作区
-重新调一次；并明确要求**删除标题 `Cindy 观看端` 的内部会话逻辑**。字段级正本在 PSB 仓
-`协作需求.md`，稳定摘要见[跨仓契约摘要](../collaboration/psb-remote-workspace-contract.md) §1.6。
+**契约事实（PSB 0.1.172，字段级正本在 PSB 仓 `协作需求.md`，稳定摘要见
+[跨仓契约摘要](../collaboration/psb-remote-workspace-contract.md) §1.3 / §1.6）**：
 
-**当前实现（偏差）**：`adminService.ts` 只在用户显式 `streamStart` 时维护内部观看端会话
-（`createSession({ agentKind:'pi' })`，复用依据是本机记录的 `viewers[workspaceId]`，**不按标题
-认领**；2026-11-26 审查修正见 §11.3），再用它订阅。`streamStatus` / `adminContext` **只借已有
-会话**（内存绑定 / 本机记录 / 活着的用户任务会话）读 `stream/status`，不创建会话、不占用工作区。
-工作区级端点没有接入，`NO_RUNNING_SESSION` 空态也没有消费。
+1. **新端点**：`POST /api/cindy/remote/workspaces/:workspaceId/stream/subscribe`（Bearer 鉴权）。
+   语义是解析该工作区当前 `running` 的**桌面访问会话**（`remote_sessions.id`）并返回
+   `{ workspaceId, sessionId, streamPath?, subscriberId?, expiresAt? }`；**不创建任何 Agent 会话**、
+   不写库。`sessionId` 不是 agent 会话 id。
+2. **没有 running 访问会话**：`409` + `error.details.code = NO_RUNNING_SESSION`
+   （`details.state` ∈ `none` / `starting` / `stopping` / `stopped` / `failed`）+ 一句可行动中文
+   （先 `POST …/access/start`）。订阅**不会**自动拉起访问。其它错误：`401`、`404`（工作区不存在 /
+   不可见）、`403`（看得见但不可管）、`400`（参数形状非法）。Cindy 对这条 409 的解析、跨 IPC 码
+   与 UI 处置见 **§11.8**。
+3. **没有 `expiresAt`**：订阅生命周期 = 观看端 WS 连接，服务端不发票据；桌面访问被重建后按工作区
+   语义重新调一次拿新 id（不要把 `sessionId` 当长期句柄保存——Cindy 只把它当「当前观看绑定」持久化，
+   失效就重新订阅）。
+4. **观看端 WS 与 `stream/status`**：既有路由保持不变，过渡期同时接受 agent 会话 id 与桌面访问
+   会话 id；Cindy 的新代码只用桌面访问会话 id（旧 PSB 回退时才用内部 agent 会话 id）。
+5. **`purpose`（会话用途）**：`POST …/workspaces/:id/sessions` 新增可选字段；省略 = `agent`
+   （用户任务）；`internal` = 接入端服务用途（**默认不进会话列表 / 不计入 `sessionCount`**，
+   详情 / 停止 / 转录照旧）；其它值 PSB 回 400。Cindy 的用户任务路径**从不显式传** `purpose`。
 
-**原因**：该契约在本批观看端落地之后到达；替换横切内部会话的创建 / 复用生命周期、启动前状态读取
-（借内部会话读 `stream/status`）与管理页空态、多份定向测试，未在同一交付内完成，选择先按已知偏差
-交付，而不是只改一半。
+**Cindy 实现要点**：`psbClient.subscribeWorkspaceStream(workspaceId)` 是唯一调用点（解析 DTO，
+缺 `sessionId` 判 `PSB_PROTOCOL`，错误按常规 `PsbClientError` 保留 PSB 可读原因）；
+`adminService` 的状态机见 §11.3；绑定持久化见 §11.5；`viewerSessionId` 字段语义见 §11.3。
 
-**影响**：(1) PSB 会话列表出现用户没发起过的内部会话，并占 1 个观看名额；(2) 与「服务接口不产生
-会话」的模型不一致，PSB 若清理这类会话，Cindy 的认知会漂移；(3) 未消费 `NO_RUNNING_SESSION` 与
-「桌面访问重建后按工作区重订」，可能继续读旧 `sessionId` 直到内部会话重建。**不是**数据安全或权限
-问题：内部会话仍在当前身份下，可见性边界不变。
+**过渡回退（临时止血，不是长期方案）**：仅当订阅端点**不可用**——HTTP 404 / 405 或错误码
+`UNSUPPORTED` / `NOT_IMPLEMENTED` / `ROUTE_NOT_FOUND`（旧 PSB 没有这条路由）——才允许回退到
+「内部 Agent 会话」充当观看端，且必须同时满足：
 
-**迁移条件（按顺序，不要只改一半）**：
+- 创建请求带 `purpose: 'internal'`（PSB 默认不进列表 / 不计入 `sessionCount`；其它值 400）；
+- 标题用 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`（`Cindy 观看端 · 内部串流订阅`），
+  **不伪装成用户任务**；
+- 记 warn 日志（`workspace-level stream subscribe is unavailable; falling back to an internal agent
+  session`），让「用户还在跑旧服务端」可归因。
 
-1. 确认 PSB 端点的上线状态与字段 / 错误码（以 PSB 仓正本与跨仓摘要为准，不要猜 `streamPath` 是否带
-   参数）。
-2. `psbClient` 增加工作区级订阅调用；共享契约补请求 / 响应 DTO 与失败码，`NO_RUNNING_SESSION`
-   映射到页面空态。
-3. `adminService` 用「工作区 → subscribe → 用返回的 `sessionId` 打开观看端」替换内部会话创建 /
-   复用与「借内部会话读 `stream/status`」；`STREAM_STATUS` 的 `viewerSessionId` 改为返回的
-   `sessionId`；删除 `PSB_ADMIN_VIEWER_SESSION_TITLE` 与 `adminRecentStore` 里的 `viewers` 记录 /
-   相关端口。
-4. 补定向测试：不调用 `createSession`、`409 NO_RUNNING_SESSION` 空态、桌面访问重建后重新订阅、停止 /
-   断连清理；同步更新 §11.2 / §11.3 / §11.5（最近使用记录里的会话映射是否还需要）。
-5. 同步产品规则 §2.4 / §6、白名单 WL-30、[跨仓契约摘要](../collaboration/psb-remote-workspace-contract.md)
-   §3.2 与迁移总账 11.43，并删除本偏差条目。
+**其它失败一律不回退**：409 `NO_RUNNING_SESSION`、鉴权、网络、可读业务错误都原样上抛——它们不是
+「端点不存在」，静默建会话只会掩盖真实原因（409 的正确下一步是去 PSB 网页启动桌面访问）。404 的
+歧义由前一步的占用闸门消解：`ensureWorkspaceLocked` 已经确认工作区可见、就绪、由当前身份锁定，
+所以订阅再回 404 只可能是路由不存在；万一工作区真的在这几毫秒内消失，回退建会话同样失败，
+最终错误一致且**不会留下任何会话行**。
 
-**在那之前**：验收时把内部会话当已知偏差登记，不得新增对它的依赖；不要自己拼一条「工作区级订阅」。
+**退出条件**：等旧服务端灰度面收窄后删除回退分支、`PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`
+与 `createRequestId` 依赖，并同步本节与产品规则 §2.4。
+
+### 11.8 订阅 409 `NO_RUNNING_SESSION` 的处置与 `access/start` 入口（2026-11-26 真机）
+
+真机事实：工作区访问未运行时点「启动串流」只显示「串流失败：操作失败，请稍后重试。」——409 的
+`details.code` / `details.state` 没被解析，落进了通用错误。现在分四层处置（产品文案与用户动作见
+[产品规则](../product-rules/psb-remote-workspace-sessions.md) §2.4）：
+
+1. **客户端解析**（`main/remote-workspace/psbClient.ts` 的 `subscribeWorkspaceStream`）：只在订阅这
+   条调用上开 `mapNoRunningSession`，把 `details.code='NO_RUNNING_SESSION'`（或平铺失败外壳
+   `{code,message,details}` 的同名字段；两种 PSB 都出过）解析成
+   `PsbRemoteFailure{ code:'PSB_STREAM_NO_RUNNING_SESSION', streamAccessState, message }`，
+   `message` 取 `error.message` → `details.messageZh` → `details.message` 的顺序；
+   `state` 未知 / 缺省归一 `null`。**其它 409 不进入这条分支**（占用冲突等仍走原映射），
+   防止把别的冲突误标成「去网页启动」。
+2. **跨 IPC 只有 code+message**：`psbIpcCodeForFailure` 按 `streamAccessState` 翻成三条码
+   （共享契约 `PSB_NO_RUNNING_SESSION_IPC_CODES`）：
+   | `details.state` | IPC 码 | 下一步 |
+   | --- | --- | --- |
+   | `none` / `stopped` / `failed` / 未知 | `PSB_STREAM_NO_RUNNING_SESSION` | 去 PSB 网页「远程控制」启动访问 |
+   | `starting` | `PSB_STREAM_ACCESS_STARTING` | 等一会儿（UI 自动重试一次） |
+   | `stopping` | `PSB_STREAM_ACCESS_STOPPING` | 等它落定 |
+   三条不能并成一条：合并会让用户对着「正在启动」去做「去网页启动」这种无效动作。
+3. **尽力拉起访问（可选增强，非闸门）**：`PsbRemoteService.ensureWorkspaceAccess`（`psbClient`
+   实现）＝ `POST /api/remote/workspaces/:id/access/start`（PSB 通用网页接口，幂等 ensure；200/202
+   视为受理）→ 轮询 `GET /api/cindy/remote/workspaces/:id/access` 到 `running`，预算
+   `PSB_ACCESS_POLL_DEFAULT`（6 × 500ms ≈ 3s，可由 `PsbApiDeps.accessPoll` 覆盖，单测用 0ms）。
+   - 结果形状：`{ok:true,state:'running',startedByThisCall}` 或
+     `{ok:false,reason:'cindy-entry-not-open'|'timeout'|'failed',failure}`。**永不抛异常**；
+     403/404/405/`UNSUPPORTED` 归 `cindy-entry-not-open`（白名单未放行 / 旧 PSB）。
+   - 调用点：`adminService.acquireBinding()` 在**订阅之前**调用一次（`PsbAdminRemotePort` 上是
+     **可选**方法，旧装配 / fake 没有它就跳过）。刻意不放在 `streamStart` 开头：重复「启动」复用
+     活绑定时不该多发一条写请求；占用闸门仍排在它之前（先锁工作区，再谈访问起停）。
+   - 路径只由共享契约的 `PSB_WEB_ROUTES.workspaceAccessStart` / `PSB_CINDY_ROUTES.workspaceAccess`
+     提供，`PsbApiDeps.workspaceAccessStartPath` 是唯一的可覆盖点；**不许在别处拼**。
+   - **当前基本拿不到 `ok:true`**：PSB 的 Cindy Bearer 白名单只放行 `/api/cindy/remote/**`，
+     `/api/remote/**` 对 Cindy 恒 403，PSB 台账记「Cindy 入口下一轮加」；所以失败必须非致命，
+     真正的可行动路径仍是订阅 409 + 网页按钮。
+4. **渲染层**：`renderer/features/remote-workspace/psbFailureText.ts` 的
+   `psbStreamAccessFailureNotice` 是唯一映射点（三个 IPC 码 → 本地化文案 + 是否给网页入口 +
+   是否自动重试）；`RemoteWorkspaceAdminConnection` 的失败横幅显示正文 + PSB 中文原话诊断行，
+   `none` 家族给「在网页启动访问」（复用 `openWebWorkspace`），`starting` 自动重试一次
+   （`STARTING_RETRY_DELAY_MS = 2s`，不循环，切工作区 / 卸载 / 用户再次点击都会清掉定时器）。
+
+**验证**：`main/remote-workspace/__tests__/psbClient.test.ts`（各 state 映射、平铺外壳、其它 409
+不误标、ensure 的 200/202/403/404/超时/网络失败）、
+`main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts`（409 各 state 抛新码且不建会话 /
+不落盘 / 不起观看端、ensure 先于订阅且失败不阻断、旧装配无该方法照常启动、占用闸门先于 ensure）、
+`renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`（三档文案、
+网页按钮、诊断行、`starting` 只重试一次、`stopping` 不重试）。
 
 ## 12. 交互输入与全屏捕获（2026-11-26）
 
@@ -1011,8 +1129,8 @@ start / 重连 / stop 全程为空，只有 `sendInput` 会写入 `{kind:'input'
   `4412 → control-lost`（`4409 → quota`、`4001 → session-ended` 本来就有）；
 - `classifyStreamHandshakeClose` 对握手阶段的 4404 归因 `NOT_FOUND`、4413/4412 落
   `PSB_STREAM_NOT_READY`（不把新码错报成「不可达」）；
-- 管理页服务对 `closed.reason === 'session-not-found'` 与 `session-ended` 同样丢掉内部观看端绑定
-  （会话不存在不能继续用，下一步都是重建/重新启动）；
+- 管理页服务对 `closed.reason === 'session-not-found'` 与 `session-ended` 同样丢掉观看端绑定
+  （会话不存在不能继续用，下一步都是重新订阅）；
 - `stream.reject` 文本帧目前按未知文本帧忽略（`handleTextMessage` 只认 `{kind:'status'}` 与
   `{type:'stream.cursor'}`；后者见 §12.9）。启用
   `errors=frame` 时需要在同一处解析它、把 `reasonCode` 并入 `closed.detail`，并给
@@ -1027,8 +1145,8 @@ start / 重连 / stop 全程为空，只有 `sendInput` 会写入 `{kind:'input'
 | 返回 | `void` |
 | 桥方法 | `adminStreamInput({ workspaceId, event })` |
 
-解析链（全部在 main）：`workspaceId → bindings 里的内部观看端会话 → PsbRemoteService.sendStreamInput
-→ streamViewer.sendInput → WS {kind:'input', event}`。**渲染层不传会话 id**：内部观看端会话是
+解析链（全部在 main）：`workspaceId → bindings 里的观看端绑定会话 → PsbRemoteService.sendStreamInput
+→ streamViewer.sendInput → WS {kind:'input', event}`。**渲染层不传会话 id**：绑定会话是
 main 的事实，传进来只会成为可伪造的输入。
 
 **事件校验**（共享纯函数 `validatePsbStreamInputEvent`，IPC handler 在产生任何副作用之前调用）：
@@ -1045,7 +1163,7 @@ main 的事实，传进来只会成为可伪造的输入。
 在这里猜字段只会把合法事件挡在门外。校验失败一律 `INVALID_PARAMS`，message 带具体原因
 （不是先转发再失败）。
 
-**「没有活动观看」的可行动失败**：没有内部观看端绑定（从没启动过）时由 `adminService.streamInput`
+**「没有活动观看」的可行动失败**：没有观看端绑定（从没启动过）时由 `adminService.streamInput`
 抛 `PsbClientError{ code:'PSB_STREAM_NOT_ACTIVE', messageKey:'remoteWorkspace.session.streamIdle' }`；
 绑定存在但 WS 不在 OPEN（已停止 / 断开）时由 `streamViewer.sendInput` 抛同一个失败。跨 IPC 的
 错误码是 **`PSB_STREAM_NOT_ACTIVE`**（`psbIpcCodeForFailure` 单独映射，不要并进
@@ -1073,8 +1191,8 @@ PSB 0.1.170 的正式口径（取代早期「用会话 id 派生」的猜测）�
 
 - `subscriberId` 由**客户端生成 UUIDv4**，一个「观看端（观看会话）」一个；
 - **重连必须复用同一 id**：同 id 重连 = **替换**旧订阅、不占新名额；换 id 才占新名额；
-- 观看名额与浏览器页面**共用**，默认 4（部署级 `PSB_STREAM_MAX_SUBSCRIBERS`）；「Cindy 观看端」
-  内部会话占其中 1 个名额。
+- 观看名额与浏览器页面**共用**，默认 4（部署级 `PSB_STREAM_MAX_SUBSCRIBERS`）；Cindy 的工作区级
+  观看端（桌面访问会话订阅）占其中 1 个名额。
 
 Cindy 侧实现（`streamViewer.ts`）：
 
@@ -1139,8 +1257,7 @@ Cindy 侧实现（`streamViewer.ts`）：
 PSB 0.1.172（2026-11-26）给出的事实，作为当前实现的边界写在这里：
 
 - **名额**：观看名额与浏览器页面**共用**，默认 4（部署级 `PSB_STREAM_MAX_SUBSCRIBERS`）；
-  「Cindy 观看端」内部会话占 1 个（内部会话本身是已知偏差，见 §11.7）；同 `subscriberId` 重连替换
-  旧订阅、不占新名额（§12.3）。
+  Cindy 的工作区级观看端占 1 个；同 `subscriberId` 重连替换旧订阅、不占新名额（§12.3）。
 - **输入权限 = 服务端权限模型（单控制者仲裁已取消）**：有权限的多个观看端**可以同时注入输入**。
   服务端判定：工作区被占用 → 占用人可控制；未被占用 → 已登录用户可控制；其它情况**只丢弃输入**、
   画面照旧。`role` / `takeover` 参数仍被解析（`takeover` 只进审计），`CONTROL_CONFLICT`(4413) /
@@ -1150,7 +1267,8 @@ PSB 0.1.172（2026-11-26）给出的事实，作为当前实现的边界写在�
   `PSB_STREAM_INPUT_MAX_FRAME_BYTES`，渲染层仍需自行节流（见下）。
 - **平台验证面**：Linux（`xdotool`）是 PSB 的生产验证路径；Windows（`SendInput`）尚未做生产
   验证，Windows 远端的输入行为不能按「已验证」承诺。
-- **工作区级 subscribe 端点**：PSB 已交付该端点契约并要求删除内部会话；Cindy 尚未适配（已知偏差，见 §11.7）。
+- **工作区级 subscribe 端点**：PSB 0.1.172 已上线，Cindy 已改用它（§11.7）；会话列表默认只装
+  用户任务。
 
 在此之上，Cindy 侧的已知风险：
 
@@ -1176,8 +1294,8 @@ PSB 0.1.172（2026-11-26）给出的事实，作为当前实现的边界写在�
 - `psbStreamInputEvent.test.ts`：允许的 kind、未知 kind / 非对象 / 不可序列化拒绝、4096 字节边界。
 - `streamCapture.test.ts`：抑制清单（registry + 兜底 + 自救允许清单 + 放行普通输入）、
   改绑即时生效、失焦 / 隐藏 / 页面消失自动恢复、重复调用幂等、进入失败回滚。
-- `psbWorkspaceAdminService.test.ts`：输入按工作区解析到内部观看端会话、高频路径不写盘、
-  无绑定与 WS 断开的可行动失败、`session-not-found` 关闭后丢掉内部观看端绑定。
+- `psbWorkspaceAdminService.test.ts`：输入按工作区解析到观看端绑定会话、高频路径不写盘、
+  无绑定与 WS 断开的可行动失败、`session-not-found` 关闭后丢掉观看端绑定。
 - **真机已通过**：全屏后本机 Ctrl+R / Ctrl+= 不再作用到宿主、真实 Esc 可退出全屏；远端真的收到
   指针 / 键盘 / 滚轮（点击远端编辑器触发原生对话框，见 §12.7）。
 - **真机待验证**：F5/F11/F12 与开发者工具组合的放行、退出全屏后宿主快捷键恢复的完整走查；连续
@@ -1193,10 +1311,11 @@ PSB 0.1.172（2026-11-26）给出的事实，作为当前实现的边界写在�
 
 ### 12.7 真机验收（2026-11-26，测试部署 0.1.167 → 0.1.170）
 
-- **手动启动（2026-11-26 新口径）**：应用重启后进入「远程连接」页，main 在无内部观看端绑定时只读
-  `stream/status`（不订阅、不占名额）；页面保持「串流未启动」，**点「启动」才订阅出画面**；切走页签
-  自动 `adminStreamStop` 释放名额，回来是未启动态。旧「应用重启后自动订阅 / 切回自动重订」结论
-  **已作废**，按新口径复验（见 §11.6 的待复验项）。
+- **手动启动（2026-11-26 新口径，0.1.172 后按工作区级订阅复验）**：应用重启后进入「远程连接」页，
+  main 在没有观看端绑定时**什么都不做**（不订阅、不建会话、不占名额）；页面保持「串流未启动」，
+  **点「启动」才走 `stream/subscribe` 建立绑定并订阅出画面**；切走页签自动 `adminStreamStop`
+  释放名额，回来是未启动态。旧「应用重启后自动订阅 / 切回自动重订」结论**已作废**，按新口径复验
+  （见 §11.6 的待复验项）。
 - **交互输入**：渲染层采集（contain 坐标映射 / 滚轮归一 / 键盘修饰键与 release-all）→ `adminStreamInput`
   → 同一条 viewer WS 发 `{"kind":"input","event":…}`；真机点击远端 Unity 编辑器触发远端原生对话框。
 - **全屏捕获**：`document.fullscreenElement===stage` 时键鼠捕获 + `setAdminStreamCaptureActive(true)`
@@ -1236,7 +1355,7 @@ Cindy 观看端据此让宿主指针随远端内容**变形态**（文本 I-beam
 | 事件 | `PsbStreamEvent{ type:'cursor', sessionId, cursor: PsbStreamCursorShape }`（**加性**变体） |
 | 渲染入口 | `admin/usePsbStreamCursor`（订阅 `onAdminStreamEvent`，按 `viewerSessionId` 过滤；只写 canvas） |
 | CSS | 纯关键字（如 `text` / `ew-resize` / `wait`），由本机指针主题渲染 |
-| 映射 | 共享 `psbStreamCursorKeyword(shape)`；表移植自 PSB 网页 `cursor-shape.ts`（2026-11-26） |
+| 映射 | 共享 `psbStreamCursorKeyword(shape)`；表与 PSB `@psb/shared` 的 `packages/shared/src/stream-cursor.ts` **逐条一致**（PSB 0.1.127，2026-11-26 工作区快照：36 个 CSS 关键字 / 64 条 X11 别名；网页 `cursor-shape.ts` 只是 DOM 落点层） |
 
 **形状 → CSS 关键字**（共享纯函数 `psbStreamCursorKeyword`，渲染层唯一映射点）：
 
@@ -1244,17 +1363,48 @@ Cindy 观看端据此让宿主指针随远端内容**变形态**（文本 I-beam
 2. 归一后本身是合法 CSS 关键字（CSS UI 4 的 cursor 关键字白名单）→ 直接沿用；
 3. 否则查 X11→CSS 别名表（`PSB_STREAM_CURSOR_KEYWORD_BY_X11_NAME`：`xterm→text`、
    `left_side/right_side/sb_h_double_arrow→ew-resize`、`top_side/bottom_side→ns-resize`、
-   `left_ptr/arrow→default`、`watch→wait`、`left_ptr_watch→progress` 等；**表逐条移植自 PSB 网页
-   `remote-clients/stream/cursor-shape.ts`（2026-11-26）**，PSB 侧已上收到 `@psb/shared` 的
-   `stream-cursor.ts`，改动必须与 PSB 同步）；
+   `left_ptr/arrow→default`、`watch→wait`、`left_ptr_watch→progress` 等；**表与白名单逐条对照
+   PSB `@psb/shared` 的 `packages/shared/src/stream-cursor.ts`（PSB 0.1.127，2026-11-26 工作区
+   快照；网页薄层 `cursor-shape.ts` 只负责「写到哪个 DOM 元素」）**，改动必须与 PSB 同批）；
 4. 未知 / 缺 `name` → `default`（箭头，**绝不**回退 `none`：不知道宿主形状时不能让指针消失）；
 5. **形状不合法 → `null`**：调用方保持现状、不写样式（畸形远端数据不能伪造光标，也不能清掉已有形状）。
+
+**映射表来源与漂移检查（CINDY-RW-09，2026-11-26 对齐）**：
+
+- **权威来源**：PSB `@psb/shared` 的 `packages/shared/src/stream-cursor.ts` ——
+  `remoteStreamCursorKeywordOf` / `remoteStreamCursorCssOf` / `remoteStreamCursorStyleOf`；形状边界
+  校验只有 `remote-clients.ts` 的 `normalizeRemoteStreamCursorShape` 一份。Cindy 的
+  `psbStreamCursorKeyword` + 两张表是**只读副本**（不 import PSB 包，不引入跨仓依赖），语义等价于
+  `remoteStreamCursorCssOf(shape)`（默认 `system`，含非法形状 → `null`）。
+- **版本记录**：PSB 源检出根 `package.json` = **0.1.127**（2026-11-26）；对照的
+  `stream-cursor.ts` 在 PSB 工作区**尚未提交**（`git status` `??`，HEAD `edd6d4b`），所以 Cindy
+  注释只能记「PSB 0.1.127 / 2026-11-26 工作区快照」；网页薄层最近提交 `236926e`（2026-11-26）。
+  Cindy 的版本注正在 `apps/desktop/src/shared/psb-remote-workspace.ts` §5b 文件头。PSB 联调记录里
+  出现的 `0.1.17x` 是**部署版本号**（发布流水线/测试环境抬高，不等于源检出 `package.json` 的
+  值），引用版本时写明是「源检出」还是「部署」。
+- **`host` 位图是可选语义**：PSB 共享核心提供 `style: 'host'` 的
+  `url("data:image/png;base64,…") <xhot> <yhot>, auto`（位图 + 热点 + `auto` 兜底）；Cindy 固定
+  `system`（用户 2026-11-26 口径：永远保持宿主指针风格），**不渲染位图**。将来若要做 host 模式，
+  CSS 值必须照共享核心拼，不自行发明格式。
+- **漂移检查方式（PSB 改表 / 升级后）**：逐条对比三处——① `REMOTE_STREAM_CURSOR_CSS_KEYWORDS`
+  白名单；② `REMOTE_STREAM_CURSOR_KEYWORD_BY_X11_NAME` 别名表；③
+  `remoteStreamCursorKeywordOf` 的归一化与回退顺序；再对比形状边界
+  `normalizeRemoteStreamCursorShape`。Cindy 侧跑
+  `shared/__tests__/psbRemoteWorkspaceStreamCursor.test.ts`（含 64 条别名 / 36 个关键字计数与 PSB
+  shared 测试移植用例），PSB 侧跑其 `packages/shared/src/stream-cursor.test.ts`。**两侧条目数与
+  关键期望值必须一致**；表外新增别名由 PSB 先加，Cindy 只跟随。
+- **跟进项**：请 PSB 提供 `stream-cursor.ts` 的**版本化快照**（或发布共享包；PSB 在
+  CINDY-RW-09 第 4 点已表示可以给）。拿到后把 Cindy 的副本改为「对照 pinned 快照的差异测试」，
+  不再靠人工逐条比对；登记见 `docs/collaboration/psb-remote-workspace-contract.md` §2。
 
 **校验**（main 在产生事件前完成，任一字段不合规整条丢弃、只记 debug）：`serial` 为整数 uint32；
 `width/height` 为整数 1..`PSB_STREAM_CURSOR_MAX_SIZE`(64)；`xhot < width`、`yhot < height`（热点允许 0）；
 `imageBase64` 非空、长度 ≤ `PSB_STREAM_CURSOR_MAX_BASE64_LENGTH`(48 KiB)、只含 base64 字符集
 （`A-Za-z0-9+/` + 尾部 `=`）、长度 `% 4 !== 1`；`name` 可选并截断到
-`PSB_STREAM_CURSOR_MAX_NAME_LENGTH`(64)。
+`PSB_STREAM_CURSOR_MAX_NAME_LENGTH`(64)。**这是 Cindy 自己的协议边界，与共享核心的边界校验不是
+逐字相同**（Cindy：热点须严格小于尺寸、`name` 超长截断、不要求 PNG magic 前缀；PSB：允许
+`xhot === width`、`name` 超长整条拒绝、要求 PNG 前缀）——这些差异只影响「帧收不收」，不影响被
+接受形状的映射值；映射本身逐条一致。PSB 若改这些边界，仍按本节「当前跨仓依赖」双方同步。
 
 **当前跨仓依赖（变更需双方同步）**：Cindy **只用 `name`**，但解析器仍**强制要求并校验**
 `imageBase64` / `width` / `height` / `xhot` / `yhot`（协议边界，也是未来显式 host 位图降级模式的唯一
@@ -1292,12 +1442,13 @@ canvas 会收到一次伪造的 `pointerleave`，只按边界事件会在整个�
 **验证方式**：
 
 - `shared/__tests__/psbRemoteWorkspaceStreamCursor.test.ts`：合法帧、尺寸/热点/长度/base64 字符集/
-  serial 非法拒绝、映射表逐条断言、大小写/横线归一、未知/缺 name → `default`、非法形状 → `null`、
-  输出不含 `url("data:image/png`；
+  serial 非法拒绝、**PSB shared `stream-cursor.test.ts` 移植的同一形状同一 CSS（四类验收场景、X11
+  别名、大小写/空白/横线归一、未知/缺 name → `default`、映射表只输出合法关键字）**、映射表
+  64 条别名 / 36 个关键字计数、非法形状 → `null`、输出不含 `url("data:image/png`；
 - `main/remote-workspace/__tests__/streamViewer.test.ts`：cursor 文本帧 → `{type:'cursor'}`、
   连续同 serial 去重、**serial 回退照常 emit**、非法/超限只丢自己、`stop` → `start` 重置去重状态、
   文本帧不进入二进制帧路径；
-- `main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts`：管理页只转发内部会话的 cursor
+- `main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts`：管理页只转发观看端绑定会话的 cursor
   事件（用户任务会话不串通道、无管理页状态映射）；
 - `renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`：进入画面
   才写关键字、移出立即恢复、重新进入用缓存形状、拖拽捕获期间（canvas 收到伪造 pointerleave /
@@ -1335,12 +1486,14 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
    → 失败不建会话、不落库，直接给 `PSB_WORKSPACE_OCCUPIED_BY_OTHER`（带人名）等可行动码。
    发送前透明重建（§6.1）的建会话走同一个服务方法，因此**重绑路径同样被闸门覆盖**，没有第二条
    绕过路径。
-2. **启动串流**：`adminService.streamStart()` 在复用/建内部观看端会话与订阅之前
-   `remote().ensureWorkspaceLocked(workspaceId)` → 失败不建内部会话、不建立订阅。只读的
-   `streamStatus` / `adminContext` 不受此限（读状态不是工作区写入，且现在**不会**创建会话，
-   见 §11.2）。会话级 `PSB_REMOTE_CHANNELS.STREAM_START`（当前无渲染层消费方）同样在
-   `service().startStream()` 之前调 `ensureWorkspaceLockedForSession(sessionId)`：它不能成为
-   绕过占用检查的第二条路径。
+2. **启动串流**：`adminService.streamStart()` 在工作区级订阅（或旧 PSB 的过渡回退建会话）与起观看
+   端之前 `remote().ensureWorkspaceLocked(workspaceId)` → 失败不订阅、不建会话、不建立观看连接。
+   订阅前还会**尽力**调用一次 `ensureWorkspaceAccess`（**可选增强、不是闸门**：403/404/超时都不
+   阻断，见 §11.8），顺序是「占用闸门 → 尽力拉起访问 → 订阅」。
+   只读的 `streamStatus` / `adminContext` 不受此限（读状态不是工作区写入，且**不会**订阅或创建
+   会话，只借已有绑定 id，见 §11.2）。会话级 `PSB_REMOTE_CHANNELS.STREAM_START`（当前无渲染层
+   消费方）同样在 `service().startStream()` 之前调 `ensureWorkspaceLockedForSession(sessionId)`：
+   它不能成为绕过占用检查的第二条路径。
 3. **每次发送**：`makerSendTransaction.sendToAgentAccepted` 在 `ensureRemoteReadyForSessionStart`
    （进 lazy-create/隧道）**之前**调用 `deps.preparePsbWorkspaceLock(sessionId)`；`register.ts`
    的实现按会话行的 `remoteHostId` 定位 `psb:<id>`，再走
@@ -1382,6 +1535,86 @@ if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB �
 `remoteWorkspace.*`）：否则通用通道会让用户看到裸的 Electron 包装串
 （`Error invoking remote method …`）。
 
+### 13.5 占用 / 释放时的版本控制检查（CINDY-RW-10，2026-11-26 20:4x 再更正）
+
+PSB 在**占用 / 解除占用的那一刻**做版本控制检查（P4 会完整执行 `p4 reconcile`，git 读工作区状态）。
+Cindy 只消费服务端结论、不自己跑 VCS；两代服务端形态**并存**，同一套 store / 组件承接：
+
+| 形态 | 何时 | Cindy 行为 |
+| --- | --- | --- |
+| **0.1.180 advisory（主路径）** | 占用 / 释放**成功**（2xx）且 `data.vcs.dirty:true`、`advisory:true` | **非阻塞提示**（全局横幅 / 页内条）：显示 `messageZh` + `projects` 摘要，给「查看详情 / 一键清理 / 继续」。操作已经成功，不把提示做成错误。 |
+| **旧版 409（兼容路径，<0.1.180）** | 占用 / 释放返回 `409 WORKSPACE_VCS_*` + `error.details.vcs` | 操作未生效：按错误处置（`retry` / 旧 `revert-*`），**不删**这条路径（用户可能连着旧部署）。 |
+
+**没有 force 分支**：旧 `force-release` 已删除；`actions` 里即使出现也不会渲染按钮、不会执行，
+路径里的 `force` 查询参数在执行前被拒。
+
+#### 13.5.1 数据流与安全边界
+
+- `psbClient` 解析：2xx 用 `readAdvisoryWorkspaceVcs`（`data.vcs` / 工作区行内嵌 `vcs`）；
+  409 用 `psbFailureFromResponse` 把 `details.vcs` 挂到 `PsbRemoteFailure.vcs`。
+  `message` 缺省时用 `vcs.messageZh` 兜底（PSB 的 `error.message` 常为空）。
+- **IPC 只能带 code+message**：`details.vcs` 的 `projects` / `actions` 跨不了 invoke 失败。因此
+  `main/remote-workspace/index.ts` 在占用 / 释放（含发送前自动占用与启动串流闸门）拿到 notice 后
+  **先写有界缓存（≤32，LRU）再广播** `psb-remote:workspace-vcs-notice`；成功占用 / 释放 / 清理 /
+  继续后广播 `notice:null` 撤掉提示。渲染层另有 `workspaceVcsNotice` 兜底读（推送与 invoke
+  失败到达顺序不可依赖）。
+- 渲染层**只传 kind**（`runWorkspaceVcsAction`），method / path / body 一律由 main 从缓存里的
+  服务端 notice 取，并用 `main/remote-workspace/vcsNotice.ts` 校验：路径必须以
+  `/api/cindy/remote/workspaces/<同一 workspaceId>/` 开头，禁绝对 URL / `..` / 反斜杠 / `#` /
+  控制字符 / `force` 查询参数；body 只接受 `revert` / `projectIds` / `confirm`（多余键整条 action
+  丢弃）；kind 与 method 必须匹配；`continue` 不允许带请求形状。
+- 不可逆动作（`clean-workspace` / `revert-*`）**二次确认**：渲染层弹确认（列 projects / changes、
+  写明删除新增 / 还原修改 / Git 切回默认分支、不可撤销），main 还要求 `confirm:true`（IPC 被绕过
+  也不能凭一个 kind 触发还原）。
+- **`clean-workspace` 是 202 异步**：响应带 `operationId` 时展示「清理已开始」+ 刷新按钮，调用
+  既有 `refreshWorkspaces` 重新读工作区；**不猜轮询端点**（服务端没给就不新增未约定请求）。
+
+#### 13.5.2 接入点与测试
+
+占用 / 释放入口全部经服务层收敛：工作区弹窗 / 草稿页工作区选择（`occupyWorkspace`）、管理页页头
+占用/释放、发送前自动占用（`workspaceLock` 的 occupy 端口）、启动串流与新建会话的
+`ensureWorkspaceLocked`。自动占用产生的 advisory 也广播（operation=`ensure`）。
+
+定向测试：`apps/desktop/src/shared/__tests__/psbWorkspaceVcs.test.ts`（形状 / 白名单 / advisory
+读取）、`main/remote-workspace/__tests__/vcsNotice.test.ts`（路径 / body / 缓存安全边界）、
+`main/remote-workspace/__tests__/psbRemoteVcsService.test.ts`（advisory 广播、旧 409 兼容、
+clean 确认 / 202、continue、inspect）、`renderer/features/remote-workspace/vcs/__tests__/`
+（store 推送 / 兜底读、View 的确认取消与确认、force-release 不渲染、旧形态 retry）。
+
+**需 PSB 补的联调样本**：`revert-then-release` 已取消，但旧版 409 的 `revert-then-*` 与
+`clean-workspace` 202 的 `operationId` 之后的**刷新/轮询端点**都还没有最终形状；拿到后改
+「清理已开始 → 自动刷新」并在本文件登记。
+
+#### 13.5.3 渲染层挂载点与接线（2026-11-26 集成接线）
+
+通知由 main 广播、渲染层 store（`vcs/vcsNoticeStore.ts`）承接；**同一份通知在三个 UI 位置
+呈现**，各自只负责展示与处置，不解析 method/path/body（动作只按 kind 走 `runWorkspaceVcsAction`）：
+
+| 挂载点 | 形态 | 数据与行为 |
+| --- | --- | --- |
+| `renderer/App.tsx`（主窗、`ConfirmDialogProvider` 内） | `WorkspaceVcsNoticeHost`：右上悬浮横幅（`variant="banner"`，非阻塞；外层 `pointer-events-none`） | 订阅 `onWorkspaceVcsNotice`，显示**最近一条**；`requestConfirm` 接宿主 `useConfirmDialog`，`notice:null`（成功占用 / 释放 / 清理 / 继续后）自动撤下。`!isSecondaryWindow() && !isSidebarWindow()`：副窗 / 侧栏子窗不挂，不重复弹。 |
+| `admin/RemoteWorkspaceAdminPanel.tsx` › 版本控制分类 | `WorkspaceVcsNoticeView variant="inline"` | `useWorkspaceVcsNotice(context.workspaceId)`（挂载 / 换工作区时兜底读 main 缓存）；有通知时替换占位空态，没有时保留原「后续提供」空态。`clean-workspace` 202 被接受后页面重读一次 `adminContext`。 |
+| `admin/RemoteWorkspaceAdminActions.tsx` 页头占用 / 解除占用 | 无独立 UI | 动作成功后 `hydrateWorkspaceVcsNotice(workspaceId)` 兜底读一次（推送已覆盖时幂等；页头保持单行 ≤40px，不加提示条）。 |
+| `dialog/RemoteWorkspacePickerDialog.tsx` | `WorkspaceVcsNoticeView variant="inline"`（弹窗底部、错误条上方） | 占用失败（旧版 409）后 `hydrateWorkspaceVcsNotice` 并在弹窗内就地展示；占用成功带 advisory 时同样兜底读，但弹窗随即关闭，提示由全局宿主 / 管理页继续展示。 |
+| `draft/PsbWorkspacePicker.tsx`（草稿页项目胶囊下拉） | 同上（行列表下方） | 选中即占用：失败后原地展示通知与处置动作，占用仍**不选中**；成功时兜底读（提示交给全局宿主）。 |
+| 发送前自动占用 / 放弃草稿释放 | 无单独 UI | main 在 `workspaceLock` 的 occupy 端口（operation=`ensure`）与 `releaseWorkspace`（operation=`release`）同样缓存 + 广播，全局宿主覆盖；**不弹 modal**，释放失败不阻塞离开但不会静默。 |
+
+不可逆动作的**二次确认在宿主挂载时是两道**：先 View 内置确认区（列 projects / changes /
+不可撤销说明），再宿主 `ConfirmDialogProvider` 确认框；两者都确认后才发
+`{ kind, confirm: true }`。缺 `requestConfirm` 的裸渲染环境（单测 / Story）只有内置两步确认。
+
+接线测试（同一批）：
+`renderer/features/remote-workspace/vcs/__tests__/WorkspaceVcsNoticeHost.test.tsx`（推送订阅、
+宿主确认框确认 / 取消、`notice:null` 撤下）、`admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`
+（版本控制分类 inline advisory、二次确认后 `runWorkspaceVcsAction`、继续关闭、页头动作后
+hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
+`draft/__tests__/PsbWorkspacePicker.test.tsx`（占用失败兜底读 + inline 通知、成功路径 hydrate）。
+
+**已知边界**：View 的「继续」只清渲染层 store（不发请求），main 的缓存仍保留到下一次占用 /
+释放 / 清理；其它窗口或重新挂载后再兜底读可能让同一条 advisory 再出现。要彻底消掉需要让
+`continue` 走一次 `runWorkspaceVcsAction`（main 已有清缓存分支），属于 VCS 核心逻辑改动，
+不在本轮接线范围。
+
 ## 14. 独立审查阻断项修复（2026-11-26，实现事实）
 
 一次性独立审查在 PSB 这一块拦下 9 个阻断项，本批逐条修复（每项都有定向测试；真机复测点见末尾）：
@@ -1395,8 +1628,8 @@ if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB �
 | 5 | `remoteHostOwnsCwd` 只在 `maker-ipc/register.ts` 一个 funnel 打标，Goal 恢复 / IM / hook-control 冷启动漏标 | 判定下沉到 maker-core `lifecycleHooks.prepareStartOptions`（所有 `createSession` 必经），用唯一分类器 `remoteSessionHostOwnsCwd`（`remote-session-routing.ts` ← `classifyRemoteSessionTransport`）；register 不再重复打标。`remote-session-routing.test.ts` 钉矩阵 |
 | 6 | `psb:<sessionId>` 的 codex 控制隧道只靠流 close 清缓存，psb 会话停止 / 重绑后残留长连接 | 新增 `releaseTunnelCodexControlChannel(remoteHostId)`（`end()` + 清缓存，幂等），PSB data-plane transport 终态时调用（`McprCodexTransportOptions.onClosed`）；`mcprCodexCapability.test.ts` 钉「释放一次 → 缓存清空 → 下次 hello 重开」与幂等；PSB 代关假设写在函数注释里，实现不依赖 |
 | 7 | `pi-mcpr-remote.ts` 第三次手写 `startsWith(PSB_REMOTE_HOST_PREFIX)` 判 cwd 归属 | 改用 `remoteSessionHostOwnsCwd`（同 #5 的唯一判据），本文件不再 import 前缀常量 |
-| 8 | `adminContext` / `adminStreamStatus` 在无内部会话时**新建 PSB 会话**读状态；写前占用闸门落地后等于「打开页签就静默占用空闲工作区」 | 读路径只借已有会话（内存绑定 → 本机记录里的观看端 id → 活着的用户任务会话），三条都没有返回 `null`；`psbWorkspaceAdminService.test.ts` 钉「不创建会话、`lockChecks` 为空」 |
-| 9 | 内部观看端按标题前缀 `Cindy 观看端` 认领 `listSessions`，可能认到别人的会话 | 复用只认本机持久化的 `viewers[workspaceId]`（`adminRecentStore.ts`，容量 16、幂等写）；没有记录就新建，不认领陌生标题。`isPsbAdminViewerSessionTitle` 删除（标题只剩展示作用） |
+| 8 | `adminContext` / `adminStreamStatus` 在无内部会话时**新建 PSB 会话**读状态；写前占用闸门落地后等于「打开页签就静默占用空闲工作区」 | 读路径只借已有绑定 id（内存绑定 → 本机记录 `desktopSessions`），没有绑定返回 `null`；**2026-11-26 后续**：绑定改为工作区级 `stream/subscribe` 返回的桌面访问会话，读路径连「用户任务会话」也不再借；`psbWorkspaceAdminService.test.ts` 钉「不订阅、不创建会话、`lockChecks` 为空」 |
+| 9 | 内部观看端按标题前缀 `Cindy 观看端` 认领 `listSessions`，可能认到别人的会话 | 只认本机持久化的绑定记录（`adminRecentStore.ts`，容量 16、幂等写），不认领陌生标题；**2026-11-26 后续**：该记录改为 `desktopSessions`（桌面访问会话），内部 Agent 会话只在旧 PSB 过渡回退时存在且带 `purpose:'internal'` |
 
 **同批的 P2（低成本项）**：streamViewer `4008` 归因为稳定 token `heartbeat-timeout`；二进制帧
 16 MiB 上限（超限丢弃 + 只告警一次）与 HTTP 响应 4 MiB 上限（超限 `PSB_PROTOCOL`、不重试）；
@@ -1412,7 +1645,8 @@ if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB �
 `readyFrame=true` 与服务端首帧时间）；② PSB codex 会话启动后 `thread/start` / `turn/start` 不带
 `/psb-remote/` 与本机目录（main 日志或远端 app-server 日志）；③ Goal 恢复 / IM 冷启动的 psb
 codex 任务同样不带虚拟 cwd；④ psb 会话停止 / 重绑后该会话不再有活动的 `mode=cc-mgr` 控制隧道；
-⑤ 打开「远程工作区」页签**不**创建 PSB 会话、不产生占用；点「启动」才出现 `Cindy 观看端` 会话，
+⑤ 打开「远程工作区」页签**不**订阅、**不**创建 PSB 会话、不产生占用；点「启动」才走工作区级
+`stream/subscribe` 并出现画面（PSB 会话列表不再出现「Cindy 观看端」行，`sessionCount` 不增加），
 重启后再打开能靠本机记录读到状态。
 
 **PSB codex 真机回合在修复后的代码上未验证**：历史 11-26 上午的 codex 真机结论属于修复前代码；

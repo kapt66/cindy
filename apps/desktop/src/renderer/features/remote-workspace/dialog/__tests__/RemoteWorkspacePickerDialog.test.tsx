@@ -6,6 +6,9 @@
  *   通过 `window.electronAPI.psbRemote` 注入 PSB 桥，断言用户能看到的结果：**不出现任何
  *   引擎选择控件**、确认时只占用工作区且**不创建 PSB 会话**、占用失败不回调、不可用行禁用
  *   并给出占用人、新建工作区成功后出现在列表里并被选中、连续点击只占用一次。
+ * - 版本控制检查通知（CINDY-RW-10）：占用成功后的 advisory 兜底读一次；占用被旧版 409 拒绝时，
+ *   弹窗把 main 缓存的通知以内联形态（`variant="inline"`）展示并与错误一起可行动，不新增一套
+ *   文案 / 路径拼接（动作只按 kind 走 `runWorkspaceVcsAction`）。
  * - Bug／规则依据：产品口径 2026-11-25（新建远程工作区只选/建工作区，Harness 与模型在草稿页
  *   按既有链路选）+ docs/product-rules/psb-remote-workspace-sessions.md §2.2（占用失败不留在
  *   草稿里；不可用行仍显示并给出原因）。
@@ -30,7 +33,9 @@ import type {
   PsbListWorkspacesResult,
   PsbProjectTemplate,
 } from '../../../../../shared/psb-remote-workspace';
+import type { WorkspaceVcsNotice } from '../../../../../shared/psb-workspace-vcs';
 import { RemoteWorkspacePickerDialog } from '../RemoteWorkspacePickerDialog';
+import { resetWorkspaceVcsNoticeStoreForTest } from '../../vcs/vcsNoticeStore';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -62,6 +67,10 @@ interface FakeBridge {
   streamInput: ReturnType<typeof vi.fn>;
   onStreamEvent: ReturnType<typeof vi.fn>;
   onWorkspaceChanged: ReturnType<typeof vi.fn>;
+  /** 版本控制检查通知（CINDY-RW-10）：推送 / 兜底读 / 动作。 */
+  workspaceVcsNotice: ReturnType<typeof vi.fn>;
+  onWorkspaceVcsNotice: ReturnType<typeof vi.fn>;
+  runWorkspaceVcsAction: ReturnType<typeof vi.fn>;
 }
 
 function makeWorkspace(overrides: Partial<PsbRemoteWorkspace>): PsbRemoteWorkspace {
@@ -129,6 +138,9 @@ function installBridge(overrides: Partial<FakeBridge> = {}): FakeBridge {
     streamInput: vi.fn(),
     onStreamEvent: vi.fn(() => () => undefined),
     onWorkspaceChanged: vi.fn(() => () => undefined),
+    workspaceVcsNotice: vi.fn(async () => ({ workspaceId: 'workspace-1', notice: null })),
+    onWorkspaceVcsNotice: vi.fn(() => () => undefined),
+    runWorkspaceVcsAction: vi.fn(),
     ...overrides,
   };
   (window as unknown as { electronAPI?: { psbRemote?: FakeBridge } }).electronAPI = {
@@ -150,8 +162,32 @@ function readyOccupy(workspace: PsbRemoteWorkspace): PsbOccupyWorkspaceResult {
   return { workspace: { ...workspace, occupancy: { occupied: true, byMe: true, personId: 'me', personName: '我', occupiedAt: 1 } } };
 }
 
+/** 旧版 PSB（<0.1.180）409 携带的版本控制检查通知：`advisory:false` = 操作被拒。 */
+const LEGACY_VCS_NOTICE: WorkspaceVcsNotice = {
+  code: 'WORKSPACE_VCS_DIRTY',
+  advisory: false,
+  messageZh: '工作区有未提交修改：1 个检出',
+  dirty: true,
+  projects: [{ projectId: 1, pathInWorkspace: '.', kind: 'p4', changes: 3 }],
+  actions: [
+    {
+      kind: 'inspect-vcs',
+      method: 'GET',
+      path: '/api/cindy/remote/workspaces/workspace-1/vcs',
+      descriptionZh: '查看详情',
+    },
+    {
+      kind: 'retry',
+      method: 'POST',
+      path: '/api/cindy/remote/workspaces/workspace-1/vcs/check',
+      descriptionZh: '重试检查',
+    },
+  ],
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  resetWorkspaceVcsNoticeStoreForTest();
 });
 
 afterEach(() => {
@@ -179,6 +215,10 @@ describe('RemoteWorkspacePickerDialog', () => {
       directoryName: 'saga2_design',
     });
     expect(bridge.occupyWorkspace).toHaveBeenCalledTimes(1);
+    // 0.1.180：占用成功可能带 advisory（检出脏）→ 兜底读一次（推送已覆盖时幂等）。
+    await waitFor(() =>
+      expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
+    );
     // 产品口径：弹窗不建 PSB 会话（引擎/模型在草稿页选）。
     expect(bridge.createSession).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
@@ -302,7 +342,11 @@ describe('RemoteWorkspacePickerDialog', () => {
     expect((screen.getByTestId('psb-start-session') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('labels workspace rows as client-短id, keeping the template name as secondary text', async () => {
+  /**
+   * 显示名口径（2026-11-26 用户实机反馈，取代 2026-11-25 的「机器-短 id」）：行主标题直接显示
+   * **工作区名称**，机器-短 id 只在名称缺失时兜底；次要行单行去重（目录与名称同名时退回机器名）。
+   */
+  it('labels workspace rows with the workspace name, keeping directory/machine as secondary text', async () => {
     installBridge({
       listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({
         workspaces: [
@@ -312,20 +356,29 @@ describe('RemoteWorkspacePickerDialog', () => {
             clientName: '打包机',
             directoryName: 'saga2_project',
           }),
+          // 名称与目录不同：次要行继续显示目录。
+          makeWorkspace({
+            id: 'aa11bb22cc33',
+            title: '我的项目',
+            clientName: '打包机',
+            directoryName: 'saga2_design',
+          }),
         ],
       })),
     });
     renderDialog();
     const row = await screen.findByTestId('psb-workspace-row-9c747178aabbccdd');
-    // 主标题 = 客户端名-短 id；模板名/标题不再与目录名重复渲染（次要行只一行「目录」）。
-    expect(row.textContent).toContain('打包机-9c747178…');
-    // 前缀是 i18n key（12 locale 各自翻译），目录名作为占位符值传入，不再写死中文。
-    expect(row.textContent).toContain(
-      'remoteWorkspace.dialog.directorySecondary#saga2_project',
-    );
-    expect(row.textContent).not.toContain('目录：');
+    // 主标题 = 工作区名称（`title` 属性仍是完整 id，悬停可取）；名称与目录同名时不重复渲染。
+    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project');
+    expect(row.textContent).toContain('打包机');
+    expect(row.textContent).not.toContain('remoteWorkspace.dialog.directorySecondary');
     expect(row.textContent?.match(/saga2_project/g) ?? []).toHaveLength(1);
-    expect(row.querySelector('[title="9c747178aabbccdd"]')).toBeTruthy();
+
+    const renamed = screen.getByTestId('psb-workspace-row-aa11bb22cc33');
+    expect(renamed.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
+    // 前缀是 i18n key（12 locale 各自翻译），目录名作为占位符值传入，不再写死中文。
+    expect(renamed.textContent).toContain('remoteWorkspace.dialog.directorySecondary#saga2_design');
+    expect(renamed.textContent).not.toContain('目录：');
   });
 
   it('opens directly on the create tab when the draft-page channel entry asks for it', async () => {
@@ -341,6 +394,47 @@ describe('RemoteWorkspacePickerDialog', () => {
     // 渠道内「新建远程工作区」必须直接落在新建表单，而不是让用户再点一次页签。
     expect(await screen.findByTestId('psb-workspace-create-form')).toBeTruthy();
     expect(screen.queryByTestId('psb-workspace-list')).toBeNull();
+  });
+
+  /**
+   * 版本控制检查通知（CINDY-RW-10）：旧版 409 拒绝占用时，main 已缓存 + 广播通知；推送可能
+   * 还没到，弹窗兜底读一次并以内联形态展示「查看详情 / 重试检查」等可行动作。用户不会只看到
+   * 一句「操作失败」而不知道清理入口在哪。
+   */
+  it('hydrates the legacy 409 notice and shows it inline when occupying is rejected', async () => {
+    const workspace = makeWorkspace({});
+    const bridge = installBridge({
+      listWorkspaces: vi.fn(async (): Promise<PsbListWorkspacesResult> => ({
+        workspaces: [workspace],
+      })),
+      occupyWorkspace: vi.fn(async () => {
+        throw Object.assign(new Error('[WORKSPACE_VCS_DIRTY] 工作区有未提交修改'), {
+          code: 'WORKSPACE_VCS_DIRTY',
+          message: '工作区有未提交修改',
+        });
+      }),
+      workspaceVcsNotice: vi.fn(async () => ({
+        workspaceId: 'workspace-1',
+        notice: LEGACY_VCS_NOTICE,
+      })),
+    });
+
+    const { onCreated } = renderDialog();
+    fireEvent.click(await screen.findByTestId('psb-workspace-row-workspace-1'));
+    fireEvent.click(screen.getByTestId('psb-start-session'));
+
+    await waitFor(() => expect(bridge.occupyWorkspace).toHaveBeenCalledTimes(1));
+    // 兜底读：推送不可靠时也能把通知拉进弹窗。
+    await waitFor(() =>
+      expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
+    );
+    const inline = await screen.findByTestId('workspace-vcs-notice');
+    expect(inline.dataset['variant']).toBe('inline');
+    expect(inline.dataset['advisory']).toBe('false');
+    expect(inline.textContent).toContain(LEGACY_VCS_NOTICE.messageZh);
+    expect(inline.textContent).toContain('重试检查');
+    // 占用失败不回调父级（不带着未占用的工作区进草稿）。
+    expect(onCreated).not.toHaveBeenCalled();
   });
 
   it('连续点击只发起一次占用与一次回调', async () => {

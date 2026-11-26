@@ -12,6 +12,14 @@
  * **不建 PSB 会话**：会话在草稿页首条消息发送时懒创建（引擎取草稿当时的 Harness），
  * 失败不建本地会话、重试复用同一条。这样弹窗与引擎/模型解耦，草稿页完全走原有链路。
  *
+ * ## 版本控制检查通知（CINDY-RW-10）
+ *
+ * 占用被旧版 409 `WORKSPACE_VCS_*` 拒绝、或 0.1.180 成功响应附带 advisory（检出脏）时，main
+ * 会把通知缓存后广播。弹窗在占用失败后兜底读一次（`hydrateWorkspaceVcsNotice`），并以内联
+ * 形态（`WorkspaceVcsNoticeView variant="inline"`）展示「查看详情 / 一键清理 / 继续」或旧版
+ * 「重试 / 还原」；成功的 advisory 在弹窗关闭后由全局宿主 / 管理页继续展示。渲染层不解析
+ * method/path/body，动作只按 kind 走 `runWorkspaceVcsAction`。
+ *
  * ## 为什么要自己守「请求在途」
  *
  * 占用与建工作区都不可幂等重放的代价很高：占用双击会变成「自己抢自己」的 409。Busy 用
@@ -21,7 +29,7 @@
  * §10（语义 token、双模式）；文案全部走 `remoteWorkspace.dialog.*` / `remoteWorkspace.error.*`。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useTranslation } from 'react-i18next';
 import { Check, CircleAlert, Lock, RefreshCw } from 'lucide-react';
@@ -43,6 +51,8 @@ import {
 } from '../../../../shared/psb-remote-workspace';
 import { tryGetPsbRemoteBridge } from '../bridge';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
+import { hydrateWorkspaceVcsNotice, useWorkspaceVcsNotices } from '../vcs/vcsNoticeStore';
+import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 import {
   psbWorkspaceCreatedPayload,
   psbWorkspaceRowDisplayName,
@@ -126,6 +136,17 @@ export function RemoteWorkspacePickerDialog({
   const [clientId, setClientId] = useState('');
   const [templateKey, setTemplateKey] = useState('');
   const [title, setTitle] = useState('');
+  /**
+   * 本次占用尝试的工作区 id：占用失败（旧版 409）后用它把 main 缓存的版本控制通知拉进
+   * store，并在弹窗内以内联形态展示（「查看详情 / 一键清理 / 继续」/ 旧版重试）。
+   * 只在一次尝试后设置，不给列表里的每个工作区各读一次通知。
+   */
+  const [vcsNoticeWorkspaceId, setVcsNoticeWorkspaceId] = useState<string | null>(null);
+  const vcsNoticeStates = useWorkspaceVcsNotices();
+  const vcsNotice = useMemo(
+    () => vcsNoticeStates.find((entry) => entry.workspaceId === vcsNoticeWorkspaceId) ?? null,
+    [vcsNoticeStates, vcsNoticeWorkspaceId],
+  );
 
   const busy = submit !== 'idle';
   // 同步守卫：busy 的禁用态要等下一帧渲染，双击/回车连发必须靠 ref 立刻拒绝。
@@ -191,6 +212,7 @@ export function RemoteWorkspacePickerDialog({
     setClientId('');
     setTemplateKey('');
     setTitle('');
+    setVcsNoticeWorkspaceId(null);
     void refreshWorkspaces();
     void loadStatus();
   }, [initialTab, loadStatus, open, refreshWorkspaces]);
@@ -275,13 +297,21 @@ export function RemoteWorkspacePickerDialog({
     if (!psbWorkspaceRowHealth(workspace).canStartSession) return;
     if (!lockSubmit('occupy')) return;
     setActionError(null);
+    setVcsNoticeWorkspaceId(null);
     try {
       // 占用成功后父级会关闭弹窗并导航/换目标；这里只回工作区级事实。
       await bridge.occupyWorkspace({ workspaceId: workspace.id });
+      // 0.1.180：成功响应可能带 advisory（检出脏）→ main 已广播；兜底读一次，避免推送与
+      // invoke 返回的先后竞争（弹窗随即关闭，提示由全局宿主 / 管理页继续展示）。
+      void hydrateWorkspaceVcsNotice(workspace.id);
       onCreated(psbWorkspaceCreatedPayload(workspace));
       onOpenChange(false);
     } catch (error) {
       const failure = readPsbFailure(error);
+      // 旧版 409 兼容：main 把 `details.vcs` 缓存并广播后重抛；这里兜底读一次并在弹窗内
+      // 以 inline 形态展示通知与处置动作（「继续」关提示、旧版「重试 / 还原」可执行）。
+      setVcsNoticeWorkspaceId(workspace.id);
+      void hydrateWorkspaceVcsNotice(workspace.id);
       // 409 占用：刷新列表，让「谁抢走了」从工作区行（occupancy.personName）取，
       // 并把占用人补进错误文案；刷新本身也会重画禁用态。
       let enriched = failure;
@@ -639,6 +669,17 @@ export function RemoteWorkspacePickerDialog({
               </div>
             )}
           </div>
+
+          {vcsNotice ? (
+            <div className="mt-3 shrink-0" data-testid="psb-workspace-vcs-notice-slot">
+              <WorkspaceVcsNoticeView
+                workspaceId={vcsNotice.workspaceId}
+                notice={vcsNotice.notice}
+                operation={vcsNotice.operation}
+                variant="inline"
+              />
+            </div>
+          ) : null}
 
           {actionError ? (
             <div className="mt-3 shrink-0">

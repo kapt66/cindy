@@ -8425,12 +8425,14 @@ WL-11 代码锚点与 `meka-injection-layer.md` §3.3，白名单覆盖现状是
    单行页头（名称 → 模板 · 机器 → 占用，≤40px）+ 三分类（远程连接 / 版本控制 / 设置）+ 手动
    启动 / 停止 / 详情浮层 / 串流信息 HUD / 极简全屏 / 停止清屏；输入仲裁改由 **PSB 0.1.172 权限
    模型**判定（`role` / `takeover` 单控制者仲裁已取消），Cindy 默认允许交互并在失焦 / 退出全屏 /
-   断连时补发 release-all。**读状态不建会话、不占用工作区**（2026-11-26 独立审查修正）：打开
-   页签 / `adminContext` / `adminStreamStatus` 只借已有会话做只读 HTTP，没有可借会话时
-   `desktopSession` 就是未知；内部观看端复用只认本机持久化的 `viewers[workspaceId]`，**不按标题
-   认领** `listSessions` 里可能属于别人的会话。**内部「Cindy 观看端」Agent 会话是已知偏差**：
-   PSB 已要求改用工作区级 `POST /api/cindy/remote/workspaces/:id/stream/subscribe` 并删除该内部
-   会话，Cindy 尚未适配；原因 / 影响 / 迁移条件见工程契约 §11.7，本批不把它当最终设计。
+   断连时补发 release-all。**读状态不订阅、不建会话、不占用工作区**：打开页签 / `adminContext` /
+   `adminStreamStatus` 只借**观看端绑定**里的会话 id 做只读 HTTP，没有绑定就是未知。
+   **串流观看端已改走服务接口（2026-11-26，PSB 0.1.172）**：`POST /api/cindy/remote/workspaces/
+   :id/stream/subscribe` 返回**桌面访问会话** id，Cindy 用它起观看端，**不再创建「Cindy 观看端」
+   内部 Agent 会话**（Agent 会话只装用户任务）；绑定落本机记录（JSON 键 `desktopSessions`），
+   重复「启动」先读状态复用、失效再重新订阅，读路径不订阅不建会话。旧 PSB（端点 404/405/
+   `UNSUPPORTED`）保留过渡回退，必须带 `purpose:'internal'` + 内部用途标题 + warn 日志，灰度面
+   收窄后删除。工程细节见工程契约 §11.3 / §11.7。
 6. **发送前透明重建与占用闸门**：PSB 会话终态（`stopped` / `failed`）不锁输入；用户下一次发送时
    主进程在同一工作区新建 PSB 会话、先落库新 `remote_host_id` 再推送 `sessions-rebound`，继续这一轮
    （远端原生上下文不延续、文案只写「可能不会延续」）。新建会话 / 启动串流 / 每次发送前都过
@@ -8493,12 +8495,53 @@ src/renderer/features/remote-workspace`（15 files / 144 tests）与 main + rend
 草稿相关合并运行（29 files / 470 tests）通过；`pnpm --filter desktop run typecheck`、`pnpm check:i18n`、
 `pnpm check:i18n-glossary` 实跑通过。真机复测点见产品规则 §8.2 与工程契约 §12.8。
 
+**2026-11-26 占用/释放版本控制检查（CINDY-RW-10，实现事实）**：PSB 0.1.180 起占用/释放恒成功并在
+2xx `data.vcs` 带**建议性**版本控制通知（advisory：查看详情 / 一键清理（202 异步 + operationId）/
+继续）；旧版 409 `WORKSPACE_VCS_*` 保留为兼容路径（retry / 旧 revert，无 force）。Cindy 新增
+`shared/psb-workspace-vcs.ts`（形状 + action 白名单）、main `vcsNotice.ts`（同工作区路径 / body /
+force 校验 + ≤32 有界缓存 + 广播）、`runWorkspaceVcsAction`（渲染层只传 kind）、
+`renderer/features/remote-workspace/vcs/`（store + View/Host，二次确认与「清理已开始 + 刷新」），
+12 locale `remoteWorkspace.vcs.*`。工程契约 §13.5、产品规则 §2.7、跨仓摘要 §2 `CINDY-RW-10` 已同步。
+测试证据：`vitest run src/shared/__tests__/psbWorkspaceVcs.test.ts src/main/remote-workspace/__tests__/vcsNotice.test.ts src/main/remote-workspace/__tests__/psbRemoteVcsService.test.ts src/main/remote-workspace/__tests__/workspaceLock.test.ts src/main/remote-workspace/__tests__/psbRemoteIpcWiring.guard.test.ts src/renderer/features/remote-workspace/vcs`。
+
+**2026-11-26 实例标签改显示工作区名称（用户实机反馈，实现事实）**：用户截图指出新建任务首页 / 草稿里的
+具体实例标签显示 `打包机-11ae7ab5…`（客户端名-工作区短 id），要求「具体的实例显示为工作区名称即可」。
+`psbWorkspaceDisplayName` 口径改为**工作区名称优先**（PSB `workspace.title`）：草稿页项目胶囊、选择
+工作区弹窗行、草稿页工作区下拉主标题都显示名称（如 `saga2_project`）；名称 trim 为空才回退
+`<客户端名>-<短 id>`，再回退短 id。列表次要行同步去重：目录与名称不同时显示
+`目录：<directoryName>`（i18n key 不变），名称与目录同名（模板建出的工作区常态）退回 `clientName`，
+同名工作区跨机器仍可区分，且不把同一个词写两遍。产品规则 §2.3 / §7-5 与迁移账本本条已同步。测试证据：
+`vitest run src/renderer/features/remote-workspace src/renderer/__tests__/newMakerProjectPicker.test.ts`
+（18 files / 257 tests）与 `pnpm --filter desktop run typecheck` 实跑通过；i18n 无新增 key。
+**真机复测待做**（新建任务首页胶囊显示 `saga2_project`、选工作区弹窗主标题同名、缺名回退机器-短 id）。
+
+**2026-11-26 订阅 409 `NO_RUNNING_SESSION` 的处置（真机事故修复，实现事实）**：真机在工作区访问
+未运行时点「启动串流」只得到「串流失败：操作失败，请稍后重试。」（PSB 0.1.180 的 409
+`details.code/state` 未被解析）。现在 main 把 `details.code='NO_RUNNING_SESSION'` +
+`details.state`（`none`/`starting`/`stopping`/`stopped`/`failed`）解析成
+`PsbRemoteFailure{ code:'PSB_STREAM_NO_RUNNING_SESSION', streamAccessState }`，按 state 跨 IPC 翻成
+三条码（`PSB_STREAM_NO_RUNNING_SESSION` / `PSB_STREAM_ACCESS_STARTING` / `PSB_STREAM_ACCESS_STOPPING`）；
+渲染层横幅给按状态分开的可行动文案（去 PSB 网页「远程控制」启动访问 / 等启动 / 等结束）+ PSB 中文
+原话诊断行，`none` 家族给「在网页启动访问」（复用 `openWebWorkspace`），`starting` 自动重试一次
+（~2s，不循环）。订阅前新增**非致命**的 `ensureWorkspaceAccess`（通用网页
+`POST /api/remote/workspaces/:id/access/start` + 轮询 `GET /api/cindy/remote/workspaces/:id/access`
+到 running，约 3s 预算）：因 Cindy 的 Bearer 白名单尚未放行 `/api/remote/**`（恒 403），它当前
+只预埋、不阻断，用户下一步仍是网页启动访问。12 locale 新增 4 个 `remoteWorkspace.admin.streamAccess*`
+key。工程契约 §11.8、产品规则 §2.4 / §6、跨仓摘要 §1.6 / §3.2、`联动需求.md`（Cindy → PSB 请求）
+已同步。测试证据：`vitest run src/main/remote-workspace/__tests__/psbClient.test.ts
+src/main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts
+src/renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`。
+
 **未验证 / 风险（如实登记）**：
 
-- **工作区级订阅未适配（P0，已知偏差）**：内部「Cindy 观看端」会话（仅用户显式「启动」时创建，
-  读状态不再创建）与只读 `stream/status` 探针仍在用；PSB 已交付该端点契约并要求删除。影响
-  （PSB 会话列表噪音、占 1 个观看名额、未消费 `NO_RUNNING_SESSION` / 重订语义）与迁移条件见
-  工程契约 §11.7。
+- **串流改工作区级订阅后的真机复验（P0 已适配，待真机）**：启动串流后 PSB 会话列表只有用户任务
+  （无「Cindy 观看端」行、`sessionCount` 不增加）、重启后仍能读状态并复用同一条桌面访问会话、
+  `409 NO_RUNNING_SESSION` 可行动文案、旧 PSB 回退路径 `purpose:'internal'` 列表不可见。单测覆盖见
+  工程契约 §11.6 与迁移记录下方证据。
+- **订阅 409 可行动文案的真机复验（待做）**：访问未运行时点「启动」→ 三档文案 / 诊断行 /
+  「在网页启动访问」按钮 / `starting` 一次自动重试；访问 running 时正常出画面与输入。另：
+  `ensureWorkspaceAccess` 的「入口未开放」分支（403）已被单测覆盖，但**放行后的成功路径无法在
+  当前 PSB 上真机验证**（白名单未开，见 `联动需求.md`）；PSB 放行后需补一次真机联调。
 - **宿主光标形状同步**：现行口径是「**只同步形状、外观永远宿主风格**」（远端 `name` → CSS
   关键字，只在画面区域生效，不用位图；旧「CSS 自定义位图光标」口径已作废），未真机复验（需要
   running 桌面会话；双方已安排取证）；映射 / 未知回退 / 只在画面区域 / 停止与 `closed` 恢复有单测。
@@ -8512,6 +8555,9 @@ src/renderer/features/remote-workspace`（15 files / 144 tests）与 main + rend
   轻提示的 Dark 目检未完成；F5/F11/F12 与开发者工具组合放行、退出全屏后宿主快捷键恢复只部分覆盖。
 - **既有边界**：分离侧栏窗口不暴露 `psbRemote` 桥、无「请求关键帧」通道；显式 `access/stop`
   销毁入口未接入（产品无此入口，有意）。
+- **版本控制检查（CINDY-RW-10）两代形态**：旧版 409 兼容路径可在当前测试部署构造复验；0.1.180
+  advisory 主路径（2xx `data.vcs`、`clean-workspace` 202 + `operationId`）需 PSB 0.1.180 上线后
+  真机联调。`clean-workspace` 之后的刷新/轮询端点形状待 PSB 给出（Cindy 未猜路径）。
 - **`pi-manager` CDN 发布与 PSB pin / vendored bundle 更新未完成**（CINDY-RW-14）：Cindy 源码已修
   pi 子进程 cwd，发布后 PSB 才可去掉 `cd` 前缀缓解。
 - **门禁口径**：`meka/main` 是直推分支，推送前仍必须一次性跑完 `pnpm test:unit:related` 与相关

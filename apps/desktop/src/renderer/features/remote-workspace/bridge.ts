@@ -39,6 +39,12 @@ import type {
   PsbWorkspaceRefRequest,
 } from '../../../shared/psb-remote-workspace';
 import type {
+  PsbRunWorkspaceVcsActionRequest,
+  PsbRunWorkspaceVcsActionResponse,
+  PsbWorkspaceVcsNoticeEvent,
+  PsbWorkspaceVcsNoticeResult,
+} from '../../../shared/psb-workspace-vcs';
+import type {
   PsbAdminStreamEvent,
   PsbWorkspaceAdminContextChangedEvent,
   PsbWorkspaceAdminContextResult,
@@ -62,6 +68,28 @@ export interface PsbRemoteBridge {
   createWorkspace(input: PsbCreateWorkspaceRequest): Promise<PsbCreateWorkspaceResult>;
   occupyWorkspace(input: PsbWorkspaceRefRequest): Promise<PsbOccupyWorkspaceResult>;
   releaseWorkspace(input: PsbWorkspaceRefRequest): Promise<PsbOccupyWorkspaceResult>;
+  /**
+   * 读某工作区当前的版本控制检查通知（CINDY-RW-10 更正版）。
+   *
+   * 占用 / 解除占用被 PSB 的版本控制检查拒绝时，`error.details.vcs` 里的 `projects` / `actions`
+   * 不能随 invoke 失败跨进程；main 已缓存并广播（`onWorkspaceVcsNotice`），这里是**兜底读口**：
+   * invoke 失败后读一次，避免推送与失败到达顺序的竞争。`notice:null` = 没有通知。
+   */
+  workspaceVcsNotice(input: PsbWorkspaceRefRequest): Promise<PsbWorkspaceVcsNoticeResult>;
+  /**
+   * 执行一条版本控制处置动作（`inspect-vcs` / `revert-then-occupy` / `revert-then-release` /
+   * `retry`）。**只传 kind**：method/path/body 由 main 从服务端下发的 notice 里取并校验，
+   * 渲染层绝不自己拼 URL。`revert-then-*` 不可逆，必须二次确认后传 `confirm:true`。
+   */
+  runWorkspaceVcsAction(
+    input: PsbRunWorkspaceVcsActionRequest,
+  ): Promise<PsbRunWorkspaceVcsActionResponse>;
+  /**
+   * 版本控制通知变更（main 在拒绝时广播、在占用/释放/还原成功后广播 `notice:null`）。
+   *
+   * 渲染层据此显示 / 撤下常驻提示条与处置按钮；按 `workspaceId` 过滤。
+   */
+  onWorkspaceVcsNotice(handler: (event: PsbWorkspaceVcsNoticeEvent) => void): () => void;
   createSession(input: PsbCreateSessionRequest): Promise<PsbCreateSessionResult>;
   refreshWorkspaces(input?: { workspaceIds?: readonly string[] }): Promise<PsbListWorkspacesResult>;
   sessionStatus(input: { sessionId: string }): Promise<PsbSessionStatusResult>;
@@ -95,13 +123,16 @@ export interface PsbRemoteBridge {
    * 带 `lastErrorZh` 的上一次快照，不会清空页面。
    */
   adminContext(input?: { localSessionId?: string | null }): Promise<PsbWorkspaceAdminContextResult>;
-  /** 当前工作区变化（工作区 / 占用 / 桌面会话状态 / 内部观看端会话）→ 载荷与 `adminContext` 结果同形。 */
+  /** 当前工作区变化（工作区 / 占用 / 桌面会话状态 / 观看端绑定）→ 载荷与 `adminContext` 结果同形。 */
   onAdminContextChanged(
     handler: (event: PsbWorkspaceAdminContextChangedEvent) => void,
   ): () => void;
-  /** 启动串流：main 会保证一条内部观看端 PSB 会话存在，返回它的 `viewerSessionId`。 */
+  /**
+   * 启动串流：main 走工作区级 `stream/subscribe` 拿**桌面访问会话 id**（不建 Agent 会话；
+   * 旧 PSB 才过渡回退到内部会话），返回它的 `viewerSessionId` 供事件过滤。
+   */
   adminStreamStart(input: PsbWorkspaceRefRequest): Promise<PsbWorkspaceAdminStreamStartResult>;
-  /** 停止串流（内部观看端会话保留，供下次复用）。幂等。 */
+  /** 停止串流（观看端绑定保留，供下次复用）。幂等。 */
   adminStreamStop(input: PsbWorkspaceRefRequest): Promise<void>;
   /** 读串流状态；`status: null` = 此刻读不到 PSB 状态（**不是**「客户端不支持串流」）。 */
   adminStreamStatus(input: PsbWorkspaceRefRequest): Promise<PsbWorkspaceAdminStreamStatusResult>;
@@ -123,7 +154,12 @@ export interface PsbRemoteBridge {
    * 重新聚焦后需要再发一次 `active:true` 才会恢复独占）。
    */
   setAdminStreamCaptureActive(input: PsbWorkspaceAdminStreamCaptureRequest): Promise<void>;
-  /** 内部观看端会话的串流事件；按 `viewerSessionId` 过滤。 */
+  /**
+   * 观看端绑定会话的串流事件；按 `viewerSessionId` 过滤。
+   *
+   * `sessionId` 正常是**桌面访问会话** id（PSB 工作区级 `stream/subscribe` 返回），旧 PSB 过渡
+   * 回退时是内部 Agent 会话 id；字段名保持不变，渲染层只做「等值过滤」。
+   */
   onAdminStreamEvent(handler: (event: PsbAdminStreamEvent) => void): () => void;
 }
 

@@ -70,7 +70,10 @@ export interface PsbStreamCursorInput {
    * canvas 矩形几何校正（见文件头「只在画面区域生效」）。
    */
   readonly stageRef: RefObject<HTMLDivElement | null>;
-  /** 本工作区内部观看端会话 id（事件过滤；`null` = 还不知道，按不过滤处理）。 */
+  /**
+   * 本工作区观看端绑定会话 id（事件过滤；正常是桌面访问会话 id，旧 PSB 过渡回退是内部会话 id；
+   * `null` = 还不知道，按不过滤处理）。
+   */
   readonly viewerSessionIdRef: RefObject<string | null>;
   /** 是否有活动订阅（`subscribed || streaming`）：false = 回宿主默认光标并停止接收形状。 */
   readonly active: boolean;

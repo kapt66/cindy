@@ -4,8 +4,9 @@
  * 数据全部来自**工作区级**桥（`psbWorkspaceAdminBridge.ts`，契约正本
  * `shared/psb-workspace-admin.ts`）：
  *   - 工作区信息（客户端 / 工作区 / 目录 / 占用 / 桌面会话）来自 `adminContext` 的宿主；
- *   - 启动 / 停止 / 状态按 `workspaceId` 操作；主进程用一个**内部观看端 PSB 会话**订阅
- *     串流，用户任务是否结束、是否还存在都不影响这里的按钮。
+ *   - 启动 / 停止 / 状态按 `workspaceId` 操作；主进程走 PSB 的**工作区级服务接口**
+ *     `stream/subscribe` 拿**桌面访问会话** id 订阅串流（**不建 Agent 会话**；旧 PSB 才过渡
+ *     回退到内部会话），用户任务是否结束、是否还存在都不影响这里的按钮。
  *
  * 布局（自上而下）：
  *   1. 横条控制区：启动 / 停止是同一个按钮切换，另有详情 / 串流信息 / 全屏 + 状态文案；高度恒定。
@@ -33,6 +34,16 @@
  * 分类时仍然**自动释放**观看名额（先补释放键鼠；PSB 每工作区观看名额有限，见产品正本 §2.4、
  * 工程契约 §5），回来需要用户再点「启动」。
  *
+ * **「工作区访问没在运行」给可行动横幅，不是「操作失败」（2026-11-26 真机）**：PSB 0.1.180 的
+ * 订阅 409 带 `details.code='NO_RUNNING_SESSION'` + `details.state`；main 按状态翻成三条 IPC
+ * 码（`PSB_NO_RUNNING_SESSION_IPC_CODES`），本组件据此显示：
+ *   - `none` / `stopped` / `failed`：横幅说明「请先在 PSB 网页该工作区的『远程控制』启动访问」，
+ *     并给「在网页启动访问」按钮（复用 `openWebWorkspace`，main 解析 `webUrl` 后系统浏览器打开）；
+ *   - `starting`：说明访问正在启动（Unity / 虚拟桌面还没就绪），并**自动重试一次**（约 2s，
+ *     不循环）；`stopping`：说明正在结束，等它落定。
+ * PSB 的中文原话单独作为诊断行显示，正文是本地化文案——两者都不再落到通用「操作失败」。
+ * 其它失败（鉴权 / 网络 / 不支持串流 / 被占用）仍走 `psbFailureText` 的既有映射。
+ *
  * **「已连接」与「有画面」是两个状态（2026-11-26 口径，独立审查修复）**：`subscribed` 只表示
  * 本端订阅已建立（「启动」成功、按钮切「停止」），`streaming` **只由本端收到的 `frame` 事件
  * 置 true**。PSB 的 `active` 表示「那台机器此刻有没有采集」，既不是「本端有画面」，也不能
@@ -58,7 +69,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cast, CircleAlert, Eye, Info, Minimize2, MousePointerClick, X } from 'lucide-react';
+import { Cast, CircleAlert, Eye, Globe, Info, Minimize2, MousePointerClick, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -66,13 +77,19 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tip } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-import { extractIpcError } from '../../../../shared/ipcError';
 import {
+  psbAdminContextActionBlockedKey,
+  psbAdminContextIsStale,
   psbAdminStreamStatusFromPsb,
   type PsbWorkspaceAdminContext,
   type PsbWorkspaceAdminStreamStatus,
 } from '../../../../shared/psb-workspace-admin';
 import type { PsbStreamEvent } from '../../../../shared/psb-remote-workspace';
+import {
+  psbFailureText,
+  psbStreamAccessFailureNotice,
+  type PsbStreamAccessFailureState,
+} from '../psbFailureText';
 import { createPsbStreamPlayer, type PsbStreamPlayer, type PsbStreamPlayerStats } from '../stream/psbStreamPlayer';
 import { canManuallyStartPsbStream, shouldReleasePsbStreamOnLeave } from './psbStreamLifecycle';
 import {
@@ -85,6 +102,31 @@ import { usePsbStreamInteraction } from './usePsbStreamInteraction';
 
 /** 详情里没有值时的占位（不编造数据）。 */
 const EMPTY_VALUE = '—';
+
+/**
+ * `starting` 竞态的自动重试间隔（约 2s）。
+ *
+ * 只在「工作区访问正在启动」时用一次：Unity / 虚拟桌面通常几秒内就绪，用户点「启动」后干等不如
+ * 自动再试一次；不循环（第二次仍失败就停在可行动文案上，由用户决定）。
+ */
+const STARTING_RETRY_DELAY_MS = 2_000;
+
+/**
+ * 串流失败横幅的内容。
+ *
+ * 三块分开存，是为了让「可行动文案 / PSB 中文原话（诊断行）/ 在网页启动访问」各就各位：
+ * 旧实现只有一句字符串，所有失败都只能显示成「串流失败：操作失败，请稍后重试。」。
+ */
+interface StreamFailureBanner {
+  /** 主要文案（已本地化，可行动）。 */
+  readonly text: string;
+  /** PSB 中文原话（诊断行；`null` = 没有 / 与正文重复）。 */
+  readonly detail: string | null;
+  /** 横幅归属的状态（只有「没有 running 桌面访问」三档会有值）。 */
+  readonly accessState?: PsbStreamAccessFailureState | null;
+  /** 是否给「在网页启动访问」按钮（`starting` / `stopping` 的正确动作是等）。 */
+  readonly offerOpenWeb?: boolean;
+}
 
 /** 「串流信息」HUD 的最近 1s 采样快照。 */
 interface StreamInfoSnapshot {
@@ -100,15 +142,9 @@ function nowMs(): number {
 }
 
 function streamFailureMessage(t: ReturnType<typeof useTranslation>['t'], error: unknown): string {
-  // IPC 失败的 `Error.message` 会被 Electron 包成长串；能用 extractIpcError 取出 code+message
-  // 时只展示 PSB 原文（含「没有可观看的画面」这类可行动句子）。
-  const ipc = extractIpcError(error);
-  if (ipc) {
-    const trimmed = ipc.message.trim();
-    if (trimmed) return trimmed;
-  }
-  const message = error instanceof Error ? error.message.trim() : '';
-  return message || t('remoteWorkspace.error.unknown');
+  // PSB 失败码 → 本地化文案；未知才通用兜底（映射顺序见 `psbFailureText`）。
+  // 旧实现在这里只取 `message`：读不到 PSB 时会把 IPC 包装串直接甩给用户。
+  return psbFailureText(t, error);
 }
 
 function eventFailureMessage(
@@ -169,6 +205,13 @@ export function RemoteWorkspaceAdminConnection({
   const { t } = useTranslation();
   const bridge = tryGetPsbWorkspaceAdminBridge();
   const workspaceId = context.workspaceId;
+  /**
+   * stale（固定信息来自本机快照 / 工作区已不可见）：串流是工作区写操作，启动前先给可行动
+   * 原因，而不是把一次注定失败的 PSB 请求变成一条不可读的错误。画面区照旧渲染 —— 页头与
+   * 降级原因由 panel 负责，这里只负责「点启动时说清楚为什么不行」。
+   */
+  const stale = psbAdminContextIsStale(context);
+  const blockedActionKey = psbAdminContextActionBlockedKey(context);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -178,7 +221,8 @@ export function RemoteWorkspaceAdminConnection({
   const subscribedRef = useRef(false);
   const stoppingRef = useRef(false);
   /**
-   * 本工作区内部观看端会话 id（用于过滤串流事件）。先取上下文里已知的值；`STREAM_START`
+   * 本工作区观看端绑定的会话 id（用于过滤串流事件）。正常是 PSB 桌面访问会话 id（不是 agent
+   * 会话 id；旧 PSB 的过渡回退才是内部 agent 会话）。先取上下文里已知的值；`STREAM_START`
    * 返回的更新值优先。未知时不过滤（宁可能收到旧事件也不能丢首帧）。
    */
   const viewerSessionIdRef = useRef<string | null>(context.viewerSessionId);
@@ -188,7 +232,11 @@ export function RemoteWorkspaceAdminConnection({
   const [streaming, setStreaming] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<StreamFailureBanner | null>(null);
+  /** `starting` 自动重试的定时器（切工作区 / 卸载 / 用户再次点击时清掉）。 */
+  const retryTimerRef = useRef<number | null>(null);
+  /** 本次用户点「启动」是否已经自动重试过（每轮用户操作最多一次）。 */
+  const retriedStartingRef = useRef(false);
   /** 观看端被 PSB 关闭时它给的原话（`detail.messageZh`，中性提示，不是错误条）。 */
   const [closedNote, setClosedNote] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -235,7 +283,7 @@ export function RemoteWorkspaceAdminConnection({
     active: subscribed || streaming,
   });
 
-  // 上下文推送会带出内部观看端会话 id（main 懒创建 / 复用后的真值），同步给事件过滤器。
+  // 上下文推送会带出观看端绑定会话 id（main 订阅/复用了桌面访问会话后的真值），同步给事件过滤器。
   useEffect(() => {
     if (context.viewerSessionId) viewerSessionIdRef.current = context.viewerSessionId;
   }, [context.viewerSessionId]);
@@ -251,14 +299,15 @@ export function RemoteWorkspaceAdminConnection({
       onFailure: (failure) => {
         if (!mountedRef.current) return;
         const translate = translateRef.current;
-        setError(
-          translate('remoteWorkspace.session.streamFailed', {
+        setFailure({
+          text: translate('remoteWorkspace.session.streamFailed', {
             message:
               failure === 'unsupported'
                 ? translate('remoteWorkspace.session.streamUnsupported')
                 : translate('remoteWorkspace.error.unknown'),
           }),
-        );
+          detail: null,
+        });
       },
     });
     if (!player) {
@@ -367,7 +416,10 @@ export function RemoteWorkspaceAdminConnection({
         // 不是「本端有没有画面」。拿它当判据会出现两种错：订阅成功但零帧时显示「串流中」，
         // 以及 active:false 而帧仍在到时切回未启动。`active` 只留在 `status` 里供提示 / 详情使用。
         if (next.lastErrorZh) {
-          setError(t('remoteWorkspace.session.streamFailed', { message: next.lastErrorZh }));
+          setFailure({
+            text: t('remoteWorkspace.session.streamFailed', { message: next.lastErrorZh }),
+            detail: null,
+          });
         }
         return;
       }
@@ -377,7 +429,7 @@ export function RemoteWorkspaceAdminConnection({
         // 已经建立的观看被 PSB 关掉（未就绪 / 慢订阅者）：不自动重连（本页也不再自动启动），
         // 用户点「启动」再试。关掉订阅后画面必须立刻清空，不能留上一帧；上一次的失败条
         // 已经由这次关闭的说明取代，清掉避免新旧原因同时挂着。
-        setError(null);
+        setFailure(null);
         clearPicture();
         const messageZh = event.detail?.messageZh?.trim();
         if (messageZh) setClosedNote(messageZh);
@@ -385,18 +437,20 @@ export function RemoteWorkspaceAdminConnection({
       }
       setStreaming(false);
       clearPicture();
-      setError(
-        t('remoteWorkspace.session.streamFailed', {
+      setFailure({
+        text: t('remoteWorkspace.session.streamFailed', {
           message: eventFailureMessage(t, event.failure),
         }),
-      );
+        detail: null,
+      });
     });
   }, [bridge, clearPicture, t]);
 
   // 打开分类时读一次串流状态（能力位 / 桌面会话 / 最近错误），决定按钮可用性与说明。
   // `status: null` = 此刻读不到：保留「未知」，不把启动按钮锁死。
+  // stale 时 main 也没有可信的绑定可读（工作区已不可见 / PSB 读不到）：不发这次 IPC。
   useEffect(() => {
-    if (!bridge) return undefined;
+    if (!bridge || stale) return undefined;
     let live = true;
     void bridge
       .adminStreamStatus({ workspaceId })
@@ -406,7 +460,10 @@ export function RemoteWorkspaceAdminConnection({
         if (!normalized) return;
         setStatus(normalized);
         if (normalized.lastErrorZh) {
-          setError(t('remoteWorkspace.session.streamFailed', { message: normalized.lastErrorZh }));
+          setFailure({
+            text: t('remoteWorkspace.session.streamFailed', { message: normalized.lastErrorZh }),
+            detail: null,
+          });
         }
       })
       .catch(() => {
@@ -415,7 +472,7 @@ export function RemoteWorkspaceAdminConnection({
     return () => {
       live = false;
     };
-  }, [bridge, workspaceId, t]);
+  }, [bridge, stale, workspaceId, t]);
 
   /**
    * 自动释放观看名额（页签不可见 / 卸载 / 切工作区）。
@@ -425,15 +482,29 @@ export function RemoteWorkspaceAdminConnection({
    * 错误立即清空画面」。失败只给一条中性可行动提示（下次启动会重新订阅，main 侧断连
    * 也会兜底释放名额）。
    */
+  /** 清掉 `starting` 自动重试（用户再次点击 / 停止 / 卸载 / 启动成功时）。 */
+  const clearStartingRetry = useCallback(() => {
+    if (retryTimerRef.current !== null) {
+      window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+  }, []);
+
   const stopViewer = useCallback(async () => {
+    clearStartingRetry();
     if (!bridge || stoppingRef.current) return;
     if (!subscribedRef.current && !streamingRef.current) return;
     stoppingRef.current = true;
     try {
       await bridge.adminStreamStop({ workspaceId });
-      if (mountedRef.current) setError(null);
+      if (mountedRef.current) setFailure(null);
     } catch {
-      if (mountedRef.current) setError(translateRef.current('remoteWorkspace.session.stopFailed'));
+      if (mountedRef.current) {
+        setFailure({
+          text: translateRef.current('remoteWorkspace.session.stopFailed'),
+          detail: null,
+        });
+      }
     } finally {
       stoppingRef.current = false;
       clearPicture();
@@ -442,7 +513,7 @@ export function RemoteWorkspaceAdminConnection({
         setStreaming(false);
       }
     }
-  }, [bridge, clearPicture, workspaceId]);
+  }, [bridge, clearPicture, clearStartingRetry, workspaceId]);
 
   // 页签可见性用**既有 tab pane 机制**（`active` + `shellVisible`）：页签被切走 / 右侧栏折叠时
   // body 是 `display:none`；不用 `document.visibilityState`（它只反映窗口，后台页签仍是 visible，
@@ -458,64 +529,142 @@ export function RemoteWorkspaceAdminConnection({
     };
   }, [stopViewer]);
 
+  // `starting` 自动重试只属于这一轮用户操作：卸载 / 切换工作区时必须清掉，否则下一次挂载后
+  // 会突然自己发起一次启动。
+  useEffect(() => clearStartingRetry, [clearStartingRetry]);
+
   /**
    * 用户显式「启动」：进入页面 / 页签重新可见都**不自动开播**（2026-11-26 用户口径）。
    * 启动前先读一次工作区串流状态，PSB 明确不支持时给可行动提示、不再发 start。
+   *
+   * ## 失败分两档（2026-11-26 真机事故：只显示「操作失败，请稍后重试。」）
+   *
+   * - **工作区访问没在运行**（`PSB_STREAM_NO_RUNNING_SESSION` 三档，PSB 409 的结构化归因）：
+   *   横幅显示按 `details.state` 分开的可行动文案 + PSB 中文原话诊断行；`none` / `stopped` /
+   *   `failed` 同时给「在网页启动访问」按钮，`starting` 则自动重试一次（约 2s，Unity /
+   *   虚拟桌面还没就绪的竞态）；
+   * - 其它失败照旧：`psbFailureText` 把 PSB 失败码翻成本地化文案，拼进「串流失败：」。
    */
-  const handleStart = useCallback(async () => {
-    if (!bridge || starting) return;
-    setStarting(true);
-    setError(null);
-    setClosedNote(null);
-    try {
-      const next = normalizeWorkspaceAdminStreamStatus(
-        await bridge.adminStreamStatus({ workspaceId }),
-      );
-      if (next) setStatus(next);
-      if (next && !next.capable) {
-        // 状态可能刚被推送刷新成 capable:false（按钮的禁用态来自上一次渲染）：用户点了
-        // 「启动」却什么都不发生是最糟的反馈，这里给一条能照做的原因。
-        setError(t('remoteWorkspace.admin.streamReasonNoStreaming'));
+  const handleStart = useCallback(
+    async (options?: { auto?: boolean }) => {
+      if (!bridge || starting) return;
+      // 用户亲自点「启动」= 新一轮尝试：允许再自动重试一次（自动重试自己不会重置这个标记）。
+      if (!options?.auto) {
+        retriedStartingRef.current = false;
+        clearStartingRetry();
+      }
+      // stale：先给「工作区已不可见 / 连不上」的可行动原因，不发一次注定失败的写请求。
+      // 页面每 30s / 聚焦时会重读上下文，PSB 恢复后按钮自然回到可用。
+      if (stale) {
+        setFailure({
+          text: t(blockedActionKey ?? 'remoteWorkspace.admin.staleUnavailableAction'),
+          detail: null,
+        });
         return;
       }
-      const started = normalizeWorkspaceAdminStreamStart(
-        await bridge.adminStreamStart({ workspaceId }),
-      );
-      if (!started) {
+      setStarting(true);
+      setFailure(null);
+      setClosedNote(null);
+      try {
+        const next = normalizeWorkspaceAdminStreamStatus(
+          await bridge.adminStreamStatus({ workspaceId }),
+        );
+        if (next) setStatus(next);
+        if (next && !next.capable) {
+          // 状态可能刚被推送刷新成 capable:false（按钮的禁用态来自上一次渲染）：用户点了
+          // 「启动」却什么都不发生是最糟的反馈，这里给一条能照做的原因。
+          setFailure({ text: t('remoteWorkspace.admin.streamReasonNoStreaming'), detail: null });
+          return;
+        }
+        const started = normalizeWorkspaceAdminStreamStart(
+          await bridge.adminStreamStart({ workspaceId }),
+        );
+        if (!started) {
+          setSubscribed(false);
+          setStreaming(false);
+          return;
+        }
+        setStatus(started.status);
+        if (started.viewerSessionId) viewerSessionIdRef.current = started.viewerSessionId;
+        // 订阅成功 ≠ 有画面：这里只置「已订阅」，面板显示「已连接，等待画面…」。
+        // 「串流中」只能由首帧（`frame` 事件）置位，PSB 的 `active` 不参与该判定。
+        setSubscribed(true);
+        setFailure(null);
+        clearStartingRetry();
+      } catch (rawFailure) {
         setSubscribed(false);
         setStreaming(false);
-        return;
+        const notice = psbStreamAccessFailureNotice(t, rawFailure);
+        if (notice) {
+          setFailure({
+            text: notice.text,
+            detail: notice.detail,
+            accessState: notice.state,
+            offerOpenWeb: notice.offerOpenWeb,
+          });
+          // `starting` 竞态：访问正在启动，等它落定后自动再试一次；不循环（第二次仍失败就停在
+          // 可行动文案上，由用户决定）。
+          if (notice.retryOnce && !retriedStartingRef.current) {
+            retriedStartingRef.current = true;
+            clearStartingRetry();
+            retryTimerRef.current = window.setTimeout(() => {
+              retryTimerRef.current = null;
+              void handleStartRef.current?.({ auto: true });
+            }, STARTING_RETRY_DELAY_MS);
+          }
+          return;
+        }
+        setFailure({
+          text: t('remoteWorkspace.session.streamFailed', {
+            message: streamFailureMessage(t, rawFailure),
+          }),
+          detail: null,
+        });
+      } finally {
+        if (mountedRef.current) setStarting(false);
       }
-      setStatus(started.status);
-      if (started.viewerSessionId) viewerSessionIdRef.current = started.viewerSessionId;
-      // 订阅成功 ≠ 有画面：这里只置「已订阅」，面板显示「已连接，等待画面…」。
-      // 「串流中」只能由首帧（`frame` 事件）置位，PSB 的 `active` 不参与该判定。
-      setSubscribed(true);
-      setError(null);
-    } catch (failure) {
-      setSubscribed(false);
-      setStreaming(false);
-      setError(
-        t('remoteWorkspace.session.streamFailed', {
-          message: streamFailureMessage(t, failure),
-        }),
-      );
-    } finally {
-      if (mountedRef.current) setStarting(false);
+    },
+    [blockedActionKey, bridge, clearStartingRetry, stale, starting, t, workspaceId],
+  );
+
+  /**
+   * 自动重试定时器必须调用**最新**的 `handleStart`（它依赖 `starting` 等 state）：
+   * 存到 ref 里，避免定时器闭包捕获旧版本。
+   */
+  const handleStartRef = useRef<typeof handleStart | null>(null);
+  handleStartRef.current = handleStart;
+
+  /**
+   * 「在网页启动访问」：复用既有「在网页打开」能力（main 解析 `webUrl` 并 `shell.openExternal`）。
+   *
+   * PSB 网页的「远程控制 › 启动访问」是这条失败的唯一正确入口（Cindy 还没有被放行的拉起接口），
+   * 所以横幅里直接给按钮；打不开时把真实原因写回横幅，不吞掉。
+   */
+  const openWebForAccess = useCallback(async () => {
+    if (!bridge) return;
+    try {
+      await bridge.openWebWorkspace({ workspaceId });
+    } catch (openFailure) {
+      setFailure({
+        text: psbFailureText(t, openFailure),
+        detail: null,
+      });
     }
-  }, [bridge, starting, t, workspaceId]);
+  }, [bridge, t, workspaceId]);
 
   const handleStop = useCallback(async () => {
     if (!bridge || stopping) return;
+    clearStartingRetry();
+    retriedStartingRef.current = true;
     setStopping(true);
     try {
       await bridge.adminStreamStop({ workspaceId });
       // 成功：清掉上一次启动 / 关闭留下的错误条，不把旧原因挂在新状态上。
-      setError(null);
+      setFailure(null);
       setClosedNote(null);
     } catch {
       // 失败也要给一条中性、可行动的话；画面与按钮状态照下面 finally 复位，不残留旧帧。
-      setError(t('remoteWorkspace.session.stopFailed'));
+      setFailure({ text: t('remoteWorkspace.session.stopFailed'), detail: null });
     } finally {
       // **无条件**复位：停止请求失败时 PSB 可能仍在采集中，但用户已经明确不要看了，
       // 本端必须立刻清空画面并回到「串流未启动」（停止 / closed / 错误立即清屏的口径）。
@@ -526,7 +675,7 @@ export function RemoteWorkspaceAdminConnection({
         setStopping(false);
       }
     }
-  }, [bridge, clearPicture, stopping, t, workspaceId]);
+  }, [bridge, clearPicture, clearStartingRetry, stopping, t, workspaceId]);
 
   const capable = status?.capable ?? null;
   const unavailable = !bridge || playerUnavailable || capable === false;
@@ -759,13 +908,44 @@ export function RemoteWorkspaceAdminConnection({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {controls}
-      {error ? (
+      {failure ? (
         <div
           role="alert"
+          data-testid="remote-workspace-admin-stream-failure"
+          data-access-state={failure.accessState ?? undefined}
           className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-default)] bg-[var(--error-bg)] px-2 py-1.5 text-11 leading-4 text-[var(--error-fg)]"
         >
           <CircleAlert size={13} className="mt-px shrink-0" aria-hidden />
-          <span className="min-w-0 break-words">{error}</span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="min-w-0 break-words">{failure.text}</span>
+            {/* PSB 中文原话作为诊断行：可行动的下一步在上一行，原话只用于对照 / 报障。 */}
+            {failure.detail ? (
+              <span
+                data-testid="remote-workspace-admin-stream-failure-detail"
+                className="min-w-0 break-words opacity-80"
+              >
+                {failure.detail}
+              </span>
+            ) : null}
+            {failure.offerOpenWeb ? (
+              <div className="flex">
+                {/* 复用既有「在网页打开」能力（main 解析 webUrl + shell.openExternal）：PSB 网页的
+                    「远程控制 › 启动访问」是这条失败的唯一正确入口。 */}
+                <Button
+                  type="button"
+                  size="xs"
+                  compact
+                  variant="secondary"
+                  tone="quiet"
+                  data-testid="remote-workspace-admin-stream-open-web"
+                  onClick={() => void openWebForAccess()}
+                >
+                  <Globe size={12} aria-hidden />
+                  {t('remoteWorkspace.admin.streamAccessOpenWeb')}
+                </Button>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
       {closedNote ? (

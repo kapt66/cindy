@@ -39,6 +39,7 @@ import { Tooltip } from '@/components/ui/tooltip';
 import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 import { FindInPageBar } from '@/components/find-in-page/FindInPageBar';
 import { ProjectAutomationNotifyBridge } from '@/features/scheduler/components/ProjectAutomationNotifyBridge';
+import { WorkspaceVcsNoticeHost } from '@/features/remote-workspace/vcs/WorkspaceVcsNoticeHost';
 import { GhostConfirmDialogHost } from '@/cindy-brain/GhostConfirmDialogHost';
 import { PluginModelPickerHost } from '@/cindy-brain/PluginModelPickerHost';
 import { LocalAgentConfirmationHost } from '@/components/LocalAgentConfirmationHost';
@@ -509,6 +510,14 @@ export function App() {
                               <MakerBootstrap />
                               <AppWindowSync />
                               {!isSecondaryWindow() && !isSidebarWindow() && <RemoteDesktopHost />}
+                              {/* PSB 工作区版本控制 advisory 的全局宿主:订阅 main 的
+                              `onWorkspaceVcsNotice` 广播,把「查看详情 / 一键清理 / 继续」
+                              盖到所有占用入口(弹窗 / 草稿下拉 / 管理页 / 发送前自动占用 /
+                              放弃草稿释放)。必须在 ConfirmDialogProvider 内(不可逆清理要
+                              useConfirmDialog 二次确认);只挂主窗,副窗/侧栏窗不重复弹。 */}
+                              {!isSecondaryWindow() && !isSidebarWindow() && (
+                                <WorkspaceVcsNoticeHost />
+                              )}
                               <ProjectAutomationNotifyBridge />
                               {/* confirm 槽:插件请主机弹确认框。必须在 ConfirmDialogProvider
                               内(要 useConfirmDialog);main 只投单个窗口,所以每个窗口

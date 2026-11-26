@@ -46,6 +46,11 @@ import {
   type PsbStreamEvent,
   type PsbWorkspaceChangedEvent,
 } from '../shared/psb-remote-workspace';
+import type {
+  PsbRunWorkspaceVcsActionResponse,
+  PsbWorkspaceVcsNoticeEvent,
+  PsbWorkspaceVcsNoticeResult,
+} from '../shared/psb-workspace-vcs';
 import {
   PSB_ADMIN_CHANNELS,
   type PsbAdminStreamEvent,
@@ -881,7 +886,9 @@ const fanOutRemoteSshCcMgrUpgradeAvailable = createIpcFanOut(
 const fanOutPsbStreamEvent = createIpcFanOut(PSB_REMOTE_CHANNELS.STREAM_EVENT);
 const fanOutPsbWorkspaceChanged = createIpcFanOut(PSB_REMOTE_CHANNELS.WORKSPACE_CHANGED);
 const fanOutPsbSessionsRebound = createIpcFanOut(PSB_REMOTE_CHANNELS.SESSIONS_REBOUND);
-// 「远程工作区」管理页（工作区级，与用户任务解耦）：当前工作区上下文变化 + 内部观看端串流事件。
+// CINDY-RW-10：占用 / 释放的版本控制检查通知（0.1.180 advisory 与旧版 409 兼容路径共用）。
+const fanOutPsbWorkspaceVcsNotice = createIpcFanOut(PSB_REMOTE_CHANNELS.WORKSPACE_VCS_NOTICE);
+// 「远程工作区」管理页（工作区级，与用户任务解耦）：当前工作区上下文变化 + 观看端绑定串流事件。
 const fanOutPsbAdminContextChanged = createIpcFanOut(PSB_ADMIN_CHANNELS.CONTEXT_CHANGED);
 const fanOutPsbAdminStreamEvent = createIpcFanOut(PSB_ADMIN_CHANNELS.STREAM_EVENT);
 
@@ -919,7 +926,21 @@ function createPsbRemoteBridge(): PsbRemoteBridge {
       fanOutPsbWorkspaceChanged((data) => handler(data as PsbWorkspaceChangedEvent)),
     onSessionsRebound: (handler) =>
       fanOutPsbSessionsRebound((data) => handler(data as PsbSessionsReboundEvent)),
-    // 「远程工作区」管理页：工作区级上下文 + 内部观看端会话的串流事件。
+    // CINDY-RW-10：版本控制检查通知（0.1.180 advisory / 旧版 409 兼容）与处置动作。
+    // 处置动作只传 kind：method/path/body 由 main 从服务端 notice 取并校验，preload 不持有 URL。
+    workspaceVcsNotice: (input) =>
+      ipcRenderer.invoke(
+        PSB_REMOTE_CHANNELS.WORKSPACE_VCS_NOTICE_GET,
+        input,
+      ) as Promise<PsbWorkspaceVcsNoticeResult>,
+    runWorkspaceVcsAction: (input) =>
+      ipcRenderer.invoke(
+        PSB_REMOTE_CHANNELS.WORKSPACE_VCS_ACTION,
+        input,
+      ) as Promise<PsbRunWorkspaceVcsActionResponse>,
+    onWorkspaceVcsNotice: (handler) =>
+      fanOutPsbWorkspaceVcsNotice((data) => handler(data as PsbWorkspaceVcsNoticeEvent)),
+    // 「远程工作区」管理页：工作区级上下文 + 观看端绑定（桌面访问会话）的串流事件。
     adminContext: (input) =>
       ipcRenderer.invoke(PSB_ADMIN_CHANNELS.CONTEXT, input ?? {}) as Promise<PsbWorkspaceAdminContextResult>,
     onAdminContextChanged: (handler) =>

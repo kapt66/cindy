@@ -1386,9 +1386,11 @@ describe('Shared create project picker', () => {
     expect(newMakerDraftRouteSource).toContain('psbRemoteOnly={isPsbChannelSelected}');
     expect(newMakerDraftRouteSource).toContain('onSelectPsbWorkspace={handlePsbWorkspaceSelected}');
     expect(newMakerDraftRouteSource).toContain('onCreatePsbWorkspace={handleCreatePsbWorkspace}');
-    // 项目胶囊的选中值必须与下拉行同一口径（客户端名-短 id），不能拿模板名当标签。
+    // 项目胶囊的选中值必须与下拉行同一口径（2026-11-26：主标签是工作区名称，缺名才回退
+    // 机器-短 id），不能拿模板名/机器拼名当标签；名称来自 psbTarget.workspaceTitle。
     expect(newMakerDraftRouteSource).toContain('psbWorkspaceDisplayName({');
     expect(newMakerDraftRouteSource).toContain('clientName: psbTarget.clientName,');
+    expect(newMakerDraftRouteSource).toContain('workspaceTitle: psbTarget.workspaceTitle,');
     // 渠道已选但工作区未选：Send / Goal 两条入口都要先要求选工作区，不能落到没有远端目标的
     // 本机会话（同一判据两处出现：handleSend 返回 false、handleCreateGoal throw）。
     expect(

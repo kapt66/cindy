@@ -89,7 +89,11 @@ function createHarness(options: HarnessOptions = {}) {
       },
       occupyWorkspace: async (workspaceId) => {
         counts.occupy += 1;
-        return options.occupy ? options.occupy(workspaceId) : occupiedByMe();
+        return {
+          workspace: options.occupy ? await options.occupy(workspaceId) : occupiedByMe(),
+          // 0.1.180：占用响应可能带建议性 VCS 通知；锁只关心工作区行（advisory 由服务层广播）。
+          vcs: null,
+        };
       },
       readSession: async (psbSessionId) => {
         counts.session += 1;

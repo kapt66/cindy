@@ -5,7 +5,7 @@
  *
  * `psb-remote-workspace.ts` 描述的是**会话级**链路：「某个本地任务 ↔ 某条 PSB agent 会话」
  * （`psb:<sessionId>` 身份、隧道、发消息、串流观看端）。本文件描述的是**工作区级**页面：
- * 「此刻管理哪个 PSB 工作区」，以及为它服务的**内部观看端会话**。
+ * 「此刻管理哪个 PSB 工作区」，以及它的**观看端绑定**（正常 = PSB 桌面访问会话 id）。
  *
  * ## 为什么要单独一层（不要把它并回会话级）
  *
@@ -18,13 +18,15 @@
  *   - 用户可能刚重启客户端，一个任务都还没打开。
  *
  * 所以页面围绕「一个工作区」工作：工作区从「当前打开任务的 PSB 会话（任何状态）」或
- * 「本机记录的最近使用过的远程工作区」解析，观看端则用**我们自己身份的内部 PSB 会话**
- * 订阅串流（见 `PSB_ADMIN_VIEWER_SESSION_TITLE`）。用户任务结束不影响它，用户的 PSB
- * 会话被拒也不影响它 —— 这是本层存在的全部理由。
+ * 「本机记录的最近使用过的远程工作区」解析；画面则走 PSB 的**工作区级服务接口**
+ * `POST /api/cindy/remote/workspaces/:id/stream/subscribe`，拿它返回的**桌面访问会话** id
+ * 订阅串流 —— **不创建任何 Agent 会话**（Agent 会话只装用户任务，PSB 0.1.172 框架规则）。
+ * PSB 端点不可用的旧服务端才过渡回退到内部 Agent 会话（见 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`）。
+ * 用户任务结束不影响它，用户的 PSB 会话被拒也不影响它 —— 这是本层存在的全部理由。
  *
  * ## 边界
  *
- * 只放**形状与纯函数**：通道名、DTO、内部会话标识、PSB 串流状态到管理页状态的映射。
+ * 只放**形状与纯函数**：通道名、DTO、过渡回退会话的标识、PSB 串流状态到管理页状态的映射。
  * 不放实现（HTTP / WS / Electron）、不放文案（文案走 i18n 的 `remoteWorkspace.admin.*`）。
  */
 
@@ -42,20 +44,29 @@ import type { PsbSessionStreamStatus, PsbStreamEvent } from './psb-remote-worksp
 export const PSB_ADMIN_CHANNELS = {
   /** 读当前工作区上下文（页面顶部信息条的唯一数据源）。 */
   CONTEXT: 'psb-remote:admin-context',
-  /** main → renderer：当前工作区上下文变化（工作区 / 占用 / 桌面会话状态 / 观看端会话）。 */
+  /** main → renderer：当前工作区上下文变化（工作区 / 占用 / 桌面会话状态 / 观看端绑定）。 */
   CONTEXT_CHANGED: 'psb-remote:admin-context-changed',
-  /** 启动串流（会保证一条内部观看端 PSB 会话存在，后续帧经 `STREAM_EVENT` 推送）。 */
+  /**
+   * 启动串流：main 先占用闸门，再走工作区级 `stream/subscribe` 拿桌面访问会话 id，然后启动
+   * 观看端（后续帧经 `STREAM_EVENT` 推送）。**不创建 Agent 会话**（旧 PSB 才过渡回退）。
+   */
   STREAM_START: 'psb-remote:admin-stream-start',
-  /** 停止串流（内部观看端会话**保留**，供下次复用；见 `PSB_ADMIN_VIEWER_SESSION_TITLE`）。 */
+  /** 停止串流（观看端绑定**保留**，供下次复用）。 */
   STREAM_STOP: 'psb-remote:admin-stream-stop',
-  /** 读串流状态（工作区级读数；只借已有会话的 HTTP 读口，**不创建会话、不占用工作区**）。 */
+  /**
+   * 读串流状态（工作区级读数；只用绑定里的会话 id 发一次只读 HTTP，
+   * **不订阅、不创建会话、不占用工作区**）。
+   */
   STREAM_STATUS: 'psb-remote:admin-stream-status',
-  /** main → renderer：串流事件（帧 / 状态 / 光标 / 关闭 / 错误）。`sessionId` 是内部观看端会话。 */
+  /**
+   * main → renderer：串流事件（帧 / 状态 / 光标 / 关闭 / 错误）。
+   * `sessionId` 是观看端绑定会话（正常 = 桌面访问会话 id，过渡回退 = 内部 Agent 会话 id）。
+   */
   STREAM_EVENT: 'psb-remote:admin-stream-event',
   /**
-   * 键鼠输入（renderer 采集 → main → 内部观看端会话的 WS）。
+   * 键鼠输入（renderer 采集 → main → 观看端绑定会话的 WS）。
    *
-   * 入参是**工作区级**的 `{ workspaceId, event }`：渲染层不持有也不需要内部观看端会话 id
+   * 入参是**工作区级**的 `{ workspaceId, event }`：渲染层不持有也不需要观看端会话 id
    * （那是 main 的事实，见 §11.3），由 main 按工作区解析出会话再转发。
    */
   STREAM_INPUT: 'psb-remote:admin-stream-input',
@@ -102,9 +113,45 @@ export type PsbWorkspaceAdminDesktopSession = 'none' | 'starting' | 'running' | 
 export type PsbWorkspaceAdminContextSource = 'session' | 'last-used';
 
 /**
+ * 固定信息的可信度（2026-11-26 真机事故后的加性语义）。
+ *
+ * - `live`：这一次从 PSB 读到了工作区行（`title` / 模板 / 机器 / 目录都是服务器事实）；
+ * - `unavailable`：读不到 PSB（断网 / PSB 不可达 / 本机没有可用会话），固定信息来自本机快照
+ *   或本机会话行种子；
+ * - `missing`：PSB 工作区列表读成功了，但这个工作区已经不在列表里（被删 / 无权限）。
+ *
+ * `unavailable` 与 `missing` 都是**不可写**状态：真正的下一步不同（查网络 vs 工作区没了），
+ * 所以渲染层要分开给可行动文案，不能合并成一句「操作失败」。
+ */
+export type PsbWorkspaceAdminAvailability = 'live' | 'unavailable' | 'missing';
+
+/**
+ * stale 的**本机归因**（渲染层据此选文案；PSB 原文仍放 `lastErrorZh` 做诊断）。
+ *
+ * - `list-failed`：读 PSB 工作区列表失败（网络 / 鉴权 / PSB 不可达）；
+ * - `workspace-missing`：工作区列表读成功但工作区已不在（被删 / 无权限）；
+ * - `session-unreadable`：当前任务的 PSB 会话读不到，固定信息来自本机会话行 / 虚拟工作目录；
+ * - `snapshot-only`：本机只剩上一次保存的固定信息快照（连「哪个任务」的线索都没有）。
+ */
+export type PsbWorkspaceAdminStaleReason =
+  | 'list-failed'
+  | 'workspace-missing'
+  | 'session-unreadable'
+  | 'snapshot-only';
+
+/**
  * 管理页描述的**工作区**（不是会话）。
  *
  * 所有字段只用于「顶部信息条」的展示，不含任何会话身份：页面不因为用户任务结束而退化。
+ *
+ * ## 固定字段 vs 状态字段（2026-11-26 真机事故）
+ *
+ * 工作区名称、项目模板、机器名、目录名是**固定信息**：工作区一旦创建就不再变化。占用、在线、
+ * 桌面会话是**状态信息**，会随网络与别人操作变化。真机事故里 PSB 读不到（设备掉线 / 工作区
+ * 被移除）时整页退化成「还没有远程工作区」，用户连「当初会话跑在哪个工作区」都不知道了。
+ *
+ * 因此固定字段一律以 main 的**本机快照**兜底：读不到实时行时 `stale: true`，固定字段仍显示，
+ * 状态类字段显示「无法获取」而不是编造。只有本机完全没有线索时 `context` 才是 `null`。
  */
 export interface PsbWorkspaceAdminContext {
   readonly workspaceId: string;
@@ -130,21 +177,47 @@ export interface PsbWorkspaceAdminContext {
   readonly lastErrorZh: string | null;
   readonly source: PsbWorkspaceAdminContextSource;
   /**
-   * 该工作区的**内部观看端** PSB 会话 id（没有则 `null`）。
+   * 该工作区**观看端绑定**的会话 id（没有则 `null`）。
    *
-   * 它不是用户的会话：只在 `STREAM_START` 时懒创建/复用，用于订阅串流。读状态路径只会在
-   * **本机记录里已有**这条 id 时借它做一次只读 HTTP（不创建、不占用）；没有记录就是 `null`。
+   * 正常形态是 PSB 工作区级 `stream/subscribe` 返回的**桌面访问会话** id（`remote_sessions.id`，
+   * **不是** agent 会话 id）；旧 PSB 的过渡回退路径下是内部 Agent 会话 id。它只在 `STREAM_START`
+   * 时建立（重复启动复用），用于订阅串流与读 `stream/status`；读状态路径只会在**本机记录里
+   * 已有**这条 id 时借它做一次只读 HTTP（不订阅、不创建、不占用），没有记录就是 `null`。
    * 渲染层用它对 `STREAM_EVENT` 里的事件做过滤（事件载荷带的就是这个 id）。
+   *
+   * stale 时恒为 `null`：PSB 读不到时不再拿一条可能已死的绑定去试探（读路径只读、不写）。
    */
   readonly viewerSessionId: string | null;
+  /**
+   * 固定字段（`title` / `templateTitle` / `clientName` / `directoryName` / `state`）是否来自
+   * **本机快照**，而不是这一次的 PSB 实时读取。
+   *
+   * 加性字段。旧 main 不返回它时，渲染层归一化按 `availability` 推断（缺省视为 live）。
+   */
+  readonly stale: boolean;
+  /** 固定信息与工作区身份的可信度；`stale === false` 时恒为 `'live'`。加性字段。 */
+  readonly availability?: PsbWorkspaceAdminAvailability;
+  /** stale 的本机归因（本地化用 `remoteWorkspace.admin.stale*`；PSB 原文在 `lastErrorZh`）。 */
+  readonly staleReason?: PsbWorkspaceAdminStaleReason | null;
+  /** 本机固定信息快照的落盘时间（ISO 8601）；live / 没有任何快照时 `null`。 */
+  readonly snapshotSavedAt?: string | null;
+  /**
+   * `workspaceId` 是否来自 PSB 的工作区行（可安全用于占用 / 串流 / 打开网页等写操作）。
+   *
+   * `false` = 只有本机会话行的线索（`psb:` 会话或 `/psb-remote/<目录>` 虚拟工作目录）时
+   * 造出的**占位身份**（`psb:<psbSessionId>` / `psb-dir:<目录名>`）。此时固定信息可能退化成
+   * 会话标题 / 目录名，写操作必须被拒绝并给可行动原因，不能拿占位 id 去请求 PSB。
+   */
+  readonly workspaceIdKnown?: boolean;
 }
 
 /**
  * `CONTEXT` invoke 的结果。
  *
- * `context: null` = **本机没有任何可用线索**（既没有远程任务，也没有最近使用记录）：
- * 页面显示空提示态。PSB 暂时读不到但本机有记录时**不会**返回 `null`，而是返回带
- * `lastErrorZh` 的上下文（保留上一次快照，见工程契约 §8.3 的「读取失败保留最后一次快照」）。
+ * `context: null` = **本机没有任何可用线索**（既没有可读的远程任务、也没有本机快照 / 会话行
+ * 种子）：页面显示空提示态。PSB 暂时读不到但本机有快照或会话行线索时**不会**返回 `null`，而是
+ * 返回 `stale: true` 的上下文（固定字段照旧显示，状态字段降级，见
+ * `PsbWorkspaceAdminAvailability`）。
  */
 export interface PsbWorkspaceAdminContextResult {
   readonly context: PsbWorkspaceAdminContext | null;
@@ -154,7 +227,7 @@ export interface PsbWorkspaceAdminContextResult {
  * `CONTEXT_CHANGED` 的载荷：与 invoke 结果**同形**，渲染层可以直接用它替换状态。
  *
  * 触发点只有 main「刚拿到新事实」的时刻：工作区变化、占用/在线变化、桌面会话状态变化、
- * 内部观看端会话变化。main 不轮询 PSB，也不因为这个事件去读远端。
+ * 观看端绑定变化。main 不轮询 PSB，也不因为这个事件去读远端。
  *
  * ## 为什么要带 `localSessionId`
  *
@@ -195,72 +268,62 @@ export interface PsbWorkspaceAdminStreamStatus {
 /**
  * `STREAM_STATUS` invoke 的结果。
  *
- * `status: null` = **此刻读不到 PSB 的状态**（本机没有可借用的内部观看端会话、也没有活着的
- * 用户任务会话，或 PSB 不可达）。这与 `capable: false` 是两件事：把「读不到」当「客户端不支持
- * 串流」会让启动按钮永远不可用，正是本批要修的那类退化。已读到的历史状态会经
- * `CONTEXT_CHANGED` / `STREAM_EVENT` 先行到达，渲染层保留自己的最后一次快照即可。
+ * `status: null` = **此刻读不到 PSB 的状态**（本机没有观看端绑定，或 PSB 不可达）。这与
+ * `capable: false` 是两件事：把「读不到」当「客户端不支持串流」会让启动按钮永远不可用，正是
+ * 本批要修的那类退化。已读到的历史状态会经 `CONTEXT_CHANGED` / `STREAM_EVENT` 先行到达，
+ * 渲染层保留自己的最后一次快照即可。
  *
- * ## 读路径不创建会话、不占用工作区（2026-11-26 审查修正）
+ * ## 读路径不订阅、不创建会话、不占用工作区（2026-11-26 审查修正 + 0.1.172 服务接口）
  *
- * 桌面会话状态（`desktopSession` / `reasonCode`）只能借一条会话去问 PSB 的 `stream/status`。
- * 候选顺序：
- *   1. 内存里已有的内部观看端绑定（本进程启动过串流）；
- *   2. 本机记录里该工作区的内部观看端会话 id（**应用重启后的主路径**，只读 HTTP）；
- *   3. 最近一次上下文解析记下的、还活着的用户任务会话。
+ * 桌面会话状态（`desktopSession` / `reasonCode`）只能借一条会话 id 去问 PSB 的
+ * `stream/status`。候选顺序只有两条：
+ *   1. 内存里已有的观看端绑定（本进程启动过串流）；
+ *   2. 本机记录里该工作区的绑定会话 id（**应用重启后的主路径**，只读 HTTP）。
  *
- * 三条都没有就返回 `status: null`。**不会**为了读状态新建 PSB 会话：新会话属于工作区写操作，
- * 写前占用闸门会顺带把工作区锁到自己名下 —— 打开「远程工作区」页签就静默占用一个空闲工作区
- * 是不可接受的副作用（审查发现的原实现正是这种「读着读着就占用」）。同样**不按标题认领**
- * `listSessions` 里的会话：同一工作区的列表可能含其他人的会话，认错会话会把别人的流当成自己的。
+ * 两者都没有就返回 `status: null`。**不会**为了读状态新建 PSB 会话、也**不会**为了读状态调用
+ * 工作区级订阅：前者会让打开页签静默占用工作区（审查发现的原实现），后者会占用观看名额。
+ * 同样**不按标题认领** `listSessions` 里的会话：同一工作区的列表可能含其他人的会话。
  */
 export interface PsbWorkspaceAdminStreamStatusResult {
   readonly status: PsbWorkspaceAdminStreamStatus | null;
   /**
-   * 本次读数所用的内部观看端会话（没有则 `null`）。加性字段，与 `STREAM_START` 同形。
+   * 本次读数所用的观看端绑定会话 id（没有则 `null`）。加性字段，与 `STREAM_START` 同形。
    *
-   * 值是「本机记录 / 内存绑定」里那条真实存在的内部会话；读到状态的这一刻它一定存在，但
-   * **不代表已订阅**（读状态只发 HTTP）。渲染层可以直接用它过滤 `STREAM_EVENT` / 决定输入
-   * 是否可发；没有记录时是 `null`（用户在页面上点「启动」之后才会有）。
+   * 正常是**桌面访问会话** id（旧 PSB 过渡回退时是内部 Agent 会话 id）。值是「本机记录 /
+   * 内存绑定」里那条真实存在的会话；读到状态的这一刻它一定存在，但**不代表已订阅**（读状态只
+   * 发 HTTP）。渲染层可以直接用它过滤 `STREAM_EVENT` / 决定输入是否可发；没有绑定记录时是
+   * `null`（用户在页面上点「启动」之后才会有）。
    */
   readonly viewerSessionId: string | null;
 }
 
-/** `STREAM_START` 的结果：新状态 + 内部观看端会话 id（渲染层据此过滤 `STREAM_EVENT`）。 */
+/** `STREAM_START` 的结果：新状态 + 观看端绑定会话 id（渲染层据此过滤 `STREAM_EVENT`）。 */
 export interface PsbWorkspaceAdminStreamStartResult {
   readonly status: PsbWorkspaceAdminStreamStatus;
   readonly workspaceId: string;
+  /** 观看端绑定会话 id：桌面访问会话 id（旧 PSB 过渡回退时是内部 Agent 会话 id）。 */
   readonly viewerSessionId: string;
 }
 
-/* ============================== 4. 内部观看端会话 ============================== */
+/* ============================== 4. 过渡回退的内部会话 ============================== */
 
 /**
- * 内部观看端会话的标题标记。
+ * **过渡兜底专用**的内部 Agent 会话标题（只在旧 PSB 没有工作区级订阅端点时出现）。
  *
- * 作用只有一个：让用户在 PSB 会话列表里能辨认出「这条是 Cindy 的观看端，不是我的任务」。
+ * PSB 0.1.172 的框架规则：**Agent 会话只装用户任务**；串流 / 工作区读取 / 访问起停走服务接口。
+ * 新客户端优先用 `POST …/workspaces/:id/stream/subscribe`（返回桌面访问会话 id，不建会话），
+ * 因此这条标题在新服务端上**永不出现**。
  *
- * **不再用标题认领会话**（2026-11-26 审查修正）：`listSessions(workspaceId)` 会返回同一工作区
- * 里**其他人**（以及同一账号其它窗口）的会话，按标题前缀认领会认到别人的会话上——订阅别人的
- * 流、把别人的会话当成自己的复用。复用的唯一依据是本机记录里的 `viewers[workspaceId]`
- * （`main/remote-workspace/adminRecentStore.ts`，持久化）；没有记录就新建一条，不认领陌生标题。
+ * 兜底时的硬约束（PSB 0.1.172 契约）：
+ *   - 创建请求必须带 `purpose: 'internal'`：PSB 默认不把它列进会话列表、不计入 `sessionCount`
+ *     （其它值 PSB 会 400）。Cindy 侧删掉这条兜底后，这个字段也一起消失；
+ *   - 标题必须写明**内部用途**，不得伪装成用户任务（`Cindy 观看端 · 内部串流订阅`）；
+ *   - 记 warn 日志，让「用户还在跑旧服务端」这件事可归因。
  *
- * 语义契约：
- *   - `STREAM_START` 时先看本机记录里的内部会话 id（校验仍非终态）→ 复用；
- *   - 没有记录 / 已终态才新建一条（`agentKind: 'pi'`、`clientRequestId` 幂等），并立刻记下 id；
- *   - **不要**把用户的会话改名成这个前缀，也不要在别处复用它 —— 它是内部会话的标识，
- *     不是产品文案（不翻译、不进 i18n）。
+ * **不要**把它用作「按标题认领会话」的判据：`listSessions` 是全工作区可见范围，认领标题会认到
+ * 别人的会话（2026-11-26 审查）。兜底只认本次创建返回的 id（并持久化到 `adminRecentStore`）。
  */
-export const PSB_ADMIN_VIEWER_SESSION_TITLE = 'Cindy 观看端';
-
-/**
- * 内部观看端会话此刻**可直接复用**吗（不需要重建）。
- *
- * 只有 `starting` / `running` / `idle` 算可复用；`stopped` / `failed` 是 PSB 的终态、
- * **永不逆转**，复用它一定被 PSB 拒（本批要修的正是这个竞态）。
- */
-export function psbAdminViewerSessionReusable(status: string | null | undefined): boolean {
-  return status === 'starting' || status === 'running' || status === 'idle';
-}
+export const PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE = 'Cindy 观看端 · 内部串流订阅';
 
 /* ============================== 5. 纯函数映射 ============================== */
 
@@ -304,6 +367,91 @@ export function psbAdminStreamStatusFromPsb(
 /** 复用共享的串流事件形状（帧 / 状态 / 光标 / 关闭 / 错误）；只是给管理页通道一个别名。 */
 export type PsbAdminStreamEvent = PsbStreamEvent;
 
+/* ==================== 5.1 stale 上下文的展示判据（纯函数，main/renderer 共用） ==================== */
+
+/**
+ * stale 文案的两组 i18n key（按「为什么看不到工作区」区分，不按原因细分）。
+ *
+ * 原因（`staleReason`）留给诊断与测试；用户只需要知道下一步：工作区没了 vs 网络/PSB 读不到。
+ */
+export const PSB_ADMIN_STALE_COPY_KEYS = {
+  missing: {
+    title: 'remoteWorkspace.admin.staleMissingTitle',
+    hint: 'remoteWorkspace.admin.staleMissingHint',
+    action: 'remoteWorkspace.admin.staleMissingAction',
+  },
+  unavailable: {
+    title: 'remoteWorkspace.admin.staleUnavailableTitle',
+    hint: 'remoteWorkspace.admin.staleUnavailableHint',
+    action: 'remoteWorkspace.admin.staleUnavailableAction',
+  },
+} as const;
+
+export type PsbAdminStaleCopyKind = keyof typeof PSB_ADMIN_STALE_COPY_KEYS;
+
+/**
+ * 上下文的可信度。
+ *
+ * 旧 main / 旧缓存载荷没有 `availability` 时按 `stale` 推断：`stale === true` 视为
+ * `unavailable`（保守：不让一个旧载荷被当成实时事实去写 PSB）。
+ */
+export function psbAdminContextAvailability(
+  context: PsbWorkspaceAdminContext,
+): PsbWorkspaceAdminAvailability {
+  const availability = context.availability;
+  if (availability === 'live' || availability === 'unavailable' || availability === 'missing') {
+    return availability;
+  }
+  return context.stale === true ? 'unavailable' : 'live';
+}
+
+/** 固定信息是否来自本机快照（旧 main 缺字段时按 `availability` 推断）。 */
+export function psbAdminContextIsStale(context: PsbWorkspaceAdminContext): boolean {
+  return psbAdminContextAvailability(context) !== 'live';
+}
+
+/**
+ * 这个上下文能不能执行写操作（占用 / 解除占用 / 启动串流 / 打开网页）。
+ *
+ * 两条独立约束：
+ *   1. 工作区事实必须来自 PSB（`live`）—— stale 时占用 / 串流只会得到一条 PSB 失败，
+ *      提前在前端拦住并给「工作区已不可见 / 连不上」的可行动原因；
+ *   2. 工作区 id 必须是真的（`workspaceIdKnown !== false`）—— 只有本机会话行线索时 id 是占位。
+ */
+export function psbAdminContextCanOperate(context: PsbWorkspaceAdminContext | null): boolean {
+  if (!context) return false;
+  if (context.workspaceIdKnown === false) return false;
+  return psbAdminContextAvailability(context) === 'live';
+}
+
+/** stale 态的文案分组；live 时 `null`。 */
+export function psbAdminContextStaleCopyKind(
+  context: PsbWorkspaceAdminContext,
+): PsbAdminStaleCopyKind | null {
+  const availability = psbAdminContextAvailability(context);
+  if (availability === 'missing') return 'missing';
+  if (availability === 'unavailable') return 'unavailable';
+  return null;
+}
+
+/**
+ * stale 时写操作的可行动文案 key；live / 可写时 `null`。
+ *
+ * 占位身份（`workspaceIdKnown === false`）比 stale 更彻底：连工作区 id 都不知道，
+ * 文案要说明「只能看到本机保存的信息」，不能暗示重试就能占用。
+ */
+export function psbAdminContextActionBlockedKey(
+  context: PsbWorkspaceAdminContext | null,
+): string | null {
+  if (psbAdminContextCanOperate(context)) return null;
+  if (context && context.workspaceIdKnown === false) {
+    return 'remoteWorkspace.admin.staleUnknownWorkspaceAction';
+  }
+  const kind = context ? psbAdminContextStaleCopyKind(context) : null;
+  return kind ? PSB_ADMIN_STALE_COPY_KEYS[kind].action : 'remoteWorkspace.admin.staleUnavailableAction';
+}
+
+
 /* ============================== 6. 交互输入（键鼠） ============================== */
 
 /**
@@ -334,7 +482,7 @@ export type PsbStreamInputKind = (typeof PSB_STREAM_INPUT_KINDS)[number];
  */
 export const PSB_STREAM_INPUT_MAX_FRAME_BYTES = 4096;
 
-/** `STREAM_INPUT` 的入参（工作区级：main 从工作区绑定解析内部观看端会话）。 */
+/** `STREAM_INPUT` 的入参（工作区级：main 从观看端绑定解析会话）。 */
 export interface PsbWorkspaceAdminStreamInputRequest {
   readonly workspaceId: string;
   /** PSB 输入事件（`kind` ∈ `PSB_STREAM_INPUT_KINDS`）。 */

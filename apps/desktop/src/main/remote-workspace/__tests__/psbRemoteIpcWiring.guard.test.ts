@@ -86,6 +86,10 @@ const BRIDGE_METHODS: ReadonlyArray<{
   { method: 'onWorkspaceChanged', channel: 'WORKSPACE_CHANGED', invoke: false },
   // 发送时透明重建 PSB 会话后 main → renderer 的「这个任务换了一条会话」推送。
   { method: 'onSessionsRebound', channel: 'SESSIONS_REBOUND', invoke: false },
+  // CINDY-RW-10：版本控制检查通知的兜底读取 / 处置动作 invoke，以及通知推送。
+  { method: 'workspaceVcsNotice', channel: 'WORKSPACE_VCS_NOTICE_GET', invoke: true },
+  { method: 'runWorkspaceVcsAction', channel: 'WORKSPACE_VCS_ACTION', invoke: true },
+  { method: 'onWorkspaceVcsNotice', channel: 'WORKSPACE_VCS_NOTICE', invoke: false },
 ];
 
 /**
@@ -218,6 +222,22 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(captureSource, 'streamCapture 未用共享组合匹配器').toContain('matchesElectronInput');
   });
 
+  it('发送前闸门失败保留 PSB 命名空间码（不落通用 INTERNAL）', () => {
+    // 2026-11-26 真机：远程工作区按钮弹「操作失败，请稍后重试。」。原因之一是发送闸门把
+    // `PsbClientError` 直接抛进 `ipcMain.handle` —— 跨进程只保留 message，渲染层拿不到
+    // `PSB_*` 码（CINDY-RW-10 的三个 VCS 码也会一起被吞）。这里钉住 register 的收敛点：
+    // 已带码的 IpcError 原样抛，其余走 `psbIpcCodeForFailure`（映射不到才落 INTERNAL）。
+    const registerSource = readSource('src/main/maker-ipc/register.ts');
+    const gateStart = registerSource.indexOf('preparePsbWorkspaceLock: async (sessionId) =>');
+    expect(gateStart).toBeGreaterThanOrEqual(0);
+    const gateBlock = registerSource.slice(
+      gateStart,
+      registerSource.indexOf('\n    },\n', gateStart),
+    );
+    expect(gateBlock).toContain('if (isIpcError(error)) throw error;');
+    expect(gateBlock).toContain('psbIpcCodeForFailure(failure) ?? \'INTERNAL\'');
+  });
+
   it('写操作前的占用闸门接线齐备（新会话 / 启动串流 / 每次发送 / 重绑）', () => {
     // PSB 服务端对工作区写操作校验占用（2026-11-26 口径）：Cindy 这三个入口都必须先 ensure，
     // 漏一处的后果是「用户在 PSB 侧被拒后只看到一句不可行动的失败」，且没有编译错误。
@@ -236,7 +256,7 @@ describe('PSB 远程工作区 IPC 接线', () => {
     );
     expect(createRequest, 'createSession 未真正调用 PSB').toBeGreaterThan(createEnsure);
 
-    // 2) 启动串流：先 ensure，再找/建内部观看端会话并订阅。
+    // 2) 启动串流：先 ensure，再建立观看端绑定（工作区级订阅 / 旧 PSB 过渡回退）并订阅。
     const streamStartAt = adminSource.indexOf('async function streamStart(');
     const streamEnsure = adminSource.indexOf('await remote().ensureWorkspaceLocked(id)');
     const streamBind = adminSource.indexOf('await startStreamWithRecovery(id)');

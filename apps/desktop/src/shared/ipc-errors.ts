@@ -406,12 +406,24 @@ export type IpcErrorCode =
   // deleting）：等它就绪后重发即可。与「工作区不存在」「客户端离线」是不同的下一步，
   // 所以单独一个码，而不是并进 PSB_NOT_FOUND。
   | 'PSB_WORKSPACE_NOT_READY'
+  // CINDY-RW-10：占用/解除占用那一刻的版本控制检查（含 P4 reconcile）拒绝。三种码都是
+  // 「现在不能占用/释放」，但下一步不同：DIRTY 可查看详情/还原后重试，UNAVAILABLE /
+  // UNSUPPORTED 只能重试检查（没有 force 分支）。渲染层据此给可行动文案。
+  | 'PSB_WORKSPACE_VCS_DIRTY'
+  | 'PSB_WORKSPACE_VCS_UNAVAILABLE'
+  | 'PSB_WORKSPACE_VCS_UNSUPPORTED'
   | 'PSB_NOT_FOUND'
   | 'PSB_UNREACHABLE'
   | 'PSB_STREAM_UNAVAILABLE'
   // 本端没有活动的串流连接（输入无处可发）：可恢复，先启动观看即可。与
   // PSB_STREAM_UNAVAILABLE（本机/客户端不支持串流）是不同的下一步，因此单独一个码。
-  | 'PSB_STREAM_NOT_ACTIVE';
+  | 'PSB_STREAM_NOT_ACTIVE'
+  // 订阅串流时工作区没有 running 的桌面访问会话（PSB 409 details.code='NO_RUNNING_SESSION'）：
+  // 按 details.state 分三条码，因为下一步动作不同——去 PSB 网页启动访问 / 等启动 / 等结束。
+  // 语义与文案正本见 shared/psb-remote-workspace.ts 的 `PSB_NO_RUNNING_SESSION_IPC_CODES`。
+  | 'PSB_STREAM_NO_RUNNING_SESSION'
+  | 'PSB_STREAM_ACCESS_STARTING'
+  | 'PSB_STREAM_ACCESS_STOPPING';
   // 上报错误码已移除（Meka divergence，第 5 轮同步后移除）：上游此处定义
   // LOG_UPLOAD_UNAVAILABLE / PRIVACY_CONSENT_REQUIRED / LOG_UPLOAD_EMPTY / LOG_UPLOAD_FAILED / LOG_UPLOAD_BUSY。
 
@@ -663,10 +675,17 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
   'PSB_CLIENT_OFFLINE',
   'PSB_WORKSPACE_NOT_READY',
+  // CINDY-RW-10：版本控制检查失败码（与 `IpcErrorCode` union 里那组一一对应）。
+  'PSB_WORKSPACE_VCS_DIRTY',
+  'PSB_WORKSPACE_VCS_UNAVAILABLE',
+  'PSB_WORKSPACE_VCS_UNSUPPORTED',
   'PSB_NOT_FOUND',
   'PSB_UNREACHABLE',
   'PSB_STREAM_UNAVAILABLE',
   'PSB_STREAM_NOT_ACTIVE',
+  'PSB_STREAM_NO_RUNNING_SESSION',
+  'PSB_STREAM_ACCESS_STARTING',
+  'PSB_STREAM_ACCESS_STOPPING',
 ]);
 
 export function isIpcErrorCode(code: unknown): code is IpcErrorCode {

@@ -3,8 +3,9 @@
  *
  * ## 为什么是工作区级
  *
- * 页面看的画面由主进程的**内部观看端 PSB 会话**（标题 `Cindy 观看端`）订阅，串流 WS 属于
- * 那个会话。所以输入必须走 `adminStreamInput({ workspaceId, event })`（`PSB_ADMIN_CHANNELS
+ * 页面看的画面由主进程的**工作区级观看端绑定**订阅：`POST …/workspaces/:id/stream/subscribe`
+ * 返回的桌面访问会话 id（旧 PSB 的过渡回退才是内部 Agent 会话），串流 WS 挂在那条会话上。
+ * 所以输入必须走 `adminStreamInput({ workspaceId, event })`（`PSB_ADMIN_CHANNELS
  * .STREAM_INPUT`），**不能**用会话级 `psbRemote.streamInput({ sessionId, ... })` —— 那指向
  * 用户任务的 `psb:<id>` 会话，和本页画面不是同一条连接（发了也没人看，还会在另一条会话上
  * 触发 xdotool）。

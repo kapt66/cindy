@@ -40,10 +40,19 @@
  *        时同样清空画面并复位成未启动（手动停止与页签隐藏的自动停止都覆盖），失败只留一条中性
  *        可行动提示；`capable:false` 时点「启动」给原因而不是静默；同一帧里「移动 → 按下」按
  *        这个顺序发出（移动经 rAF 合并、边沿经 `pump.sendEdge` 先冲刷）。
+ *     ⑭ **版本控制检查通知的页面接线**（2026-11-26，CINDY-RW-10）：main 广播 advisory 后，版本
+ *        控制分类从统一占位空态切换为 `variant="inline"` 的内联提示条（查看详情 / 一键清理 /
+ *        继续）；「一键清理」先二次确认、确认后才按 kind + `confirm:true` 调
+ *        `runWorkspaceVcsAction`（202 后出现「清理已开始」）；「继续」关提示并调
+ *        `runWorkspaceVcsAction({kind:'continue'})` 清 main 缓存（否则换窗口 / hydrate 复现已忽略
+ *        的提示，VCS 现行口径）；页头占用 / 解除占用成功后兜底 `hydrateWorkspaceVcsNotice`
+ *        （推送已覆盖时幂等）。
  * - Bug / 规则依据：用户 2026-11-26 两轮口径（入口与页面改为「远程工作区」；页头右侧通用操作、
  *   分类左对齐、详情改浮层、新增全屏；串流可交互 + 进入页面不自动开播）；产品正本
- *   `docs/product-rules/psb-remote-workspace-sessions.md` §2.4 / §6；契约正本
- *   `apps/desktop/src/shared/psb-workspace-admin.ts` 与 `shared/psb-remote-workspace.ts`。
+ *   `docs/product-rules/psb-remote-workspace-sessions.md` §2.4 / §2.7 / §6；工程契约
+ *   `docs/dev-rules/psb-remote-session-transport.md` §13.5；契约正本
+ *   `apps/desktop/src/shared/psb-workspace-admin.ts`、`shared/psb-remote-workspace.ts` 与
+ *   `shared/psb-workspace-vcs.ts`。
  * - 现有覆盖缺口：旧页面测试锁的是「跟随当前任务 + 会话终态文案」，与工作区级语义相反；
  *   本文件覆盖工作区级跟随、页头操作、分类对齐、浮层不改布局、全屏、空态与解耦，以及本轮的
  *   串流生命周期（手动启动 / 离开释放）/ 输入转发 / 释放策略。
@@ -53,7 +62,7 @@
  * - tier：unit（jsdom + RTL，无真实 PSB / Electron）。
  */
 
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
@@ -62,11 +71,13 @@ import type {
   PsbWorkspaceAdminContext,
   PsbWorkspaceAdminStreamStatus,
 } from '../../../../../shared/psb-workspace-admin';
+import type { WorkspaceVcsNotice } from '../../../../../shared/psb-workspace-vcs';
 import {
   psbStreamCursorKeyword,
   type PsbStreamCursorShape,
 } from '../../../../../shared/psb-remote-workspace';
 import { toast } from '@/lib/toast';
+import { resetWorkspaceVcsNoticeStoreForTest } from '../../vcs/vcsNoticeStore';
 import { RemoteWorkspaceAdminPanel } from '../RemoteWorkspaceAdminPanel';
 
 // jsdom 没有 WebCodecs / canvas 2D：换成假播放器，让「启动 → 已订阅」这条路可以走通。
@@ -190,8 +201,29 @@ function context(patch: Partial<PsbWorkspaceAdminContext> = {}): PsbWorkspaceAdm
     lastErrorZh: null,
     source: 'session',
     viewerSessionId: 'viewer-a',
+    stale: false,
+    availability: 'live',
+    staleReason: null,
+    snapshotSavedAt: null,
+    workspaceIdKnown: true,
     ...patch,
   };
+}
+
+/** stale（固定信息来自本机快照）上下文：页头照旧，状态类信息未知。 */
+function staleContext(patch: Partial<PsbWorkspaceAdminContext> = {}): PsbWorkspaceAdminContext {
+  return context({
+    stale: true,
+    availability: 'unavailable',
+    staleReason: 'list-failed',
+    snapshotSavedAt: '2026-11-26T00:00:00.000Z',
+    viewerSessionId: null,
+    desktopSession: null,
+    reasonCode: null,
+    lastErrorZh: '连不上 PSB',
+    occupancy: { occupied: false, byMe: false, personName: '' },
+    ...patch,
+  });
 }
 
 /**
@@ -213,6 +245,10 @@ const bridge = {
   /** 画面捕获态开关（全屏时让 main 抑制宿主快捷键）。 */
   setAdminStreamCaptureActive: vi.fn(),
   sessionStatus: vi.fn(),
+  /** 版本控制检查通知（CINDY-RW-10）：main 广播 → store → 版本控制分类的内联提示条。 */
+  workspaceVcsNotice: vi.fn(),
+  onWorkspaceVcsNotice: vi.fn(),
+  runWorkspaceVcsAction: vi.fn(),
 };
 
 let pushContext:
@@ -233,6 +269,44 @@ const streamEventHandlers = new Set<(event: unknown) => void>();
 function pushStreamEvent(event: unknown): void {
   for (const handler of [...streamEventHandlers]) handler(event);
 }
+
+/** main → renderer 的版本控制通知处理器（页面 hook 通过 `onWorkspaceVcsNotice` 订阅）。 */
+const vcsNoticeHandlers = new Set<(event: unknown) => void>();
+
+/** 模拟 main 的广播（与占用 / 释放成功后 `emitWorkspaceVcsNotice` 同形）。 */
+function pushVcsNotice(notice: WorkspaceVcsNotice | null, workspaceId = 'ws-a'): void {
+  for (const handler of [...vcsNoticeHandlers]) {
+    handler({ workspaceId, operation: 'occupy', notice });
+  }
+}
+
+/**
+ * 0.1.180 advisory 样例（成功占用 / 释放后附带的建议）：「查看详情 / 一键清理 / 继续」。
+ * 文案来自 PSB（`messageZh` / `descriptionZh`），Cindy 只展示。
+ */
+const VCS_ADVISORY: WorkspaceVcsNotice = {
+  code: 'WORKSPACE_VCS_DIRTY',
+  advisory: true,
+  messageZh: '检测到未提交修改（1 个检出）',
+  dirty: true,
+  projects: [{ projectId: 1, pathInWorkspace: '.', kind: 'p4', changes: 3 }],
+  actions: [
+    {
+      kind: 'inspect-vcs',
+      method: 'GET',
+      path: '/api/cindy/remote/workspaces/ws-a/vcs',
+      descriptionZh: '查看未提交修改详情',
+    },
+    {
+      kind: 'clean-workspace',
+      method: 'POST',
+      path: '/api/cindy/remote/workspaces/ws-a/vcs/revert',
+      body: { projectIds: [1], confirm: 'revert' },
+      descriptionZh: '一键清理',
+    },
+    { kind: 'continue', descriptionZh: '忽略提示，继续使用工作区' },
+  ],
+};
 
 /** Fullscreen API 替身（jsdom 没有）：记录调用并模拟浏览器切换全屏元素。 */
 let fullscreenElement: Element | null = null;
@@ -261,6 +335,8 @@ beforeEach(async () => {
   vi.clearAllMocks();
   pushContext = null;
   streamEventHandlers.clear();
+  vcsNoticeHandlers.clear();
+  resetWorkspaceVcsNoticeStoreForTest();
   fullscreenElement = null;
   playerMock.createCount = 0;
   playerMock.stats = {
@@ -287,6 +363,21 @@ beforeEach(async () => {
   bridge.occupyWorkspace.mockResolvedValue({ workspace: {} });
   bridge.releaseWorkspace.mockResolvedValue({ workspace: {} });
   bridge.openWebWorkspace.mockResolvedValue(undefined);
+  // 默认没有版本控制通知：既有用例看的就是「没有通知时保留占位空态」。
+  bridge.workspaceVcsNotice.mockResolvedValue({ workspaceId: 'ws-a', notice: null });
+  bridge.onWorkspaceVcsNotice.mockImplementation((handler: (event: unknown) => void) => {
+    vcsNoticeHandlers.add(handler);
+    return () => {
+      vcsNoticeHandlers.delete(handler);
+    };
+  });
+  bridge.runWorkspaceVcsAction.mockResolvedValue({
+    workspaceId: 'ws-a',
+    kind: 'clean-workspace',
+    accepted: true,
+    operationId: 'op-1',
+    data: null,
+  });
   bridge.onAdminContextChanged.mockImplementation(
     (
       handler: (event: {
@@ -514,6 +605,10 @@ it('occupy / release / open-web actions call the bridge and refresh the workspac
   const callsAfterRelease = bridge.adminContext.mock.calls.length;
   // 成功 → 刷新工作区上下文（占用者 / 状态以主进程事实为准）。
   expect(callsAfterRelease).toBeGreaterThan(1);
+  // 占用 / 解除占用成功：兜底读一次版本控制通知（推送已覆盖时幂等，读不到不清掉已到的通知）。
+  await waitFor(() =>
+    expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'ws-a' }),
+  );
 
   // 推送一个「未占用」的工作区：按钮切换成「占用」，点击后调 occupyWorkspace。
   await act(async () => {
@@ -534,6 +629,76 @@ it('occupy / release / open-web actions call the bridge and refresh the workspac
     );
   });
   expect(bridge.openWebWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+});
+
+it('shows the version-control advisory inline on its category and cleans only after inline confirmation', async () => {
+  await renderPanel();
+  // 没有通知：版本控制分类仍是统一占位空态（不放假按钮）。
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('tab', { name: i18n.t('remoteWorkspace.admin.categories.versionControl') }),
+    );
+  });
+  expect(screen.getByTestId('remote-workspace-admin-version-control').textContent).toContain(
+    i18n.t('remoteWorkspace.admin.placeholderComingSoon'),
+  );
+
+  // main 广播 advisory（与占用成功后的推送同一路径）：不刷新页面就出现内联提示条。
+  await act(async () => {
+    pushVcsNotice(VCS_ADVISORY);
+  });
+  const inline = screen.getByTestId('workspace-vcs-notice');
+  expect(inline.dataset['variant']).toBe('inline');
+  expect(inline.dataset['advisory']).toBe('true');
+  expect(inline.textContent).toContain(VCS_ADVISORY.messageZh);
+  expect(inline.textContent).toContain('一键清理');
+  expect(screen.queryByText(i18n.t('remoteWorkspace.admin.placeholderComingSoon'))).toBeNull();
+
+  // 不可逆清理：点按钮只进入二次确认，不立刻发动作。
+  await act(async () => {
+    fireEvent.click(screen.getByText('一键清理'));
+  });
+  expect(screen.getByTestId('workspace-vcs-confirm')).toBeTruthy();
+  expect(bridge.runWorkspaceVcsAction).not.toHaveBeenCalled();
+
+  await act(async () => {
+    fireEvent.click(screen.getByText(i18n.t('remoteWorkspace.vcs.confirm.action')));
+  });
+  expect(bridge.runWorkspaceVcsAction).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    kind: 'clean-workspace',
+    confirm: true,
+  });
+  // 202 异步：给「清理已开始」+ 刷新入口，不猜轮询端点。
+  expect(screen.getByTestId('workspace-vcs-cleaning')).toBeTruthy();
+});
+
+it('dismisses the inline version-control advisory when the user keeps using the workspace', async () => {
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('tab', { name: i18n.t('remoteWorkspace.admin.categories.versionControl') }),
+    );
+  });
+  await act(async () => {
+    pushVcsNotice(VCS_ADVISORY);
+  });
+  expect(screen.getByTestId('workspace-vcs-notice')).toBeTruthy();
+
+  // 「继续」= 关闭提示 + 调 main 清缓存（VCS 现行口径：只清本地通知的话，换窗口 /
+  // hydrate 会复现已忽略的提示，所以必须发 `kind:'continue'`）。
+  await act(async () => {
+    fireEvent.click(screen.getByText('忽略提示，继续使用工作区'));
+  });
+  expect(bridge.runWorkspaceVcsAction).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    kind: 'continue',
+  });
+  expect(screen.queryByTestId('workspace-vcs-notice')).toBeNull();
+  // 关掉后回到占位空态，页面结构不变。
+  expect(screen.getByTestId('remote-workspace-admin-version-control').textContent).toContain(
+    i18n.t('remoteWorkspace.admin.placeholderComingSoon'),
+  );
 });
 
 it('shows the person’s name when occupying is rejected because someone else took the workspace', async () => {
@@ -1324,7 +1489,118 @@ it('surfaces a manual start failure without auto-retrying', async () => {
   await act(async () => {});
   await act(async () => {});
   expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
-  expect(screen.getByRole('alert').textContent).toContain('远端暂时不可达');
+  // 已知错误码显示可行动文案（网络问题 →「检查网络后重试」），不是通用「操作失败」。
+  expect(screen.getByRole('alert').textContent).toContain(
+    i18n.t('remoteWorkspace.error.unreachable'),
+  );
+});
+
+/* ============ 工作区访问没在运行：可行动横幅（2026-11-26 真机事故修复） ============ */
+
+/**
+ * 真机：访问未运行时点「启动串流」只显示「串流失败：操作失败，请稍后重试。」。
+ * main 现在把 PSB 409 `details.code/state` 翻成三条 IPC 码；这里验证文案、诊断行与动作。
+ */
+it('shows an actionable banner when the workspace access is not running, plus a web-start entry', async () => {
+  bridge.adminStreamStart.mockRejectedValue(
+    new Error(
+      '[PSB_STREAM_NO_RUNNING_SESSION] 该工作区还没有运行中的桌面访问会话，请先在 PSB 网页启动远程桌面。',
+    ),
+  );
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  const alert = screen.getByRole('alert');
+  expect(alert.getAttribute('data-access-state')).toBe('none');
+  // 正文是本地化的可行动文案，不是通用「操作失败，请稍后重试。」。
+  expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessNone'));
+  expect(alert.textContent).not.toContain(i18n.t('remoteWorkspace.error.unknown'));
+  // PSB 中文原话保留为诊断行（可对照 / 报障）。
+  expect(
+    screen.getByTestId('remote-workspace-admin-stream-failure-detail').textContent,
+  ).toContain('请先在 PSB 网页启动远程桌面');
+
+  // 「在网页启动访问」复用既有「在网页打开」能力（main 解析 webUrl → 系统浏览器）。
+  const openWeb = screen.getByTestId('remote-workspace-admin-stream-open-web');
+  await act(async () => {
+    fireEvent.click(openWeb);
+  });
+  expect(bridge.openWebWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+});
+
+it('reports the real reason when the in-web start entry cannot be opened', async () => {
+  bridge.adminStreamStart.mockRejectedValue(
+    new Error('[PSB_STREAM_NO_RUNNING_SESSION] 请先在 PSB 网页启动远程桌面。'),
+  );
+  bridge.openWebWorkspace.mockRejectedValue(new Error('[PSB_NOT_FOUND] 工作区已不存在'));
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('remote-workspace-admin-stream-open-web'));
+  });
+  // 打不开网页时显示真实原因，不假装什么都没发生，也不留旧的可行动文案。
+  expect(screen.getByRole('alert').textContent).toContain(i18n.t('remoteWorkspace.error.notFound'));
+});
+
+it('auto-retries once (~2s) while the workspace access is still starting, then stops', async () => {
+  vi.useFakeTimers();
+  try {
+    const starting = new Error(
+      '[PSB_STREAM_ACCESS_STARTING] 工作区访问正在启动（Unity 还没就绪），请稍等再试。',
+    );
+    bridge.adminStreamStart.mockRejectedValueOnce(starting).mockRejectedValueOnce(starting);
+    await renderPanel();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+      );
+    });
+
+    const alert = screen.getByRole('alert');
+    expect(alert.getAttribute('data-access-state')).toBe('starting');
+    expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessStarting'));
+    // 这一档的正确动作是等一会儿，不提供「在网页启动访问」。
+    expect(screen.queryByTestId('remote-workspace-admin-stream-open-web')).toBeNull();
+    expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+
+    // 约 2s 后自动重试一次（Unity / 虚拟桌面就绪的竞态）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(bridge.adminStreamStart).toHaveBeenCalledTimes(2);
+
+    // 只重试一次：再过几秒也不会出现第三次（不循环、不形成启动风暴）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(bridge.adminStreamStart).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('alert').getAttribute('data-access-state')).toBe('starting');
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('shows a wait banner while the workspace access is stopping (no auto retry, no web entry)', async () => {
+  bridge.adminStreamStart.mockRejectedValue(
+    new Error('[PSB_STREAM_ACCESS_STOPPING] 工作区访问正在结束，请稍等再试。'),
+  );
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  const alert = screen.getByRole('alert');
+  expect(alert.getAttribute('data-access-state')).toBe('stopping');
+  expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessStopping'));
+  expect(screen.queryByTestId('remote-workspace-admin-stream-open-web')).toBeNull();
+  // 「正在结束」不是「正在启动」：不自动重试（重试只会再撞一次 409）。
+  await act(async () => {});
+  await act(async () => {});
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
 });
 
 it('forwards pointer, keyboard and wheel input as remote screen pixels', async () => {
@@ -1643,6 +1919,110 @@ it('ignores context pushes resolved for another window’s task', async () => {
   );
 });
 
+it('keeps showing the fixed workspace details when the workspace is stale, instead of the empty state', async () => {
+  // 2026-11-26 真机事故：PSB 读不到时旧页面变成「页头只有 — + 还没有远程工作区」。
+  // 新口径：名称 / 模板 · 机器是固定信息，来自本机快照，必须照常显示；状态未知要有降级说明。
+  bridge.adminContext.mockResolvedValue({ context: staleContext() });
+  await renderPanel();
+
+  // 固定信息全在：名称、模板 · 机器。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
+    'Saga2 · Machine A',
+  );
+  // 占用是状态信息：未知时显示「无法获取」，不沿用快照里过期的占用人。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-occupancy').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.occupancyValue', {
+      value: i18n.t('remoteWorkspace.admin.staleOccupancy'),
+    }),
+  );
+  // 降级说明 + PSB 原文诊断行；空态「还没有远程工作区」**不出现**。
+  const notice = screen.getByTestId('remote-workspace-admin-stale-notice');
+  expect(notice.getAttribute('data-stale-availability')).toBe('unavailable');
+  expect(within(notice).getByText(i18n.t('remoteWorkspace.admin.staleUnavailableTitle'))).toBeTruthy();
+  expect(within(notice).getByText(i18n.t('remoteWorkspace.admin.staleUnavailableHint'))).toBeTruthy();
+  expect(screen.getByTestId('remote-workspace-admin-stale-detail').textContent).toBe('连不上 PSB');
+  expect(screen.queryByTestId('remote-workspace-admin-no-workspace')).toBeNull();
+  // stale 时连「读串流状态」都不发：main 没有可信绑定可读，白打一次只会多等一次超时。
+  expect(bridge.adminStreamStatus).not.toHaveBeenCalled();
+  // 页头操作仍在（占用语义未知，但点下去要给可行动原因，不是消失）。
+  expect(screen.getByTestId('remote-workspace-admin-actions')).toBeTruthy();
+  // 页头标记 stale（供样式 / 联调定位）。
+  expect(
+    screen.getByTestId('remote-workspace-admin-workspace-line').getAttribute('data-stale'),
+  ).toBe('true');
+});
+
+it('distinguishes a deleted workspace from a temporary read failure', async () => {
+  bridge.adminContext.mockResolvedValue({
+    context: staleContext({
+      availability: 'missing',
+      staleReason: 'workspace-missing',
+      lastErrorZh: null,
+    }),
+  });
+  await renderPanel();
+  const notice = screen.getByTestId('remote-workspace-admin-stale-notice');
+  expect(notice.getAttribute('data-stale-availability')).toBe('missing');
+  expect(within(notice).getByText(i18n.t('remoteWorkspace.admin.staleMissingTitle'))).toBeTruthy();
+  // 名称 / 模板 / 机器照旧。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
+    'Saga2 · Machine A',
+  );
+  // 没有 PSB 原文时不渲染空诊断行。
+  expect(screen.queryByTestId('remote-workspace-admin-stale-detail')).toBeNull();
+});
+
+it('falls back to the directory segment for historical sessions without template or machine', async () => {
+  bridge.adminContext.mockResolvedValue({
+    context: staleContext({
+      title: '修一下检出脚本',
+      templateTitle: null,
+      clientName: '',
+      directoryName: 'saga2_project-9',
+      workspaceIdKnown: false,
+    }),
+  });
+  await renderPanel();
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    '修一下检出脚本',
+  );
+  // 模板 / 机器都拿不到时显示目录名（唯一还能确认工作区的字段），不留「—」。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
+    'saga2_project-9',
+  );
+  expect(screen.queryByTestId('remote-workspace-admin-no-workspace')).toBeNull();
+});
+
+it('gives an actionable reason instead of a generic failure when starting a stale workspace', async () => {
+  bridge.adminContext.mockResolvedValue({ context: staleContext() });
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  // 不再发一次注定失败的 PSB 写请求；错误条是可行动的中文（工作区不可见 / 连不上）。
+  expect(bridge.adminStreamStart).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.staleUnavailableAction'),
+  );
+});
+
+it('gives an actionable reason instead of a generic failure when occupying a stale workspace', async () => {
+  bridge.adminContext.mockResolvedValue({ context: staleContext() });
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOccupy') }));
+  });
+  // 占用是工作区写操作：stale 时直接 toast 可行动原因，不调用 IPC、不弹通用「操作失败」。
+  expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+  expect(toast.error).toHaveBeenCalledWith(i18n.t('remoteWorkspace.admin.staleUnavailableAction'));
+});
+
 it('ships localized copy for the new page actions and details fields', () => {
   // 12 locale 的 key 完整性由 `pnpm check:i18n` 负责；这里锁住页面真正用到的 key 都能解析，
   // 不是把 i18n key 原样渲染到界面上。
@@ -1679,6 +2059,14 @@ it('ships localized copy for the new page actions and details fields', () => {
     'remoteWorkspace.admin.streamInfoConnection',
     'remoteWorkspace.admin.exitFullscreenEsc',
     'remoteWorkspace.admin.openWebGone',
+    'remoteWorkspace.admin.staleMissingTitle',
+    'remoteWorkspace.admin.staleMissingHint',
+    'remoteWorkspace.admin.staleMissingAction',
+    'remoteWorkspace.admin.staleUnavailableTitle',
+    'remoteWorkspace.admin.staleUnavailableHint',
+    'remoteWorkspace.admin.staleUnavailableAction',
+    'remoteWorkspace.admin.staleUnknownWorkspaceAction',
+    'remoteWorkspace.admin.staleOccupancy',
     'remoteWorkspace.admin.streamReasonNoStreaming',
     'remoteWorkspace.session.stopFailed',
   ]) {

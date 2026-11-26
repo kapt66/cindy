@@ -40,6 +40,7 @@ import { cn } from '@/lib/utils';
 import { psbWorkspaceHealth, type PsbWorkspaceTone } from '../../../../shared/psb-remote-workspace';
 import { tryGetPsbRemoteBridge } from '../bridge';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
+import { psbFailureText } from '../psbFailureText';
 import { remoteWorkspacePsbSessionId } from './isRemoteWorkspaceSession';
 import type { RemoteWorkspaceSidebarSessionLike } from './remoteWorkspaceStatusStore';
 import { useRemoteWorkspaceForSession } from './useRemoteWorkspaceSidebar';
@@ -100,7 +101,10 @@ export function RemoteWorkspaceOpenButton({
         await bridge.openWebWorkspace({ workspaceId });
       } catch (error) {
         log.warn('open psb workspace in browser failed', error);
-        toast.error(t('remoteWorkspace.error.unknown'));
+        // 2026-11-26 真机事故：这里旧实现写死 `remoteWorkspace.error.unknown`，用户点两下行首
+        // 图标就只会看到两条「操作失败，请稍后重试。」。失败码（工作区已删 / PSB 不可达 / 未
+        // 登录）必须映射成可行动文案（`psbFailureText` 是渲染层唯一出口）。
+        toast.error(psbFailureText(t, error));
       } finally {
         setOpening(false);
       }

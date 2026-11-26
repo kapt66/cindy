@@ -36,6 +36,7 @@ import type {
   PsbSessionStatusResult,
 } from '../../shared/psb-remote-workspace.js';
 import { PsbClientError } from './psbClient.js';
+import type { PsbWorkspaceOperationOutcome } from './psbClient.js';
 
 /** 成功锁定的乐观有效期。见文件头「缓存与新鲜度」。 */
 export const PSB_WORKSPACE_LOCK_TTL_MS = 1_500;
@@ -67,8 +68,8 @@ export interface PsbWorkspaceLockLogger {
 export interface PsbWorkspaceLockPorts {
   /** 工作区列表（读口只认列表，见文件头）。 */
   listWorkspaces(): Promise<PsbRemoteWorkspace[]>;
-  /** 占用工作区（PSB 侧幂等：已由自己占用时原样返回）。 */
-  occupyWorkspace(workspaceId: string): Promise<PsbRemoteWorkspace>;
+  /** 占用工作区（PSB 侧幂等：已由自己占用时原样返回）。0.1.180 起响应可能带建议性 VCS 通知。 */
+  occupyWorkspace(workspaceId: string): Promise<PsbWorkspaceOperationOutcome>;
   /**
    * 读一条 PSB 会话（`ensureForSession` 用）。会话行自带工作区快照，发送前据此判断占用，
    * 省掉一次工作区列表请求。缺省时 `ensureForSession` 抛错（装配漏了就是这个 bug）。
@@ -188,7 +189,7 @@ export function createPsbWorkspaceLock(
     }
 
     // 未占用 → 自动占用（PSB 幂等；并发下最坏是别人先占到，下面按返回行重新判定）。
-    let occupied: PsbRemoteWorkspace;
+    let occupied: PsbWorkspaceOperationOutcome;
     try {
       occupied = await ports.occupyWorkspace(workspaceId);
     } catch (error) {
@@ -196,7 +197,7 @@ export function createPsbWorkspaceLock(
       if (mapped) return mapped;
       throw error;
     }
-    if (occupied.occupancy.byMe) {
+    if (occupied.workspace.occupancy.byMe) {
       ports.logger?.info('psb workspace lock: occupied the workspace before a write', {
         workspaceId,
       });
@@ -206,7 +207,7 @@ export function createPsbWorkspaceLock(
     return {
       ok: false,
       reason: 'occupied-by-other',
-      personName: occupied.occupancy.personName.trim(),
+      personName: occupied.workspace.occupancy.personName.trim(),
     };
   }
 
