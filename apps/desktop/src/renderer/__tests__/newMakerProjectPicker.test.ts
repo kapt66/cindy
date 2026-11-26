@@ -239,12 +239,12 @@ describe('Shared create project picker', () => {
   });
 
   it('keeps the MCPRouter-only picker scoped to Meka remote projects', () => {
-    expect(folderPickerPopoverSource).toContain('{isProjectPicker && mcprRemoteOnly ? (');
+    expect(folderPickerPopoverSource).toContain('{isProjectPicker && mcprRemoteOnly && !psbRemoteOnly ? (');
     expect(folderPickerPopoverSource).toContain(
       "t('newChat.folderPicker.mcprRemoteProjects')",
     );
-    expect(folderPickerPopoverSource).toContain('mcprRemoteOnly && !mcprConfigured');
-    expect(folderPickerPopoverSource).toContain('mcprRemoteOnly && mcprConfigured');
+    expect(folderPickerPopoverSource).toContain('mcprRemoteOnly && !psbRemoteOnly && !mcprConfigured');
+    expect(folderPickerPopoverSource).toContain('mcprRemoteOnly && !psbRemoteOnly && mcprConfigured');
     expect(folderPickerPopoverSource).toContain("t('newChat.folderPicker.connectMcpr')");
     expect(newMakerDraftRouteSource).toContain('<MekaRouterConnectDialog');
     expect(newMakerDraftRouteSource).toContain('setMcprConnectOpen(true)');
@@ -727,7 +727,7 @@ describe('Shared create project picker', () => {
   it('hides the add-remote-project entry once a device is selected', () => {
     // 条件里必须有 !deviceScope —— 这是这条行为的全部实现。
     expect(folderPickerPopoverSource).toContain(
-      '{isProjectPicker && !mcprRemoteOnly && onAddRemoteProject && !deviceScope && (',
+      '{isProjectPicker && !mcprRemoteOnly && !psbRemoteOnly && onAddRemoteProject && !deviceScope && (',
     );
     // 那一项就是不带设备身份的那次调用;它只应出现在本机语境。
     expect(folderPickerPopoverSource).toContain('onAddRemoteProject();');
@@ -769,7 +769,7 @@ describe('Shared create project picker', () => {
   // 就静默丢掉已选项目和部分已写好的消息(mention chip 被剥、workingDir/extraDirs 被清)。
   it('ignores reselecting the current device before touching either draft store', () => {
     expect(newMakerDraftRouteSource).toContain(
-      'if (!mcprChannelSelected && deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;',
+      'if (!mcprChannelSelected && !isPsbChannelSelected && deviceId === (effectiveDeviceLinkDeviceId ?? null)) return;',
     );
   });
 
@@ -873,10 +873,11 @@ describe('Shared create project picker', () => {
     );
     // dlSel 只在换设备时重种;同机保留用户选择(下一条断言它还会按新能力重校)。
     expect(action).toContain('if (deviceChanged) {\n          setDlSel(\n');
-    // extraDirs 只在换设备、或进入「对话」时清 —— 同机换项目那些目录仍然有效,
-    // 不传则 store 保持原值。
-    expect(action).toContain(
-      '...(deviceChanged || req.workingDir == null ? { extraDirs: [], writableDirs: [] } : {}),',
+    // extraDirs 只在换设备、进入「对话」、或转向 PSB 远程工作区时清 —— 同机换项目那些目录仍然
+    // 有效,不传则 store 保持原值。PSB 是第三种远端 transport（2026-11-25 新增）：它的
+    // `workingDir` 只是虚拟引用，本机引用目录在远端工作区不存在，必须与「进对话」同口径清掉。
+    expect(action).toMatch(
+      /\.\.\.\(deviceChanged \|\| req\.workingDir == null \|\| req\.psbTarget != null\s*\?\s*\{ extraDirs: \[\], writableDirs: \[\] \}/,
     );
     // 但 worktree 的 repo/branch 探测态照常重置 —— 换项目就是换 repo；用户偏好保留。
     expect(action).toContain('if (deviceChanged || workingDirChanged) {');
@@ -886,14 +887,34 @@ describe('Shared create project picker', () => {
   // #807 review 第十二轮:in-flight 保护要覆盖**工作区** pill,不只是设备 pill —— 否则用户点了
   // Send 还能从远程项目 X 切到 Y,会话建在 X 里、刚选的 Y 又被 create 后的重置清掉。
   it('disables and guards workspace switching while a send is in flight', () => {
-    // 设备、工作区以及本次创建会消费的 worktree 配置都要冻结。三处控件的 disabled 表达式后来
+    // 设备、工作区以及本次创建会消费的 worktree 配置都要冻结。这些控件的 disabled 表达式后来
     // 各自长了本地前缀（工作区 pill 的 `isFormalDraft ||`、设备 pill 的 `wtCheckoutBusy ||`），
     // 所以这里只断言「同一个 disabled 表达式里同时出现 sendInFlight 与
-    // directoryRecoverySelecting」，不再锁字面前缀；控件数仍是 3（2026-11-23 复核：设备 pill /
-    // 项目·工作区 pill / worktree 设置）。新增会消费创建目标的控件时这条计数必须变并在此登记。
+    // directoryRecoverySelecting」，不锁字面前缀。
+    //
+    // 计数按**会改写本次创建目标的控件类型**枚举，不再写裸数字：
+    //   1. 设备切换 pill（换机器 = 换目标）
+    //   2. 项目 / 工作区 mode pill（换目录或 PSB 工作区 = 换目标）
+    //   3. worktree 配置（本次创建消费的 repo/branch）
+    // PSB 远程工作区不再有独立目标头：它由上面两个既有 pill 承载（2026-11-25 实机反馈后，
+    // 位置渠道 + 项目胶囊取代自绘头），所以控件类型表回到三类。
+    // 新增会消费创建目标的控件时，把类型加进这张表并在本注释登记 —— 计数本身只是
+    // 「没有控件绕过这道冻结」的粗筛，真正语义是下面的 handler 级断言。
+    const frozenTargetControlKinds = [
+      'device-switcher-pill',
+      'project-workspace-mode-pill',
+      'worktree-config',
+    ] as const;
     expect(
       (newMakerDraftRouteSource.match(/disabled=\{[^}]*sendInFlight[^}]*directoryRecoverySelecting[^}]*\}/g) ?? []).length,
-    ).toBe(3);
+    ).toBe(frozenTargetControlKinds.length);
+    // PSB 渠道切换与工作区下拉也必须受同一把在途锁约束（渠道 handler 即时拒绝）。
+    const psbChannelHandler = newMakerDraftRouteSource.slice(
+      newMakerDraftRouteSource.indexOf('const handlePsbChannelSelect = useCallback('),
+    );
+    expect(
+      psbChannelHandler.slice(0, psbChannelHandler.indexOf('\n  const ', 1)),
+    ).toContain('if (sendInFlightRef.current || directoryRecoveryRef.current?.isSelecting() || isMekaDraft) return;');
     const handler = newMakerDraftRouteSource.slice(
       newMakerDraftRouteSource.indexOf('const handleModePickerSelect = useCallback('),
     );
@@ -1303,14 +1324,76 @@ describe('Shared create project picker', () => {
    * 它真正依赖的那一半(设备 / 项目)。新增路径时,①会直接失败,而②保证它自动是对的。
    */
   it('routes every draft-target transition through the single action', () => {
-    // 九条路径 = 上游五条(设备 pill、设备域浏览器选项目、工作区 picker、所选设备失效后的
-    // 自动回落、「对话」分组导航请求)+ Meka 的 MCPRouter channel 与实例选择两条 +
-    // 「默认工作目录」的两次预填(对话目标请求内与通用对话入口各一处,见
-    // `shouldPrefillDefaultNewTaskWorkingDir`)。声明本身是 `= useCallback(` 不匹配这个模式,
-    // 所以数出来的就是调用点。
-    // (远程 Agent 由模型选择器选择、只在本机任务出现,不再经设备菜单转移草稿目标。)
+    // 调用点按**目标类型**枚举（不再写裸数字）：每条路径都只声明目标，副作用统一由
+    // applyDraftTarget 按「设备 / 工作区两半的哪一半变了」推导。新增目标类型时把类型加进
+    // 这张表并在注释登记；不登记名字就过不了，这就是「新增路径时①会直接失败」的信号。
+    //
+    // 现有类型 = 上游五条 + Meka 两条 + 「默认工作目录」两次预填 + PSB 远程工作区一条：
+    //   1. device-pill            设备 pill 换设备
+    //   2. dialogue-target        侧栏「对话」分组导航请求（可能带默认目录）
+    //   3. dialogue-default-dir   对话目标请求内、本机默认工作目录预填
+    //   4. generic-default-dir    通用新建入口的默认工作目录预填
+    //   5. device-link-project    设备域浏览器添加 / 验证远程项目（带 inline 快照）
+    //   6. device-link-fallback   被控设备失效后的本机回落
+    //   7. device-fallback-local  所选设备 / 协同执行设备失效后的本机回落
+    //   8. mcpr-channel           选择 MCPRouter 渠道
+    //   9. mcpr-instance          从 MCPRouter 实例列表选远程项目
+    //  10. psb-workspace          PSB 远程工作区目标（第三种 transport，2026-11-25 新增）
+    //  11. psb-channel-select     位置渠道选「远程工作区」（选中渠道、还没选工作区 = 无 psb 目标）
+    const targetTransitionKinds = [
+      'device-pill',
+      'dialogue-target',
+      'dialogue-default-dir',
+      'generic-default-dir',
+      'device-link-project',
+      'device-link-fallback',
+      'device-fallback-local',
+      'mcpr-channel',
+      'mcpr-instance',
+      'psb-workspace',
+      'psb-channel-select',
+    ] as const;
     const calls = newMakerDraftRouteSource.match(/applyDraftTarget\(\{/g) ?? [];
-    expect(calls.length).toBe(9);
+    expect(calls.length).toBe(targetTransitionKinds.length);
+    // PSB 目标也必须走同一个动作：草稿只声明工作区级目标（引擎/模型在草稿页选，
+    // PSB 会话首条消息发送时才懒建），不在调用点各自手写 `psb:` / 虚拟目录。
+    const psbHandlerAt = newMakerDraftRouteSource.indexOf('const applyPsbDraftTarget = useCallback(');
+    expect(psbHandlerAt).toBeGreaterThan(-1);
+    const psbHandler = newMakerDraftRouteSource.slice(
+      psbHandlerAt,
+      newMakerDraftRouteSource.indexOf('const ensurePsbSessionForSend = useCallback(', psbHandlerAt),
+    );
+    expect(psbHandler).toContain('applyDraftTarget({');
+    expect(psbHandler).toContain('psbTarget: next,');
+    // 懒建前没有 PSB 会话身份：目标转移不能自带 psb: / 虚拟工作目录。
+    expect(psbHandler).toContain('workingDir: null,');
+    expect(psbHandler).toContain('remoteHostId: null,');
+    expect(psbHandler).not.toContain('psb:');
+    // 首条消息懒建会话必须写回草稿目标（重试复用同一条，不建第二条）。
+    const lazyAt = newMakerDraftRouteSource.indexOf('const ensurePsbSessionForSend = useCallback(');
+    const lazyHandler = newMakerDraftRouteSource.slice(
+      lazyAt,
+      newMakerDraftRouteSource.indexOf('const handlePsbPickerCreated = useCallback(', lazyAt),
+    );
+    expect(lazyHandler).toContain('psbSessionGateRef.current!.ensure({');
+    expect(lazyHandler).toContain('patchDraft({ psbTarget: { ...current, sessionId } })');
+    // 引擎/模型不锁定：没有任何 engineLocked 使用；位置渠道 + 项目胶囊承载远程工作区
+    // （2026-11-25 用户实机反馈后删掉自绘目标头，改为既有渠道控件）。
+    expect(newMakerDraftRouteSource).not.toContain('remoteWorkspace.draft.engineLocked');
+    expect(newMakerDraftRouteSource).not.toContain('RemoteWorkspaceDraftHeader');
+    expect(newMakerDraftRouteSource).toContain('psbSelected={isPsbChannelSelected && !isMekaDraft}');
+    expect(newMakerDraftRouteSource).toContain('onPsbRemoteSelect={handlePsbChannelSelect}');
+    expect(newMakerDraftRouteSource).toContain('psbRemoteOnly={isPsbChannelSelected}');
+    expect(newMakerDraftRouteSource).toContain('onSelectPsbWorkspace={handlePsbWorkspaceSelected}');
+    expect(newMakerDraftRouteSource).toContain('onCreatePsbWorkspace={handleCreatePsbWorkspace}');
+    // 项目胶囊的选中值必须与下拉行同一口径（客户端名-短 id），不能拿模板名当标签。
+    expect(newMakerDraftRouteSource).toContain('psbWorkspaceDisplayName({');
+    expect(newMakerDraftRouteSource).toContain('clientName: psbTarget.clientName,');
+    // 渠道已选但工作区未选：Send / Goal 两条入口都要先要求选工作区，不能落到没有远端目标的
+    // 本机会话（同一判据两处出现：handleSend 返回 false、handleCreateGoal throw）。
+    expect(
+      newMakerDraftRouteSource.match(/if \(isPsbChannelSelected && !isPsbDraft\) \{/g) ?? [],
+    ).toHaveLength(2);
     // 组件里不得再有任何一处手写这些副作用 —— 手写一处就等于又开了一条绕过推导的路。
     // patchDraft 仍可出现(入场清 extraDirs、发送后复位),但不得再带设备字段。
     expect(newMakerDraftRouteSource).not.toContain('deviceLinkDeviceId: deviceId,');
@@ -1506,10 +1589,15 @@ describe('Shared create project picker', () => {
 
   // #807 review 第二十二轮:ExtraDirsButton 开的是控制端原生目录对话框,选出来的本机路径发到对端
   // 会被静默丢掉、或撞上对端同名的无关目录 —— chip 显示的并不是真实授予的上下文。
+  // 2026-11-26 独立审查:PSB 远程工作区是第三种远程 transport,懒建会话前 `remoteHostId` 为空,
+  // 必须按渠道单独收掉本地引用目录(与 device-link / SSH 同口径,见产品规则 §2.3)。
   it('hides the reference-directory picker on remote drafts', () => {
-    expect(newMakerDraftRouteSource).toContain(
-      'onExtraDirsChange={isDeviceLinkDraft ? undefined : handleExtraDirsChange}',
-    );
+    // 取整个 prop 表达式再断言「哪些条件参与门禁 + 门禁结果」,不复制 jsx 排版。
+    const extraDirsGate = /onExtraDirsChange=\{([^}]*)\}/.exec(newMakerDraftRouteSource)?.[1] ?? '';
+    expect(extraDirsGate).toContain('isDeviceLinkDraft');
+    expect(extraDirsGate).toContain('isPsbDraft || isPsbChannelSelected');
+    expect(extraDirsGate).toContain('? undefined');
+    expect(extraDirsGate).toContain(': handleExtraDirsChange');
     // The single add entry grants write access only through the local Main picker;
     // legacy read-only directories retain their independent removal callback.
     expect(chatInputSource).toMatch(
@@ -1542,9 +1630,15 @@ describe('Shared create project picker', () => {
   // offered as a remote writable root. Existing remote grants remain visible/removable when
   // the executing side explicitly supports the setter.
   it('hides remote add while preserving capability-gated writable grant revocation', () => {
-    expect(newMakerDraftRouteSource).toContain(
-      'isDeviceLinkDraft || isRemoteProjectDraft\n                        ? undefined\n                        : handleWritableDirsChange',
-    );
+    // 可写目录同样是控制端本机路径:device-link / SSH(远程项目)/ PSB 远程工作区三种远程 transport
+    // 都不给本地添加入口。按 prop 表达式断言参与门禁的条件集合,不复制 jsx 排版。
+    const writableDirsGate =
+      /onWritableDirsChange=\{([^}]*)\}/.exec(newMakerDraftRouteSource)?.[1] ?? '';
+    expect(writableDirsGate).toContain('isDeviceLinkDraft');
+    expect(writableDirsGate).toContain('isRemoteProjectDraft');
+    expect(writableDirsGate).toContain('isPsbDraft || isPsbChannelSelected');
+    expect(writableDirsGate).toContain('? undefined');
+    expect(writableDirsGate).toContain(': handleWritableDirsChange');
     expect(agentCapabilitiesHookSource).toContain('writableDirs?: CapabilityStatus;');
     expect(ccAgentSessionViewSource).toContain(
       'canExposeWritableDirsChange({\n      capabilities: sessionCaps,',

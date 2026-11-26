@@ -5326,3 +5326,178 @@ describe('shared ownership rejection during lazy send', () => {
     expect(await pending.peek('session-1')).toBeNull();
   });
 });
+
+/**
+ * psb: 远程工作区会话的「发送前透明重建」在事务里的接线。
+ *
+ * 测试价值
+ * - 生产入口与可观察结果：`createMakerSendTransaction().sendToAgentAccepted`（renderer 直发、
+ *   队列 drain、device-link / 手机全部经过这里）。用户可观察结果：远程任务里上一条 PSB
+ *   会话终态后，**下一条消息仍然发出并拿到回复**，隧道换到新建的 PSB 会话上。
+ * - Bug／规则依据：`docs/dev-rules/psb-remote-session-transport.md` §6。修复前该会话被永久
+ *   拒绝（输入框锁死 +「这个任务已经结束」）。
+ * - 现有覆盖缺口：`main/remote-workspace/__tests__/sessionRebind.test.ts` 覆盖重建决策本身，
+ *   但看不到事务里的三件副作用：关掉仍持旧身份的空闲 runtime、把新身份写回 createOpts
+ *   让 lazy-create 用新隧道、失败时不派发。
+ * - 最小失败输入：live session 的 `remoteHostId='psb:old'` + 一个返回 `psb:new` 的重建钩子；
+ *   去掉任一接线，运行时要么继续用旧隧道，要么在两个身份之间半切换。
+ * - tier：unit（依赖全注入，无 Electron / DB / 网络）。
+ */
+describe('psb remote session rebind before dispatch', () => {
+  it('closes the stale runtime, rebuilds on the new identity and still dispatches this turn', async () => {
+    const stale = createSession({
+      remoteHostId: 'psb:old',
+      workDir: '/psb-remote/demo',
+      agentKind: 'claude-code',
+    });
+    let live: MakerSendTransactionSession | undefined = stale;
+    const bootstrapSession = vi.fn(async (opts: MakerSessionCreateOpts) => ({
+      session: createSession({
+        id: opts.id,
+        agentKind: opts.agentKind as AgentKind,
+        workDir: opts.workingDir,
+        remoteHostId: opts.remoteHostId ?? null,
+      }),
+      didInjectOrcaInstructions: false,
+      didInjectProjectContext: false,
+    }));
+    const { deps } = createDeps({
+      getSession: () => live,
+      // 生产实现会真的把 runtime 关掉（之后 getSession 返回 undefined）；复刻同一事实。
+      closeSessionIfCurrent: vi.fn(async () => {
+        live = undefined;
+      }),
+      bootstrapSession,
+      preparePsbRemoteRebind: async () => ({
+        previousRemoteHostId: 'psb:old',
+        remoteHostId: 'psb:new',
+      }),
+    });
+    const createOpts = {
+      id: 'session-1',
+      agentKind: 'claude-code' as const,
+      workingDir: '/psb-remote/demo',
+      remoteHostId: 'psb:old',
+    };
+
+    const result = await createMakerSendTransaction(deps).sendToAgentAccepted(
+      'session-1',
+      '继续，把这版跑起来',
+      createOpts,
+    );
+
+    expect(result).toMatchObject({ accepted: true });
+    // 旧 runtime 必须被关掉（否则这一轮还走已终态的隧道）。
+    expect(deps.closeSessionIfCurrent).toHaveBeenCalledWith('session-1');
+    // lazy-create 必须拿到新身份 —— 这是「透明重绑」真正生效的地方。
+    expect(bootstrapSession).toHaveBeenCalledOnce();
+    expect(bootstrapSession.mock.calls[0][0]).toMatchObject({
+      id: 'session-1',
+      remoteHostId: 'psb:new',
+      workingDir: '/psb-remote/demo',
+    });
+    expect(createOpts.remoteHostId).toBe('psb:new');
+  });
+
+  it('aborts this send when the rebuild fails, leaving the old runtime untouched', async () => {
+    const stale = createSession({ remoteHostId: 'psb:old', workDir: '/psb-remote/demo' });
+    const offline = Object.assign(new Error('[PSB_CLIENT_OFFLINE] 远端客户端当前离线。'), {
+      code: 'PSB_CLIENT_OFFLINE',
+    });
+    const { deps } = createDeps({
+      getSession: () => stale,
+      preparePsbRemoteRebind: async () => {
+        throw offline;
+      },
+    });
+
+    await expect(
+      createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello', {
+        agentKind: 'claude-code',
+        workingDir: '/psb-remote/demo',
+        remoteHostId: 'psb:old',
+      }),
+    ).rejects.toMatchObject({ code: 'PSB_CLIENT_OFFLINE' });
+
+    // 失败不得关掉仍可用的 runtime，也不得派发；下一次发送还能重试。
+    expect(deps.closeSessionIfCurrent).not.toHaveBeenCalled();
+    expect(stale.send).not.toHaveBeenCalled();
+  });
+
+  it('never rebinds without createOpts — the new identity could not reach lazy-create', async () => {
+    const preparePsbRemoteRebind = vi.fn(async () => null);
+    const { deps, session } = createDeps({ preparePsbRemoteRebind });
+
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+
+    expect(preparePsbRemoteRebind).not.toHaveBeenCalled();
+    expect(session.send).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * psb: 发送前的**工作区占用闸门**接线（2026-11-26 用户口径）。
+ *
+ * 测试价值
+ * - 生产入口与可观察结果：`sendToAgentAccepted`（直发 / 队列 drain / 手机全部经过）。
+ *   用户可观察结果：工作区被别人占用时这一轮不派发、消息留着可重试并给出可行动失败；
+ *   仍由自己锁定（或已自动重新占用）时消息照常发出。
+ * - Bug／规则依据：PSB 服务端对工作区写操作校验占用，Cindy 必须在写入前自己锁定/校验；
+ *   见 `docs/dev-rules/psb-remote-session-transport.md` §12。
+ * - 现有覆盖缺口：`workspaceLock.test.ts` 覆盖判据本身，但看不到事务里「闸门在派发之前、
+ *   失败时既不写库也不调 session.send」这层接线。
+ * - 最小失败输入：注入一个抛 `PSB_WORKSPACE_OCCUPIED_BY_OTHER` 的 `preparePsbWorkspaceLock`。
+ * - tier：unit（依赖全注入）。
+ */
+describe('psb workspace lock before dispatch', () => {
+  it('被他人占用 → 阻止本轮发送：不写库、不派发（消息保留可重试）', async () => {
+    const occupied = Object.assign(new Error('[PSB_WORKSPACE_OCCUPIED_BY_OTHER] 张三'), {
+      code: 'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
+    });
+    const { deps } = createDeps({
+      preparePsbWorkspaceLock: async () => {
+        throw occupied;
+      },
+    });
+
+    await expect(
+      createMakerSendTransaction(deps).sendToAgentAccepted(
+        'session-1',
+        'hello',
+        { agentKind: 'claude-code', workingDir: '/psb-remote/demo', remoteHostId: 'psb:new' },
+        { persistUserMessage: { clientId: 'input', content: 'hello' } },
+      ),
+    ).rejects.toMatchObject({ code: 'PSB_WORKSPACE_OCCUPIED_BY_OTHER' });
+
+    // 消息不落库、不派发：调用方（草稿 / 队列）保留内容供用户重试。
+    expect(deps.createDbMessage).not.toHaveBeenCalled();
+    expect(deps.ensureRemoteReadyForSessionStart).not.toHaveBeenCalled();
+  });
+
+  it('闸门放行 → 发送照常，且发生在远端就绪准备之前', async () => {
+    const order: string[] = [];
+    const { deps, session } = createDeps({
+      preparePsbWorkspaceLock: async () => {
+        order.push('lock');
+      },
+      ensureRemoteReadyForSessionStart: async () => {
+        order.push('remote-ready');
+      },
+    });
+
+    const result = await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+
+    expect(result).toMatchObject({ accepted: true });
+    expect(order).toEqual(['lock', 'remote-ready']);
+    expect(session.send).toHaveBeenCalledOnce();
+  });
+
+  it('直发（没有 createOpts）同样过闸门 —— 占用闸门不依赖重建入口', async () => {
+    const preparePsbWorkspaceLock = vi.fn(async () => {});
+    const { deps } = createDeps({ preparePsbWorkspaceLock });
+
+    await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
+
+    expect(preparePsbWorkspaceLock).toHaveBeenCalledWith('session-1');
+  });
+});

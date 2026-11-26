@@ -366,6 +366,18 @@ export async function openCcManagerSession(opts: {
     (await opts.host!.execStream(
       `"${REMOTE_NODE}" "${REMOTE_BUNDLE}" bridge --socket "${REMOTE_SOCK}"`,
     ));
+  // 隧道关闭码是这段排障链路上**唯一**能回答「谁先断」的证据：以前只有 4003/4004
+  // 会被 psbTunnel 分类成错误，其余关闭码（含 PSB 观测到的 1011）静默变成字节流结束，
+  // 日志里既没有 code 也没有 reason，只能跨仓对 journal（2026-11-26 cc-mgr 远端联调）。
+  handle.onClose((info) => {
+    const logAt = info.code === 1000 || info.code === null ? log.debug : log.warn;
+    logAt('cc-mgr transport closed', {
+      hostId: transportId,
+      sessionId: opts.sessionId,
+      code: info.code,
+      signal: info.signal,
+    });
+  });
   const duplex = bridgeStreamToDuplex(handle);
   const client = new RpcClient(duplex, {
     bundleVersion: CC_MGR_BUNDLE_VERSION,
@@ -574,6 +586,20 @@ export async function openCcManagerSession(opts: {
 
     // 对齐 codex 模式: alive → attach live-only, dead/absent → fresh start。
     // 不 replay 旧 events,不追踪 cursor。
+    //
+    // onSessionClosed:daemon 侧主动结束会话时把 `reason`/`detail` 原文落进 main 日志。
+    // 这是远端 cc 失败唯一能拿到根因的位置 —— 之前 reason/detail 在 remote-query 里被
+    // 丢弃，远端 query 一死，本地只剩一句 `Session <id> is closed`（2026-11-26 实报）。
+    const onSessionClosed: NonNullable<
+      Parameters<typeof createRemoteQuery>[0]['onSessionClosed']
+    > = (info) => {
+      log.warn('cc-mgr: daemon closed the session', {
+        hostId: transportId,
+        sessionId: opts.sessionId,
+        reason: info.reason,
+        detail: info.detail ?? null,
+      });
+    };
     const remoteQuery = existing
       ? await createRemoteQuery({
           client,
@@ -589,6 +615,7 @@ export async function openCcManagerSession(opts: {
               currentSeq: result.currentSeq,
             });
           },
+          onSessionClosed,
           rpcTimeoutMs: RPC_REQUEST_TIMEOUT_MS,
         })
       : await createRemoteQuery({
@@ -598,6 +625,7 @@ export async function openCcManagerSession(opts: {
             ...startParamsWithBinary,
             ...(tunnelProxies.size > 0 ? { tunneledMcpServers: [...tunnelProxies.keys()] } : {}),
           },
+          onSessionClosed,
           rpcTimeoutMs: RPC_REQUEST_TIMEOUT_MS,
         });
 

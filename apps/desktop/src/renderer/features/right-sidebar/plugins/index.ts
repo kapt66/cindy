@@ -20,5 +20,6 @@ import './subagents';
 import './side-chat';
 import './background-tasks';
 import './resource-usage';
+import './remote-workspace-admin';
 import './plugin-view';
 import './plugin-task';

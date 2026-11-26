@@ -392,6 +392,26 @@ export type IpcErrorCode =
   | 'THEME_USES_INCLUDE' // VSCode 主题含 include(需基底才能完整解析)
   | 'THEME_WRITE_ERROR' // 落盘失败(权限/磁盘)
   | 'THEME_IMPORT_INTERNAL' // 意外异常
+  // PSB 远程工作区（`psb:` transport）的失败码命名空间：main 用
+  // `shared/psb-remote-workspace.ts` 的 `psbIpcCodeForFailure` 产出，渲染层用
+  // `psbFailureMessageKeyForIpcCode` / `psbRemoteFailureFromIpcError` 映射文案键。
+  // 前缀即来源：不要用 `PSB_` 码承载非 PSB 的失败。
+  | 'PSB_AUTH_REQUIRED'
+  | 'PSB_ORG_REQUIRED'
+  | 'PSB_AUTH_EXPIRED'
+  | 'PSB_IDENTITY_NOT_LINKED'
+  | 'PSB_WORKSPACE_OCCUPIED_BY_OTHER'
+  | 'PSB_CLIENT_OFFLINE'
+  // 发送前自动重建 PSB 会话时，远端工作区还没就绪（planned / provisioning / failed /
+  // deleting）：等它就绪后重发即可。与「工作区不存在」「客户端离线」是不同的下一步，
+  // 所以单独一个码，而不是并进 PSB_NOT_FOUND。
+  | 'PSB_WORKSPACE_NOT_READY'
+  | 'PSB_NOT_FOUND'
+  | 'PSB_UNREACHABLE'
+  | 'PSB_STREAM_UNAVAILABLE'
+  // 本端没有活动的串流连接（输入无处可发）：可恢复，先启动观看即可。与
+  // PSB_STREAM_UNAVAILABLE（本机/客户端不支持串流）是不同的下一步，因此单独一个码。
+  | 'PSB_STREAM_NOT_ACTIVE';
   // 上报错误码已移除（Meka divergence，第 5 轮同步后移除）：上游此处定义
   // LOG_UPLOAD_UNAVAILABLE / PRIVACY_CONSENT_REQUIRED / LOG_UPLOAD_EMPTY / LOG_UPLOAD_FAILED / LOG_UPLOAD_BUSY。
 
@@ -635,6 +655,18 @@ const IPC_ERROR_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'THEME_USES_INCLUDE',
   'THEME_WRITE_ERROR',
   'THEME_IMPORT_INTERNAL',
+  // PSB 远程工作区失败码（与 `IpcErrorCode` union 里那组一一对应）。
+  'PSB_AUTH_REQUIRED',
+  'PSB_ORG_REQUIRED',
+  'PSB_AUTH_EXPIRED',
+  'PSB_IDENTITY_NOT_LINKED',
+  'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
+  'PSB_CLIENT_OFFLINE',
+  'PSB_WORKSPACE_NOT_READY',
+  'PSB_NOT_FOUND',
+  'PSB_UNREACHABLE',
+  'PSB_STREAM_UNAVAILABLE',
+  'PSB_STREAM_NOT_ACTIVE',
 ]);
 
 export function isIpcErrorCode(code: unknown): code is IpcErrorCode {

@@ -1,0 +1,1687 @@
+// @vitest-environment jsdom
+/**
+ * 测试价值
+ * - 生产入口与可观察结果：`RemoteWorkspaceAdminPanel`（「远程工作区」全局页签的真实页面主体）。
+ *   可观察的是「页面围绕**工作区**工作，不围绕当前任务」这件事：
+ *     ① 页头是**单行 ≤40px**：**工作区名称最显眼**（13px + 中粗）→ 模板 · 机器 → 占用，三块
+ *        **靠左紧凑**、固定 16px 间距依次紧挨（不撑开），逐段截断、不换行；**不显示目录**；
+ *        右侧通用操作（占用 / 解除占用 / 在网页打开）靠右且不被窄窗口挤压；
+ *     ② 分类导航左对齐紧凑排列（inline 轨道、不拉伸铺满、不参与 space-between）；
+ *     ③ 三个分类（远程连接 / 版本控制 / 设置）可切换，后两个是统一占位空态、没有假按钮；
+ *     ④ 远程连接横条控制区（启动 / 停止是同一个按钮切换、详情浮层、串流信息、全屏 + 状态文案）
+ *        与占满剩余高度的画面；
+ *        详情是 Popover 浮层，**开合不改变任何布局**（控制条高度/子节点、画面容器 class 都不变）；
+ *     ⑤ 全屏是极简模式（对齐 PSB 网页）：全屏画面里不再渲染控制条，只剩右下角一个图标切换按钮，
+ *        已开启的「串流信息」HUD 仍在右上角；Esc / 按钮都能退出；
+ *     ⑥ 数据只来自 `adminContext`，**从不读当前任务的 PSB 会话状态**（mock 里放了一个
+ *        会话级 `sessionStatus`，本页不得调用）；Agent 任务结束与否不影响启动 / 停止；
+ *     ⑦ 跟随主进程推送的**工作区变化**（`onAdminContextChanged`）：换工作区即换信息条、
+ *        旧工作区的观看名额被释放；
+ *     ⑧ 没有可用工作区 / preload 缺管理桥 / 读取失败时，都有对应空态，且页头与分类导航仍保留；
+ *     ⑨ **串流生命周期**（2026-11-26 改口）：进入页面**不自动开播**（远端 running / active 也
+ *        不触发），点「启动」才订阅；离开页签仍自动 `adminStreamStop` 释放名额，回来需要用户
+ *        再点「启动」；
+ *     ⑩ **可交互观看**（2026-11-26）：订阅后指针 / 键盘 / 滚轮经工作区级 `adminStreamInput`
+ *        转发，坐标是远端屏幕像素；全屏时普通键转发并拦宿主默认行为、F5 留给宿主；失焦补发
+ *        release-all；输入通道缺失时降级为「只读观看」标签且不转发；
+ *     ⑪ **串流信息 HUD / 停止清屏**（2026-11-26）：HUD 显示最近 1s FPS、码率、解码耗时、丢帧、
+ *        队列等真实统计（缺字段「—」），全屏保留；停止 / closed 后画面立即清空；「在网页打开」
+ *        遇到工作区已不存在时给专门的可行动文案。
+ *     ⑫ **宿主光标形状同步**（2026-11-26，同日改口径）：订阅建立后 `stream.cursor` 的
+ *        `name` 映射成**宿主风格 CSS 关键字**、且**只在鼠标停在画面区域（canvas）时**写到
+ *        `canvas.style.cursor`；移出画面立即恢复宿主默认、重新进入用缓存形状；旧 serial 不丢弃
+ *        （真机日志证明 PSB serial 不严格单调）、别的观看端的形状被忽略；停止 / closed / 错误 /
+ *        卸载后恢复宿主默认光标；HUD 与全屏退出按钮显式 `cursor-default` / `cursor-pointer`，
+ *        不继承远端形状；全屏时 canvas 仍在 stage 里，样式继续生效。不再生成 PNG data URL。
+ *        （这一条由文档复审 2026-11-26 补充：旧实现写 stage + 位图自定义光标，口径已作废。）
+ *     ⑬ **「串流中」只认首帧 / 停止失败也清屏 / 边沿保序**（2026-11-26 独立审查修复）：
+ *        `streaming` 只由 `frame` 事件置 true（`status.active` 既不能提前点亮，也不能在帧仍在到
+ *        时把它切回未启动，启动后到首帧之间显示「已连接，等待画面…」）；`adminStreamStop` reject
+ *        时同样清空画面并复位成未启动（手动停止与页签隐藏的自动停止都覆盖），失败只留一条中性
+ *        可行动提示；`capable:false` 时点「启动」给原因而不是静默；同一帧里「移动 → 按下」按
+ *        这个顺序发出（移动经 rAF 合并、边沿经 `pump.sendEdge` 先冲刷）。
+ * - Bug / 规则依据：用户 2026-11-26 两轮口径（入口与页面改为「远程工作区」；页头右侧通用操作、
+ *   分类左对齐、详情改浮层、新增全屏；串流可交互 + 进入页面不自动开播）；产品正本
+ *   `docs/product-rules/psb-remote-workspace-sessions.md` §2.4 / §6；契约正本
+ *   `apps/desktop/src/shared/psb-workspace-admin.ts` 与 `shared/psb-remote-workspace.ts`。
+ * - 现有覆盖缺口：旧页面测试锁的是「跟随当前任务 + 会话终态文案」，与工作区级语义相反；
+ *   本文件覆盖工作区级跟随、页头操作、分类对齐、浮层不改布局、全屏、空态与解耦，以及本轮的
+ *   串流生命周期（手动启动 / 离开释放）/ 输入转发 / 释放策略。
+ * - 最小失败输入：页面重新调用 `sessionStatus`；信息行换行把布局推高；分类控件被拉伸铺满；
+ *   详情插进布局把画面顶下去；切工作区不释放旧观看名额；缺桥时崩溃或整页空白；打开页面必须
+ *   手动点启动；页签不可见仍占观看名额；黑边坐标发成 0,0；失焦不补 keyup。
+ * - tier：unit（jsdom + RTL，无真实 PSB / Electron）。
+ */
+
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+import i18n from '@/i18n';
+import type { TabKindHostContext } from '@/features/right-sidebar/types';
+import type {
+  PsbWorkspaceAdminContext,
+  PsbWorkspaceAdminStreamStatus,
+} from '../../../../../shared/psb-workspace-admin';
+import {
+  psbStreamCursorKeyword,
+  type PsbStreamCursorShape,
+} from '../../../../../shared/psb-remote-workspace';
+import { toast } from '@/lib/toast';
+import { RemoteWorkspaceAdminPanel } from '../RemoteWorkspaceAdminPanel';
+
+// jsdom 没有 WebCodecs / canvas 2D：换成假播放器，让「启动 → 已订阅」这条路可以走通。
+// 统计 / 清屏也在这层可控：HUD 与「停止后清空画面」的断言不依赖真实解码器。
+// `createCount` 用来钉住「播放器实例只在 canvas 挂载时创建一次」：观看中切 UI 语言不能
+// dispose + 重建（新实例拿不到上一次的 config，画面会白掉）。
+const playerMock = vi.hoisted(() => ({
+  push: vi.fn(),
+  dispose: vi.fn(),
+  clear: vi.fn(),
+  createCount: 0,
+  stats: {
+    codec: 'avc1.42E01E' as string | null,
+    queueDepth: 0,
+    droppedFrames: 0,
+    decodeLatencyAvgMs: null as number | null,
+    decodeLatencyP95Ms: null as number | null,
+  },
+}));
+
+vi.mock('../../stream/psbStreamPlayer', () => ({
+  createPsbStreamPlayer: () => {
+    playerMock.createCount += 1;
+    return {
+      push: playerMock.push,
+      dispose: playerMock.dispose,
+      clear: playerMock.clear,
+      getStats: () => ({ ...playerMock.stats }),
+    };
+  },
+}));
+
+// 详情浮层用受控的轻量替身：模拟 Popover 的开合语义，避免 Radix 在 jsdom 里依赖
+// ResizeObserver / 浮层定位；生产代码仍使用仓库共享 Popover 组件。
+vi.mock('@/components/ui/popover', async () => {
+  const React = await import('react');
+  const ReactDOM = await import('react-dom');
+  const PopoverState = React.createContext<{
+    open: boolean;
+    onOpenChange?: (open: boolean) => void;
+  }>({ open: false });
+  return {
+    Popover: ({
+      children,
+      open = false,
+      onOpenChange,
+    }: {
+      children: React.ReactNode;
+      open?: boolean;
+      onOpenChange?: (open: boolean) => void;
+    }) => <PopoverState.Provider value={{ open, onOpenChange }}>{children}</PopoverState.Provider>,
+    PopoverTrigger: ({ children }: { children: React.ReactNode }) => {
+      const state = React.useContext(PopoverState);
+      const child = children as React.ReactElement<{ onClick?: React.MouseEventHandler }>;
+      return React.cloneElement(child, {
+        onClick: (event) => {
+          child.props.onClick?.(event);
+          state.onOpenChange?.(!state.open);
+        },
+      });
+    },
+    // 真实 Popover 的内容 portal 到 body：替身保持同样的「不占宿主布局」语义，才能验证
+    // 「打开详情不改变控制条 / 画面的布局」。
+    PopoverContent: ({ children }: { children: React.ReactNode; portalContainer?: unknown }) => {
+      const state = React.useContext(PopoverState);
+      if (!state.open) return null;
+      return ReactDOM.createPortal(
+        <div data-testid="remote-workspace-admin-details-overlay">{children}</div>,
+        document.body,
+      );
+    },
+  };
+});
+
+vi.mock('@/lib/toast', () => ({
+  toast: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+    loading: vi.fn(),
+    dismiss: vi.fn(),
+  },
+}));
+
+const STREAM_ACTIVE: PsbWorkspaceAdminStreamStatus = {
+  capable: true,
+  active: true,
+  width: 1920,
+  height: 1080,
+  fps: 30,
+  encoder: 'avc1.42E01E',
+  lastErrorZh: null,
+  desktopSession: 'running',
+  reasonCode: null,
+};
+
+/** 一条宿主光标形状（PSB `stream.cursor` 解包后的形状；尺寸 / 热点都取合法值）。 */
+const CURSOR_SHAPE: PsbStreamCursorShape = {
+  serial: 2,
+  width: 32,
+  height: 32,
+  xhot: 5,
+  yhot: 2,
+  imageBase64: 'iVBORw0KGgo',
+  name: 'text',
+};
+
+function context(patch: Partial<PsbWorkspaceAdminContext> = {}): PsbWorkspaceAdminContext {
+  return {
+    workspaceId: 'ws-a',
+    clientName: 'Machine A',
+    clientOnline: true,
+    title: 'Workspace A',
+    templateTitle: 'Saga2',
+    directoryName: 'proj-a',
+    state: 'ready',
+    occupancy: { occupied: true, byMe: true, personName: 'Me' },
+    desktopSession: null,
+    reasonCode: null,
+    lastErrorZh: null,
+    source: 'session',
+    viewerSessionId: 'viewer-a',
+    ...patch,
+  };
+}
+
+/**
+ * 旧会话级桥方法（`sessionStatus`）故意也放进 mock：本页不得调用它 —— 那是「页面还依赖
+ * 当前任务」的直接证据。它存在但零调用，是解耦断言的对照物。
+ */
+const bridge = {
+  adminContext: vi.fn(),
+  onAdminContextChanged: vi.fn(),
+  adminStreamStart: vi.fn(),
+  adminStreamStop: vi.fn(),
+  adminStreamStatus: vi.fn(),
+  onAdminStreamEvent: vi.fn(),
+  occupyWorkspace: vi.fn(),
+  releaseWorkspace: vi.fn(),
+  openWebWorkspace: vi.fn(),
+  /** 工作区级输入通道（可交互观看）；缺方法的降级路径由专门用例覆盖。 */
+  adminStreamInput: vi.fn(),
+  /** 画面捕获态开关（全屏时让 main 抑制宿主快捷键）。 */
+  setAdminStreamCaptureActive: vi.fn(),
+  sessionStatus: vi.fn(),
+};
+
+let pushContext:
+  | ((event: {
+      context: PsbWorkspaceAdminContext | null;
+      localSessionId?: string | null;
+    }) => void)
+  | null = null;
+/**
+ * 串流事件监听者集合。
+ *
+ * 生产 preload 的 `onAdminStreamEvent` 是 fan-out（`createIpcFanOut`），同一条广播可以有多个
+ * 监听者：画面事件归连接区、宿主光标形状归 `usePsbStreamCursor`。测试替身必须保留这个语义，
+ * 否则「多个 hook 各订阅一次」会互相顶掉。
+ */
+const streamEventHandlers = new Set<(event: unknown) => void>();
+
+function pushStreamEvent(event: unknown): void {
+  for (const handler of [...streamEventHandlers]) handler(event);
+}
+
+/** Fullscreen API 替身（jsdom 没有）：记录调用并模拟浏览器切换全屏元素。 */
+let fullscreenElement: Element | null = null;
+const requestFullscreen = vi.fn(function (this: HTMLElement) {
+  fullscreenElement = this;
+  return Promise.resolve();
+});
+const exitFullscreen = vi.fn(function () {
+  fullscreenElement = null;
+  return Promise.resolve();
+});
+
+function ctx(sessionId: string, remoteHostId: string | null): TabKindHostContext {
+  return {
+    tabId: 'tab-admin',
+    sessionId,
+    workdir: '',
+    remoteHostId,
+    patchState: () => {},
+    onVisibilityChange: () => {},
+    setCloseInterceptor: () => () => {},
+  };
+}
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  pushContext = null;
+  streamEventHandlers.clear();
+  fullscreenElement = null;
+  playerMock.createCount = 0;
+  playerMock.stats = {
+    codec: 'avc1.42E01E',
+    queueDepth: 0,
+    droppedFrames: 0,
+    decodeLatencyAvgMs: null,
+    decodeLatencyP95Ms: null,
+  };
+  bridge.adminContext.mockResolvedValue({ context: context() });
+  // 默认「远端没在采集 / 桌面会话不知道」：老用例走手动「启动」路径；自动恢复由专门用例显式给
+  // `desktopSession: 'running'` / `active: true` 触发。
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: { ...STREAM_ACTIVE, active: false, desktopSession: null },
+  });
+  bridge.adminStreamStart.mockResolvedValue({
+    status: STREAM_ACTIVE,
+    workspaceId: 'ws-a',
+    viewerSessionId: 'viewer-a',
+  });
+  bridge.adminStreamStop.mockResolvedValue(undefined);
+  bridge.adminStreamInput.mockResolvedValue(undefined);
+  bridge.setAdminStreamCaptureActive.mockResolvedValue(undefined);
+  bridge.occupyWorkspace.mockResolvedValue({ workspace: {} });
+  bridge.releaseWorkspace.mockResolvedValue({ workspace: {} });
+  bridge.openWebWorkspace.mockResolvedValue(undefined);
+  bridge.onAdminContextChanged.mockImplementation(
+    (
+      handler: (event: {
+        context: PsbWorkspaceAdminContext | null;
+        localSessionId?: string | null;
+      }) => void,
+    ) => {
+      pushContext = handler;
+      return () => {};
+    },
+  );
+  bridge.onAdminStreamEvent.mockImplementation((handler: (event: unknown) => void) => {
+    streamEventHandlers.add(handler);
+    return () => {
+      streamEventHandlers.delete(handler);
+    };
+  });
+  Object.assign(window, {
+    electronAPI: { psbRemote: bridge as unknown as Record<string, unknown> },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+    configurable: true,
+    value: requestFullscreen,
+  });
+  Object.defineProperty(document, 'exitFullscreen', {
+    configurable: true,
+    value: exitFullscreen,
+  });
+  Object.defineProperty(document, 'fullscreenElement', {
+    configurable: true,
+    get: () => fullscreenElement,
+  });
+  await i18n.changeLanguage('en');
+});
+
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  delete (HTMLElement.prototype as { requestFullscreen?: unknown }).requestFullscreen;
+  delete (document as { exitFullscreen?: unknown }).exitFullscreen;
+});
+
+/** 渲染并等首次 `adminContext` 返回。 */
+async function renderPanel(input?: {
+  sessionId?: string;
+  active?: boolean;
+  shellVisible?: boolean;
+}) {
+  const view = render(
+    <RemoteWorkspaceAdminPanel
+      state={{}}
+      ctx={ctx(input?.sessionId ?? 'local-a', 'psb:psb-a')}
+      active={input?.active ?? true}
+      shellVisible={input?.shellVisible ?? true}
+    />,
+  );
+  await act(async () => {});
+  return view;
+}
+
+/** 输入事件经串行发送器的 promise 链排队：等微任务落定后再断言 IPC 调用。 */
+async function flushInput(): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+}
+
+/**
+ * 给 canvas 补上「远端 1920×1080 画面显示在 960×540 区域」的几何（jsdom 不做真实布局）。
+ */
+function stubCanvasGeometry(
+  canvas: HTMLCanvasElement,
+  size: { width: number; height: number; displayWidth: number; displayHeight: number },
+): void {
+  canvas.width = size.width;
+  canvas.height = size.height;
+  Object.defineProperty(canvas, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      width: size.displayWidth,
+      height: size.displayHeight,
+      right: size.displayWidth,
+      bottom: size.displayHeight,
+      toJSON: () => ({}),
+    }),
+  });
+}
+
+it('renders the workspace header as one compact left-aligned line with right-aligned actions', async () => {
+  await renderPanel();
+  const line = screen.getByTestId('remote-workspace-admin-workspace-line');
+  // 单行且高度有界：40px（含底边），不换行、不推高布局。
+  expect(line.className).toContain('h-10');
+  expect(line.className).toContain('flex-nowrap');
+  expect(line.className).toContain('overflow-hidden');
+  expect(line.className).toContain('shrink-0');
+  expect(line.className).not.toMatch(/(^|\s)flex-wrap(\s|$)/);
+  // 信息组靠左紧凑：固定 16px 间距（gap-4），不靠 flex-1 / justify-between 撑开。
+  const info = screen.getByTestId('remote-workspace-admin-workspace-info');
+  expect(info.className).toContain('gap-4');
+  expect(info.className).not.toMatch(/(^|\s)justify-between(\s|$)/);
+  expect(info.className).not.toContain('justify-around');
+  const name = screen.getByTestId('remote-workspace-admin-workspace-name');
+  const meta = screen.getByTestId('remote-workspace-admin-workspace-meta');
+  const occupancy = screen.getByTestId('remote-workspace-admin-workspace-occupancy');
+  for (const segment of [name, meta, occupancy]) {
+    expect(segment.className).toContain('truncate');
+    expect(segment.className).toContain('min-w-0');
+    // 各段不抢空间（旧实现是 flex-1，把信息摊到两边）。
+    expect(segment.className).not.toContain('flex-1');
+  }
+  // 名称最显眼（text-13 + font-medium + 主文字色），模板/机器是次要色 text-11。
+  expect(name.className).toContain('text-13');
+  expect(name.className).toContain('font-medium');
+  expect(name.className).toContain('text-[var(--text-primary)]');
+  expect(meta.className).toContain('text-11');
+  expect(meta.className).toContain('text-[var(--text-secondary)]');
+  // 顺序：名称 → 模板 · 机器 → 占用，三块紧挨（名称在最前）。
+  expect(info.children[0]).toBe(name);
+  expect(info.children[1]).toBe(meta);
+  expect(info.children[2]).toBe(occupancy);
+  // 不再显示目录：DOM 里既没有目录段，也没有目录值。
+  expect(screen.queryByTestId('remote-workspace-admin-workspace-directory')).toBeNull();
+  expect(screen.queryByText('proj-a')).toBeNull();
+  // 三块信息与右侧操作在同一行：信息组在左、操作在右且 shrink-0（窄窗口不挤压按钮）。
+  const actions = screen.getByTestId('remote-workspace-admin-actions');
+  expect(actions.className).toContain('shrink-0');
+  expect(within(line).getByTestId('remote-workspace-admin-actions')).toBe(actions);
+  expect(
+    line.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_CONTAINED_BY,
+  ).toBeTruthy();
+  expect(info.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // 内容 = 名称 / 模板 · 机器 / 占用（自己占用时显示 PSB 回的名字并追加「（你）」）。
+  expect(name.textContent).toBe('Workspace A');
+  expect(meta.textContent).toBe('Saga2 · Machine A');
+  expect(occupancy.textContent).toBe(
+    i18n.t('remoteWorkspace.admin.occupancyValue', {
+      value: i18n.t('remoteWorkspace.admin.occupancySelfValue', { name: 'Me' }),
+    }),
+  );
+  expect(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionRelease') }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOpenWeb') }),
+  ).toBeTruthy();
+});
+
+it('omits the template segment from the header when PSB has no template title', async () => {
+  bridge.adminContext.mockResolvedValue({ context: context({ templateTitle: null }) });
+  await renderPanel();
+  // 模板为空时只显示机器，不会留下「· 打包机」或空占位。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe('Machine A');
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+});
+
+it('keeps the category navigation left-aligned and compact instead of stretched', async () => {
+  await renderPanel();
+  const nav = screen.getByTestId('remote-workspace-admin-categories');
+  expect(nav.className).toContain('justify-start');
+  expect(nav.className).not.toMatch(/(^|\s)justify-between(\s|$)/);
+  const track = screen.getByRole('tablist');
+  // 轨道按内容宽度排布（组件本身是 inline-flex；这里再显式固定为 max-content 宽度），
+  // 不拉伸铺满，也不与任何东西做 space-between。
+  expect(track.className).toContain('w-max');
+  expect(track.className).not.toContain('cindy-segmented-full');
+});
+
+it('switches the three categories and shows one shared placeholder style without fake buttons', async () => {
+  await renderPanel();
+  // 默认是远程连接：有启动按钮，没有占位文案。
+  expect(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeTruthy();
+  expect(screen.queryByText(i18n.t('remoteWorkspace.admin.placeholderComingSoon'))).toBeNull();
+
+  for (const [tab, testId] of [
+    ['versionControl', 'remote-workspace-admin-version-control'],
+    ['settings', 'remote-workspace-admin-settings'],
+  ] as const) {
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('tab', { name: i18n.t(`remoteWorkspace.admin.categories.${tab}`) }),
+      );
+    });
+    const placeholder = screen.getByTestId(testId);
+    expect(
+      within(placeholder).getByText(i18n.t(`remoteWorkspace.admin.categories.${tab}`)),
+    ).toBeTruthy();
+    expect(
+      within(placeholder).getByText(i18n.t('remoteWorkspace.admin.placeholderComingSoon')),
+    ).toBeTruthy();
+    // 占位空态不摆假按钮：面板里没有任何可点动作。
+    expect(within(screen.getByRole('tabpanel')).queryAllByRole('button')).toHaveLength(0);
+  }
+
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('tab', { name: i18n.t('remoteWorkspace.admin.categories.connection') }),
+    );
+  });
+  expect(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeTruthy();
+});
+
+it('occupy / release / open-web actions call the bridge and refresh the workspace context', async () => {
+  await renderPanel();
+  // 自己占着 → 显示「解除占用」。
+  const release = screen.getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.actionRelease'),
+  });
+  await act(async () => {
+    fireEvent.click(release);
+  });
+  expect(bridge.releaseWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(toast.success).toHaveBeenCalledWith(i18n.t('remoteWorkspace.admin.actionReleaseDone'));
+  const callsAfterRelease = bridge.adminContext.mock.calls.length;
+  // 成功 → 刷新工作区上下文（占用者 / 状态以主进程事实为准）。
+  expect(callsAfterRelease).toBeGreaterThan(1);
+
+  // 推送一个「未占用」的工作区：按钮切换成「占用」，点击后调 occupyWorkspace。
+  await act(async () => {
+    pushContext?.({
+      context: context({ occupancy: { occupied: false, byMe: false, personName: '' } }),
+    });
+  });
+  const occupy = screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOccupy') });
+  await act(async () => {
+    fireEvent.click(occupy);
+  });
+  expect(bridge.occupyWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(toast.success).toHaveBeenCalledWith(i18n.t('remoteWorkspace.admin.actionOccupyDone'));
+
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOpenWeb') }),
+    );
+  });
+  expect(bridge.openWebWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+});
+
+it('shows the person’s name when occupying is rejected because someone else took the workspace', async () => {
+  bridge.adminContext.mockResolvedValue({
+    context: context({ occupancy: { occupied: false, byMe: false, personName: '' } }),
+  });
+  bridge.occupyWorkspace.mockRejectedValue(new Error('[PSB_WORKSPACE_OCCUPIED_BY_OTHER] 张三'));
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOccupy') }),
+    );
+  });
+  expect(toast.error).toHaveBeenCalledTimes(1);
+  const errorMock = vi.mocked(toast.error);
+  expect(String(errorMock.mock.calls[0]?.[0])).toContain('张三');
+});
+
+it('works from the workspace context alone: no task/session state is read, and the viewer works after the Agent ends', async () => {
+  // 工作区上下文来自 main 的兜底解析（source=last-used 表示不是从某个任务解析的）：
+  // 页面没有任何「任务是否结束」的输入，启动 / 停止照常可用。
+  bridge.adminContext.mockResolvedValue({ context: context({ source: 'last-used' }) });
+  await renderPanel();
+  expect(bridge.adminContext).toHaveBeenCalledWith({ localSessionId: 'local-a' });
+  // 旧会话级接口一次都不该被调用。
+  expect(bridge.sessionStatus).not.toHaveBeenCalled();
+
+  const start = screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') });
+  expect((start as HTMLButtonElement).disabled).toBe(false);
+  await act(async () => {
+    fireEvent.click(start);
+  });
+  expect(bridge.adminStreamStart).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  // 启动后同一个按钮变成可用的「停止」。
+  const stop = screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') });
+  expect((stop as HTMLButtonElement).disabled).toBe(false);
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeNull();
+});
+
+it('uses one start/stop button that switches label with the stream state', async () => {
+  await renderPanel();
+  // 未在播：控制条左侧只有一个「启动」按钮，不并排「停止」。
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') })).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }),
+  ).toBeNull();
+
+  // 启动中：同一个按钮禁用（避免重复点击），标签仍是「启动」。
+  let resolveStart: (value: unknown) => void = () => {};
+  bridge.adminStreamStart.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  // 先让前置的 `adminStreamStatus` 落定，才进入 pending 的 `adminStreamStart`。
+  await act(async () => {});
+  const pending = screen.getByRole('button', {
+    name: i18n.t('remoteWorkspace.session.start'),
+  });
+  expect((pending as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => {
+    resolveStart({ status: STREAM_ACTIVE, workspaceId: 'ws-a', viewerSessionId: 'viewer-a' });
+  });
+
+  // 点击后同一位置变成「停止」；不再有「启动」。
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') })).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeNull();
+
+  // 再点「停止」：执行现有停止逻辑并清画面，按钮切回「启动」。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }));
+  });
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(playerMock.clear).toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') })).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }),
+  ).toBeNull();
+});
+
+it('starts, stops and streams in a full-height stage', async () => {
+  await renderPanel();
+  // 未启动：状态文案 + 画面区空态（两处都写「串流未启动」）。
+  expect(
+    screen.getAllByText(i18n.t('remoteWorkspace.admin.streamNotStarted')).length,
+  ).toBeGreaterThan(0);
+  expect(screen.getByText(i18n.t('remoteWorkspace.admin.streamStartHint'))).toBeTruthy();
+  const canvas = document.querySelector('canvas');
+  expect(canvas?.parentElement?.className).toContain('flex-1');
+  expect(canvas?.parentElement?.className).toContain('min-h-0');
+  expect(canvas?.parentElement?.className).toContain('overflow-hidden');
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  expect(bridge.adminStreamStart).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  // 订阅成功 ≠ 有画面：先显示「已连接，等待画面…」，不显示「串流中」。
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamWaiting'),
+  );
+  expect(screen.queryByText(i18n.t('remoteWorkspace.admin.streamNotStarted'))).toBeNull();
+
+  // PSB 的 `active` 不是本端「有画面」的判据：status.active:true 也不切「串流中」。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'status',
+      sessionId: 'viewer-a',
+      status: {
+        capable: true,
+        active: true,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        codec: 'avc1.42E01E',
+        lastError: null,
+      },
+    });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamWaiting'),
+  );
+
+  // 首帧到达才进入「串流中」。
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamLive'),
+  );
+
+  // 帧仍在到但 PSB 回推 active:false：不能把已经在播的画面切回未启动。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'status',
+      sessionId: 'viewer-a',
+      status: {
+        capable: true,
+        active: false,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        codec: 'avc1.42E01E',
+        lastError: null,
+      },
+    });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamLive'),
+  );
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }));
+  });
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamNotStarted'),
+  );
+});
+
+it('opens the details as a floating overlay without changing the stream layout', async () => {
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: {
+      ...STREAM_ACTIVE,
+      active: false,
+      desktopSession: 'none',
+      reasonCode: 'NO_DESKTOP_SESSION',
+      lastErrorZh: '需要先启动桌面会话',
+    },
+  });
+  await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage');
+  const controls = screen.getByTestId('remote-workspace-admin-stream-controls');
+  const before = {
+    stageClass: stage.className,
+    controlsClass: controls.className,
+    controlsChildren: controls.childElementCount,
+  };
+  expect(screen.queryByTestId('remote-workspace-admin-details-overlay')).toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.details') }));
+  // 浮层出现，但控制条与画面容器保持原样（高度/子节点/class 都不变）。
+  expect(screen.getByTestId('remote-workspace-admin-details-overlay')).toBeTruthy();
+  expect(stage.className).toBe(before.stageClass);
+  expect(controls.className).toBe(before.controlsClass);
+  expect(controls.childElementCount).toBe(before.controlsChildren);
+  const details = screen.getByTestId('remote-workspace-admin-stream-details');
+  expect(details.textContent).toContain('1920 × 1080');
+  expect(details.textContent).toContain('avc1.42E01E');
+  // 详情浮层按新口径显示 PSB 的机器字段与中文原话。
+  expect(details.textContent).toContain('NO_DESKTOP_SESSION');
+  expect(details.textContent).toContain('需要先启动桌面会话');
+  expect(details.textContent).toContain(i18n.t('remoteWorkspace.admin.desktopSessionNone'));
+
+  fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.details') }));
+  expect(screen.queryByTestId('remote-workspace-admin-details-overlay')).toBeNull();
+  expect(stage.className).toBe(before.stageClass);
+  expect(controls.className).toBe(before.controlsClass);
+  expect(controls.childElementCount).toBe(before.controlsChildren);
+});
+
+it('turns full screen into a minimal picture-only view with one corner toggle', async () => {
+  await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage');
+  const enter = screen.getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.enterFullscreen'),
+  });
+  await act(async () => {
+    fireEvent.click(enter);
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  expect(requestFullscreen).toHaveBeenCalledTimes(1);
+  expect(stage.getAttribute('data-fullscreen')).toBe('true');
+  // 极简全屏（对齐 PSB 网页）：画面里不再挂控制条 / 启动停止按钮，只剩右下角一个图标按钮。
+  expect(within(stage).queryByTestId('remote-workspace-admin-stream-controls')).toBeNull();
+  expect(
+    within(stage).queryByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeNull();
+  const exit = within(stage).getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.exitFullscreen'),
+  });
+  expect(exit.textContent).toBe('');
+  expect(exit.className).toContain('bottom-3');
+  expect(exit.className).toContain('right-3');
+
+  await act(async () => {
+    fireEvent.click(exit);
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  expect(exitFullscreen).toHaveBeenCalledTimes(1);
+  expect(stage.getAttribute('data-fullscreen')).toBeNull();
+  // 退出后非全屏控制条仍在：启动 / 停止 / 详情 / 串流信息 / 全屏。
+  expect(screen.getByTestId('remote-workspace-admin-stream-controls')).toBeTruthy();
+  expect(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.streamInfo') }),
+  ).toBeTruthy();
+});
+
+/**
+ * 观看中切换界面语言不能重建播放器（2026-11-26 独立审查 P2）：旧实现播放器 effect 依赖 `[t]`，
+ * 语言一变就 dispose 当前实例；新实例没有上一次的 config，画面白掉、只能手动停 / 再启动。
+ */
+it('keeps the player instance when the UI language changes mid-stream', async () => {
+  await renderPanel();
+  expect(playerMock.createCount).toBe(1);
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(64) });
+  });
+  await act(async () => {
+    await i18n.changeLanguage('de');
+  });
+  // 不重建、不 dispose：同一个播放器实例继续收帧，画面仍在。
+  expect(playerMock.createCount).toBe(1);
+  expect(playerMock.dispose).not.toHaveBeenCalled();
+  const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+  expect(canvas.className).not.toContain('hidden');
+});
+
+it('clears the frozen picture when stopping or when PSB closes the viewer', async () => {
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+  // 收到帧 = 有画面：canvas 可见。
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  expect(canvas.className).not.toContain('hidden');
+
+  // 手动停止：立刻清空画面，不能留下冻结的上一帧。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }));
+  });
+  expect(playerMock.clear).toHaveBeenCalled();
+  expect(canvas.className).toContain('hidden');
+  expect(screen.getAllByText(i18n.t('remoteWorkspace.admin.streamNotStarted')).length).toBeGreaterThan(0);
+
+  // PSB 主动关闭观看（closed 事件）：同样立刻清空。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  playerMock.clear.mockClear();
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+    pushStreamEvent({
+      type: 'closed',
+      sessionId: 'viewer-a',
+      reason: 'not-ready',
+      detail: { reasonCode: 'NO_DESKTOP_SESSION', desktopSession: 'none', messageZh: '没有可观看的画面' },
+    });
+  });
+  expect(playerMock.clear).toHaveBeenCalled();
+  expect(canvas.className).toContain('hidden');
+});
+
+it('syncs the remote cursor shape onto the picture only while the pointer is over it', async () => {
+  await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage') as HTMLDivElement;
+  const canvas = screen.getByTestId(
+    'remote-workspace-admin-stream-canvas',
+  ) as HTMLCanvasElement;
+  // 共享映射把远端 `name` 变成宿主风格关键字（2026-11-26 口径：不用位图 data URL）。
+  expect(psbStreamCursorKeyword(CURSOR_SHAPE)).toBe('text');
+  expect(psbStreamCursorKeyword({ ...CURSOR_SHAPE, name: 'left_side' })).toBe('ew-resize');
+
+  // 未启动：不订阅 cursor；指针也不在画面上，收到形状不该写任何样式。
+  await act(async () => {
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('');
+  expect(stage.style.cursor).toBe('');
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  // 有画面后再进入画面：此刻还没有形状缓存 → 保持宿主默认（不伪造光标）。
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+  });
+  expect(canvas.style.cursor).toBe('');
+
+  // 形状到达且指针在画面里：立刻写 CSS 关键字；只写 canvas，不写 stage（stage 含黑边 / HUD）。
+  await act(async () => {
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('text');
+  expect(canvas.getAttribute('data-stream-cursor-keyword')).toBe('text');
+  expect(canvas.getAttribute('data-stream-cursor-name')).toBe('text');
+  expect(stage.style.cursor).toBe('');
+  // 永远宿主风格：画面样式里没有远端位图。
+  expect(canvas.style.cursor).not.toContain('url(');
+  expect(canvas.style.cursor).not.toContain('data:image/png');
+
+  // 拖拽时指针被捕获到 stage（`usePsbStreamInteraction` 在 pointerdown 捕获）：canvas 会收到
+  // 一次「伪造的」pointerleave，但不能因此把 resize / grabbing 形状清掉。命中判定按 canvas 矩形
+  // 几何校正，捕获前后一致。
+  stubCanvasGeometry(canvas, {
+    width: 1920,
+    height: 1080,
+    displayWidth: 960,
+    displayHeight: 540,
+  });
+  await act(async () => {
+    fireEvent.pointerLeave(canvas);
+    fireEvent.pointerMove(stage, { clientX: 100, clientY: 100, pointerId: 1 });
+  });
+  expect(canvas.style.cursor).toBe('text');
+
+  // 指针移到画面外（黑边外 / 容器内但不在 canvas 上）：立即恢复宿主默认，缓存保留。
+  await act(async () => {
+    fireEvent.pointerMove(stage, { clientX: 2000, clientY: 2000, pointerId: 1 });
+  });
+  expect(canvas.style.cursor).toBe('');
+  expect(canvas.getAttribute('data-stream-cursor-keyword')).toBeNull();
+
+  // 指针不在画面时收到新形状：只缓存、不写样式（离开画面后不保持远端形状）。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'cursor',
+      sessionId: 'viewer-a',
+      cursor: { ...CURSOR_SHAPE, serial: 4, name: 'left_side' },
+    });
+  });
+  expect(canvas.style.cursor).toBe('');
+
+  // 重新进入画面：立刻用缓存形状恢复，不必等下一帧 cursor 事件。
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+  });
+  expect(canvas.style.cursor).toBe('ew-resize');
+  expect(canvas.getAttribute('data-stream-cursor-name')).toBe('left_side');
+
+  // serial 回退不是「旧形状」：新形态照常生效（真机日志证明 PSB 的 serial 不严格单调）。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'cursor',
+      sessionId: 'viewer-a',
+      cursor: { ...CURSOR_SHAPE, serial: 3, name: 'wait' },
+    });
+  });
+  expect(canvas.style.cursor).toBe('wait');
+
+  // 别的观看端 / 旧会话收尾：按 viewerSessionId 过滤，多观看端不串味。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'cursor',
+      sessionId: 'viewer-other',
+      cursor: { ...CURSOR_SHAPE, serial: 9, name: 'progress' },
+    });
+  });
+  expect(canvas.style.cursor).toBe('wait');
+
+  // 离开整个画面容器（切到控制条 / 页签外）：同样立即恢复宿主默认。
+  await act(async () => {
+    fireEvent.pointerLeave(stage);
+  });
+  expect(canvas.style.cursor).toBe('');
+
+  // 停止观看：立刻回宿主默认光标（远端形状不能留在宿主画面上），缓存也清掉。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }));
+  });
+  expect(canvas.style.cursor).toBe('');
+  // 停止后再收到形状也不再写（订阅已结束 / 缓存已清）。
+  await act(async () => {
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('');
+  // 重新「启动」不会恢复停止前的形状：缓存随订阅归零，等新形状到达。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+  });
+  expect(canvas.style.cursor).toBe('');
+});
+
+it('restores the host cursor on closed / error / unmount and keeps local overlays off the remote shape', async () => {
+  const view = await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage') as HTMLDivElement;
+  const canvas = screen.getByTestId(
+    'remote-workspace-admin-stream-canvas',
+  ) as HTMLCanvasElement;
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('text');
+
+  // 画面里的本地浮层（串流信息 HUD 及其关闭按钮）显式声明宿主光标：不继承远端形状。
+  // 关键字只写在 canvas 上（HUD 是它的兄弟节点，stage 也不写），所以浮层拿不到远端光标。
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('remote-workspace-admin-stream-info-toggle'));
+  });
+  const hud = screen.getByTestId('remote-workspace-admin-stream-info');
+  expect(hud.className).toContain('cursor-default');
+  const hudClose = within(hud).getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.streamInfoClose'),
+  });
+  expect(hudClose.className).toContain('cursor-pointer');
+  expect(stage.style.cursor).toBe('');
+  expect((hud as HTMLElement).style.cursor).toBe('');
+
+  // 全屏时 canvas 仍在 stage 里：同一份关键字继续生效；退出按钮不继承远端形状。
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.enterFullscreen') }),
+    );
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  expect(stage.getAttribute('data-fullscreen')).toBe('true');
+  expect(canvas.style.cursor).toBe('text');
+  const exit = within(stage).getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.exitFullscreen'),
+  });
+  expect(exit.className).toContain('cursor-default');
+
+  // PSB 主动关闭观看：光标随订阅一起恢复宿主默认（不能把远端形状留在画面上）。
+  await act(async () => {
+    pushStreamEvent({
+      type: 'closed',
+      sessionId: 'viewer-a',
+      reason: 'not-ready',
+      detail: {
+        reasonCode: 'NO_DESKTOP_SESSION',
+        desktopSession: 'none',
+        messageZh: '没有可观看的画面',
+      },
+    });
+  });
+  expect(canvas.style.cursor).toBe('');
+  expect(canvas.getAttribute('data-stream-cursor-keyword')).toBeNull();
+
+  // 错误断开（`error` 不一定会重置「已订阅」状态）：光标必须由事件本身清掉。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('text');
+  await act(async () => {
+    pushStreamEvent({
+      type: 'error',
+      sessionId: 'viewer-a',
+      failure: {
+        code: 'PSB_STREAM_UNREACHABLE',
+        messageKey: 'remoteWorkspace.error.unreachable',
+        message: 'read ECONNRESET',
+      },
+    });
+  });
+  expect(canvas.style.cursor).toBe('');
+
+  // 卸载（关页签 / 切工作区由页面按 workspaceId 重挂）：清掉画面上的远端形状。
+  await act(async () => {
+    fireEvent.pointerEnter(canvas);
+    pushStreamEvent({ type: 'cursor', sessionId: 'viewer-a', cursor: CURSOR_SHAPE });
+  });
+  expect(canvas.style.cursor).toBe('text');
+  view.unmount();
+  expect(canvas.style.cursor).toBe('');
+});
+
+it('shows a live stream-info HUD with real frame statistics and closes it', async () => {
+  vi.useFakeTimers();
+  bridge.adminContext.mockResolvedValue({ context: context({ desktopSession: 'running' }) });
+  bridge.adminStreamStatus.mockResolvedValue({ status: STREAM_ACTIVE });
+  playerMock.stats = {
+    codec: 'avc1.42E01E',
+    queueDepth: 2,
+    droppedFrames: 3,
+    decodeLatencyAvgMs: 9.9,
+    decodeLatencyP95Ms: 12.3,
+  };
+  await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage');
+  // 进入页面不自动开播：先由用户点「启动」（本批改口）。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  // 打开 HUD 前没有任何浮层。
+  expect(screen.queryByTestId('remote-workspace-admin-stream-info')).toBeNull();
+  fireEvent.click(
+    screen.getByTestId('remote-workspace-admin-stream-info-toggle'),
+  );
+  // 打开 HUD 后推入最近 1s 的帧，再走一个采样周期：FPS / 码率来自真实帧数与字节数。
+  // 帧与采样分两个 act：`streaming` 由帧事件置位后要先落一次渲染，采样读到的才是「在播」。
+  await act(async () => {
+    for (let index = 0; index < 30; index += 1) {
+      pushStreamEvent({
+        type: 'frame',
+        sessionId: 'viewer-a',
+        payload: new ArrayBuffer(100_000),
+      });
+    }
+  });
+  await act(async () => {
+    vi.advanceTimersByTime(1100);
+  });
+  const hud = screen.getByTestId('remote-workspace-admin-stream-info');
+  // HUD 是画面上的浮层：不进入文档流，打开不改变画面容器布局。
+  expect(hud.className).toContain('absolute');
+  expect(hud.className).toContain('right-2');
+  expect(hud.textContent).toContain('1920 × 1080');
+  expect(screen.getByTestId('remote-workspace-admin-stream-info-codec').textContent).toContain(
+    'avc1.42E01E',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-stream-info-fps').textContent).not.toBe('—');
+  expect(
+    screen.getByTestId('remote-workspace-admin-stream-info-bitrate').textContent,
+  ).toContain('Mbps');
+  expect(screen.getByTestId('remote-workspace-admin-stream-info-decode').textContent).toContain(
+    '9.9 ms',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-stream-info-dropped').textContent).toBe('3');
+  expect(screen.getByTestId('remote-workspace-admin-stream-info-queue').textContent).toBe('2');
+  expect(hud.textContent).toContain(i18n.t('remoteWorkspace.admin.streamInfoConnection'));
+
+  // 可关闭。
+  fireEvent.click(
+    screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.streamInfoClose') }),
+  );
+  expect(screen.queryByTestId('remote-workspace-admin-stream-info')).toBeNull();
+
+  // 全屏下 HUD 仍在右上角（不因极简全屏被隐藏）。
+  fireEvent.click(screen.getByTestId('remote-workspace-admin-stream-info-toggle'));
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.enterFullscreen') }),
+    );
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  expect(within(stage).getByTestId('remote-workspace-admin-stream-info')).toBeTruthy();
+});
+
+it('shows an actionable message when opening the workspace on the web finds it gone', async () => {
+  await renderPanel();
+  bridge.openWebWorkspace.mockRejectedValue(new Error('[PSB_NOT_FOUND] workspace gone'));
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole('button', { name: i18n.t('remoteWorkspace.admin.actionOpenWeb') }),
+    );
+  });
+  expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+    i18n.t('remoteWorkspace.admin.openWebGone'),
+  );
+});
+
+it('releases the viewer when the tab becomes invisible', async () => {
+  const view = await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  view.rerender(
+    <RemoteWorkspaceAdminPanel
+      state={{}}
+      ctx={ctx('local-a', 'psb:psb-a')}
+      active={false}
+      shellVisible
+    />,
+  );
+  await act(async () => {});
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+});
+
+it('follows the pushed workspace change and releases the previous workspace viewer', async () => {
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  expect(bridge.adminStreamStart).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+
+  await act(async () => {
+    pushContext?.({
+      context: context({
+        workspaceId: 'ws-b',
+        clientName: 'Machine B',
+        title: 'Workspace B',
+        directoryName: 'proj-b',
+        occupancy: { occupied: false, byMe: false, personName: '' },
+      }),
+    });
+  });
+  // 旧工作区的观看名额随连接区卸载释放；播放器实例被 dispose（也清掉旧画面）。
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(playerMock.dispose).toHaveBeenCalled();
+  // 页头跟随新工作区：名称是 PSB 的 title，模板 · 机器在名称之后。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace B',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
+    'Saga2 · Machine B',
+  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-occupancy').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.occupancyValue', {
+      value: i18n.t('remoteWorkspace.admin.occupancyFree'),
+    }),
+  );
+  // 新工作区是全新的观看端：可以重新启动。
+  expect(
+    (
+      screen.getByRole('button', {
+        name: i18n.t('remoteWorkspace.session.start'),
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+});
+
+it('explains why there is no picture using PSB reason codes, not a dead end', async () => {
+  bridge.adminContext.mockResolvedValue({
+    context: context({ desktopSession: 'none', reasonCode: 'NO_DESKTOP_SESSION' }),
+  });
+  await renderPanel();
+  expect(screen.getByText(i18n.t('remoteWorkspace.admin.streamReasonNoDesktop'))).toBeTruthy();
+  // 空态里仍然可以点「启动」（PSB 状态未知时不预判失败）。
+  expect(
+    (
+      screen.getByRole('button', {
+        name: i18n.t('remoteWorkspace.session.start'),
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(false);
+  // 远端没有 running 桌面会话也不自动发 start（本页一律手动启动）。
+  expect(bridge.adminStreamStart).not.toHaveBeenCalled();
+});
+
+it('keeps the page structure with a no-workspace hint when main resolves no workspace', async () => {
+  bridge.adminContext.mockResolvedValue({ context: null });
+  await renderPanel();
+  expect(screen.getByTestId('remote-workspace-admin-no-workspace').textContent).toContain(
+    i18n.t('remoteWorkspace.admin.emptyNoWorkspaceTitle'),
+  );
+  // 结构保留：页头 + 三个分类都在，只是没有观看端与通用操作。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-line').textContent).toContain('—');
+  expect(screen.getAllByRole('tab')).toHaveLength(3);
+  expect(screen.queryByTestId('remote-workspace-admin-actions')).toBeNull();
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
+  ).toBeNull();
+});
+
+it('degrades to an unavailable hint when the preload has no workspace-admin bridge', async () => {
+  Object.assign(window, { electronAPI: { psbRemote: {} } });
+  await renderPanel();
+  expect(screen.getByTestId('remote-workspace-admin-unavailable').textContent).toContain(
+    i18n.t('remoteWorkspace.admin.emptyUnavailableTitle'),
+  );
+  expect(screen.getAllByRole('tab')).toHaveLength(3);
+});
+
+it('offers a real retry when the context read fails and then recovers', async () => {
+  bridge.adminContext
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValue({ context: context() });
+  await renderPanel();
+  expect(screen.getByTestId('remote-workspace-admin-load-failed').textContent).toContain(
+    i18n.t('remoteWorkspace.admin.emptyLoadFailedTitle'),
+  );
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.dialog.refresh') }));
+  });
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+});
+
+it('does not start on entry, starts only on demand, and still releases the viewer when hidden', async () => {
+  bridge.adminContext.mockResolvedValue({ context: context({ desktopSession: 'running' }) });
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: { ...STREAM_ACTIVE, active: false, desktopSession: 'running' },
+  });
+  const view = await renderPanel();
+  // 改口后的口径：进入页面**不**自动开播（即便远端 desktopSession:running / active 也不触发）。
+  expect(bridge.adminStreamStart).not.toHaveBeenCalled();
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') })).toBeTruthy();
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamNotStarted'),
+  );
+
+  // 用户点「启动」才订阅；首帧之前是「已连接，等待画面…」。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  expect(bridge.adminStreamStart).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamWaiting'),
+  );
+  // 这一轮里 PSB 状态本身写完 `active:false` 也不影响（`streaming` 只认 frame）。
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(64) });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamLive'),
+  );
+
+  // 离开页签：仍然自动停止，释放 PSB 的观看名额。
+  view.rerender(
+    <RemoteWorkspaceAdminPanel
+      state={{}}
+      ctx={ctx('local-a', 'psb:psb-a')}
+      active={false}
+      shellVisible
+    />,
+  );
+  await act(async () => {});
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+
+  // 再回来：**未启动态**，需要用户再点「启动」（不会自动开播）。
+  view.rerender(
+    <RemoteWorkspaceAdminPanel state={{}} ctx={ctx('local-a', 'psb:psb-a')} active shellVisible />,
+  );
+  await act(async () => {});
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') })).toBeTruthy();
+});
+
+it('surfaces a manual start failure without auto-retrying', async () => {
+  bridge.adminStreamStart.mockRejectedValue(new Error('[PSB_UNREACHABLE] 远端暂时不可达'));
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  // 不再自动重试（没有自动启动，也就没有启动风暴）。
+  await act(async () => {});
+  await act(async () => {});
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('alert').textContent).toContain('远端暂时不可达');
+});
+
+it('forwards pointer, keyboard and wheel input as remote screen pixels', async () => {
+  bridge.adminContext.mockResolvedValue({ context: context({ desktopSession: 'running' }) });
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: { ...STREAM_ACTIVE, active: false, desktopSession: 'running' },
+  });
+  await renderPanel();
+  const stage = screen.getByTestId('remote-workspace-admin-stream-stage');
+  // 进入页面不自动开播：先由用户点「启动」，之后画面才接收输入；输入在首帧之后才可用。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(64) });
+  });
+  const chip = screen.getByTestId('remote-workspace-admin-stream-input-state');
+  expect(chip.getAttribute('data-input-state')).toBe('interactive');
+  expect(chip.textContent).toContain(i18n.t('remoteWorkspace.admin.inputInteractive'));
+
+  const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+  stubCanvasGeometry(canvas, { width: 1920, height: 1080, displayWidth: 960, displayHeight: 540 });
+
+  // 画面中心 → 远端 (960, 540)：远端像素 = 浏览器坐标 × 2。
+  fireEvent.pointerDown(canvas, { clientX: 480, clientY: 270, button: 0, pointerId: 1 });
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    event: { kind: 'pointerdown', x: 960, y: 540, button: 0 },
+  });
+
+  // 同一帧内「移动到 (x,y) → 按下」必须按这个顺序发出：移动经 rAF 合并，边沿事件经
+  // `pump.sendEdge` 先冲刷待发移动。直接 sender.send 会让 pointerdown 抢在还没发出的
+  // pointermove 前面，远端就在旧位置按下（独立审查 P1）。
+  bridge.adminStreamInput.mockClear();
+  fireEvent.pointerMove(canvas, { clientX: 300, clientY: 200, pointerId: 1 });
+  fireEvent.pointerDown(canvas, { clientX: 480, clientY: 270, button: 0, pointerId: 1 });
+  await flushInput();
+  expect(
+    bridge.adminStreamInput.mock.calls.map(
+      (call) => (call[0] as { event: { kind: string } }).event.kind,
+    ),
+  ).toEqual(['pointermove', 'pointerdown']);
+  expect(bridge.adminStreamInput).toHaveBeenNthCalledWith(1, {
+    workspaceId: 'ws-a',
+    event: { kind: 'pointermove', x: 600, y: 400 },
+  });
+
+  // 点画面后焦点在画面上：被动态键盘事件才转发给远端。
+  expect(document.activeElement).toBe(stage);
+  await act(async () => {
+    fireEvent.keyDown(stage, { key: 'a', code: 'KeyA' });
+  });
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    event: { kind: 'keydown', key: 'a', code: 'KeyA' },
+  });
+
+  // 滚轮：位置同上，delta 是 CSS 像素。
+  await act(async () => {
+    fireEvent.wheel(canvas, {
+      clientX: 480,
+      clientY: 270,
+      deltaX: 0,
+      deltaY: 120,
+      deltaMode: 0,
+    });
+  });
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    event: { kind: 'wheel', x: 960, y: 540, deltaX: 0, deltaY: 120 },
+  });
+
+  // 右键菜单被拦在本地：右键属于远端，宿主不弹菜单。
+  const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+  canvas.dispatchEvent(contextMenu);
+  expect(contextMenu.defaultPrevented).toBe(true);
+});
+
+it('captures every key in full screen, leaves host rescue shortcuts, and releases on blur', async () => {
+  bridge.adminContext.mockResolvedValue({ context: context({ desktopSession: 'running' }) });
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: { ...STREAM_ACTIVE, active: false, desktopSession: 'running' },
+  });
+  await renderPanel();
+  // 进入页面不自动开播：先由用户点「启动」，键鼠才有远端可发；首帧之后输入才可用。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(64) });
+  });
+  const enter = screen.getByRole('button', {
+    name: i18n.t('remoteWorkspace.admin.enterFullscreen'),
+  });
+  await act(async () => {
+    fireEvent.click(enter);
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  // 键鼠进入捕获态（标签在控制条上，全屏时控制条本身隐藏，但输入语义不变）。
+  expect(
+    screen
+      .getByTestId('remote-workspace-admin-stream-input-state')
+      .getAttribute('data-input-state'),
+  ).toBe('captured');
+  // 同时通知 main：本窗口进入捕获态（宿主菜单快捷键让路 —— Electron accelerator 在 main 侧，
+  // 渲染层 preventDefault 拦不住）。
+  expect(bridge.setAdminStreamCaptureActive).toHaveBeenCalledWith({
+    active: true,
+    workspaceId: 'ws-a',
+  });
+
+  // 普通键：拦住宿主默认行为并转发给远端。
+  let ctrlSPrevented = false;
+  await act(async () => {
+    const event = new KeyboardEvent('keydown', {
+      key: 's',
+      code: 'KeyS',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(event);
+    ctrlSPrevented = event.defaultPrevented;
+  });
+  expect(ctrlSPrevented).toBe(true);
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenCalledWith({
+    workspaceId: 'ws-a',
+    event: { kind: 'keydown', key: 's', code: 'KeyS' },
+  });
+
+  // F5 留给宿主自救：不拦、不转发。
+  const f5 = new KeyboardEvent('keydown', {
+    key: 'F5',
+    code: 'F5',
+    bubbles: true,
+    cancelable: true,
+  });
+  document.body.dispatchEvent(f5);
+  expect(f5.defaultPrevented).toBe(false);
+  // Escape 也留给宿主（全屏下它的语义是退出全屏，转发给远端反而让用户出不去）。
+  const escape = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    code: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  });
+  document.body.dispatchEvent(escape);
+  expect(escape.defaultPrevented).toBe(false);
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenCalledTimes(1);
+
+  // 窗口失焦：补发 keyup，远端不会停在「S 一直按着」。
+  await act(async () => {
+    window.dispatchEvent(new Event('blur'));
+  });
+  await flushInput();
+  expect(bridge.adminStreamInput).toHaveBeenLastCalledWith({
+    workspaceId: 'ws-a',
+    event: { kind: 'keyup', key: 's', code: 'KeyS' },
+  });
+
+  await act(async () => {
+    // 极简全屏下退出按钮在画面右下角（控制条随全屏隐藏）。
+    const stage = screen.getByTestId('remote-workspace-admin-stream-stage');
+    fireEvent.click(
+      within(stage).getByRole('button', { name: i18n.t('remoteWorkspace.admin.exitFullscreen') }),
+    );
+    document.dispatchEvent(new Event('fullscreenchange'));
+  });
+  // 退出全屏：通知 main 恢复宿主快捷键。
+  expect(bridge.setAdminStreamCaptureActive).toHaveBeenLastCalledWith({
+    active: false,
+    workspaceId: 'ws-a',
+  });
+});
+
+it('degrades to view-only when the workspace input channel is not available yet', async () => {
+  // 旧 preload / 主进程通道尚未落地：没有 `adminStreamInput` → 只读观看，但仍可自动看画面。
+  const readOnlyBridge: Record<string, unknown> = { ...bridge };
+  delete readOnlyBridge.adminStreamInput;
+  Object.assign(window, { electronAPI: { psbRemote: readOnlyBridge } });
+  bridge.adminContext.mockResolvedValue({ context: context({ desktopSession: 'running' }) });
+  bridge.adminStreamStatus.mockResolvedValue({
+    status: { ...STREAM_ACTIVE, active: false, desktopSession: 'running' },
+  });
+  await renderPanel();
+  // 进入页面不自动开播：先由用户点「启动」（只读降级只影响输入，不影响手动启动）。
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  const chip = screen.getByTestId('remote-workspace-admin-stream-input-state');
+  expect(chip.getAttribute('data-input-state')).toBe('readonly');
+  expect(chip.textContent).toContain(i18n.t('remoteWorkspace.admin.inputReadOnly'));
+  expect(
+    screen.getByTestId('remote-workspace-admin-stream-stage').getAttribute('tabindex'),
+  ).toBeNull();
+  // 只读不影响观看：手动启动照旧（且只触发了这一次）。
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * 停止失败也必须清屏并复位（独立审查 P1）：`adminStreamStop` reject 时旧实现只记错，
+ * `subscribed/streaming` 仍是 true、画面留上一帧 —— 页签切走自动停止失败后再回来，
+ * 面板还显示「串流中 / 停止」+ 冻结画面，违反「停止 / closed / 错误立即清空画面」。
+ */
+it('clears the picture and resets to not-started even when stopping is rejected', async () => {
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+  expect(canvas.className).not.toContain('hidden');
+
+  bridge.adminStreamStop.mockRejectedValueOnce(new Error('[PSB_UNREACHABLE] offline'));
+  playerMock.clear.mockClear();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }));
+  });
+
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  // 画面清空、回到未启动态：不留冻结帧，也不留「串流中 / 停止」。
+  expect(playerMock.clear).toHaveBeenCalled();
+  expect(canvas.className).toContain('hidden');
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamNotStarted'),
+  );
+  expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') })).toBeTruthy();
+  expect(
+    screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }),
+  ).toBeNull();
+  // 失败给的是中性、可行动的一句，而不是沉默或把原始英文/中文报错直接甩给用户。
+  expect(screen.getByRole('alert').textContent).toBe(
+    i18n.t('remoteWorkspace.session.stopFailed'),
+  );
+});
+
+it('clears the picture when the automatic stop on hide is rejected', async () => {
+  const view = await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  await act(async () => {
+    pushStreamEvent({ type: 'frame', sessionId: 'viewer-a', payload: new ArrayBuffer(1024) });
+  });
+  const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+  bridge.adminStreamStop.mockRejectedValueOnce(new Error('[PSB_UNREACHABLE] offline'));
+  view.rerender(
+    <RemoteWorkspaceAdminPanel
+      state={{}}
+      ctx={ctx('local-a', 'psb:psb-a')}
+      active={false}
+      shellVisible
+    />,
+  );
+  await act(async () => {});
+  expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
+  expect(canvas.className).toContain('hidden');
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamNotStarted'),
+  );
+  expect(screen.getByRole('alert').textContent).toBe(
+    i18n.t('remoteWorkspace.session.stopFailed'),
+  );
+});
+
+/**
+ * 点「启动」时 PSB 刚回推 `capable:false`（按钮禁用态来自上一次渲染）：旧实现静默 return，
+ * 用户点了没反应；现在给一条能照做的原因。
+ */
+it('explains why starting did nothing when PSB says streaming is not capable', async () => {
+  bridge.adminStreamStatus
+    .mockResolvedValueOnce({ status: { ...STREAM_ACTIVE, active: false } })
+    .mockResolvedValueOnce({ status: { ...STREAM_ACTIVE, active: false, capable: false } });
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+  expect(bridge.adminStreamStart).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamReasonNoStreaming'),
+  );
+});
+
+it('ignores context pushes resolved for another window’s task', async () => {
+  await renderPanel();
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+  // 广播是发给所有受信窗口的：`localSessionId` 不匹配 = 这条是别的窗口（主窗 / 独立页签窗口）
+  // 的读取结果，丢弃，不能把本页换成另一个任务的工作区（否则写操作会落到别人的工作区上）。
+  await act(async () => {
+    pushContext?.({
+      context: context({ workspaceId: 'ws-other', title: 'Other task workspace' }),
+      localSessionId: 'local-other-window',
+    });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace A',
+  );
+  // 本窗口任务 id 的推送照常生效。
+  await act(async () => {
+    pushContext?.({
+      context: context({ workspaceId: 'ws-b', title: 'Workspace B' }),
+      localSessionId: 'local-a',
+    });
+  });
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
+    'Workspace B',
+  );
+});
+
+it('ships localized copy for the new page actions and details fields', () => {
+  // 12 locale 的 key 完整性由 `pnpm check:i18n` 负责；这里锁住页面真正用到的 key 都能解析，
+  // 不是把 i18n key 原样渲染到界面上。
+  for (const key of [
+    'remoteWorkspace.admin.actionOccupy',
+    'remoteWorkspace.admin.actionRelease',
+    'remoteWorkspace.admin.actionOpenWeb',
+    'remoteWorkspace.admin.occupancyMine',
+    'remoteWorkspace.admin.occupancyFree',
+    'remoteWorkspace.admin.occupancySelfValue',
+    'remoteWorkspace.admin.actionOccupyDone',
+    'remoteWorkspace.admin.actionReleaseDone',
+    'remoteWorkspace.admin.enterFullscreen',
+    'remoteWorkspace.admin.exitFullscreen',
+    'remoteWorkspace.admin.detailLastError',
+    'remoteWorkspace.admin.detailReasonCode',
+    'remoteWorkspace.admin.detailDesktopSession',
+    'remoteWorkspace.admin.desktopSessionNone',
+    'remoteWorkspace.admin.desktopSessionStarting',
+    'remoteWorkspace.admin.desktopSessionRunning',
+    'remoteWorkspace.admin.inputInteractive',
+    'remoteWorkspace.admin.inputCaptured',
+    'remoteWorkspace.admin.inputReadOnly',
+    'remoteWorkspace.admin.inputInteractiveHint',
+    'remoteWorkspace.admin.inputCapturedHint',
+    'remoteWorkspace.admin.inputReadOnlyHint',
+    'remoteWorkspace.admin.streamInfo',
+    'remoteWorkspace.admin.streamInfoClose',
+    'remoteWorkspace.admin.streamInfoCodec',
+    'remoteWorkspace.admin.streamInfoBitrate',
+    'remoteWorkspace.admin.streamInfoDecodeTime',
+    'remoteWorkspace.admin.streamInfoDropped',
+    'remoteWorkspace.admin.streamInfoQueue',
+    'remoteWorkspace.admin.streamInfoConnection',
+    'remoteWorkspace.admin.exitFullscreenEsc',
+    'remoteWorkspace.admin.openWebGone',
+    'remoteWorkspace.admin.streamReasonNoStreaming',
+    'remoteWorkspace.session.stopFailed',
+  ]) {
+    expect(i18n.t(key)).not.toBe(key);
+  }
+});

@@ -12,6 +12,8 @@ import { TaskMigrationStatus } from './TaskMigrationStatus';
  *   - Pin 指示 + 会话标题（截断显示，双击进入行内重命名 —— 与 SessionItem 同交互）
  *   - ··· 菜单：与 SessionItem 右键菜单同一套条目、变体与分组顺序（标准 /
  *     Draft / Archived 三分支），含「移动到项目」子菜单与「导出会话…」入口
+ *   - 「远程工作区」文字按钮（仅 `psb:` 会话）：紧跟在「…」之后、与标题同一行，
+ *     点击打开/聚焦右侧栏的「远程工作区」全局页签（用户 2026-11-26 位置口径）。
  *
  * 动作实现说明：
  *   - rename / pin / move 与 CCAgentSidebarUpper 的对应 handler 同款乐观更新 +
@@ -74,6 +76,7 @@ import {
 import { ScheduleBindingBadge } from './sidebar/ScheduleBindingBadge';
 import { RemoteProjectIcon } from './sidebar/RemoteProjectIcon';
 import { MENU_ITEM_CLASS } from './sidebar/menuStyles';
+import { RemoteWorkspaceAdminButton } from '@/features/remote-workspace/admin/RemoteWorkspaceAdminButton';
 import { SessionProjectMoveSubmenu } from './sidebar/SessionProjectMoveSubmenu';
 import { sessionMoveFailureFeedback } from '../../../shared/worktreeMoveGuardError';
 // Meka 会话的身份判定:持久化绑定 (mekaProjectId, mekaRoleId) 为真源,
@@ -801,6 +804,17 @@ export function SessionContentHeader({
             }
           />
         </DropdownMenu>
+      )}
+
+      {/* 远程工作区（`psb:`）会话：标题行「…」之后的「远程工作区」文字按钮。
+          位置是用户 2026-11-26 口径 —— 与标题同一行，标题过长时由标题自己截断，
+          按钮 shrink-0 固定在这一段末尾，不改变标题行高度。 */}
+      {!isEditing && (
+        <RemoteWorkspaceAdminButton
+          sessionId={session.id}
+          remoteHostId={session.remoteHostId}
+          className="ml-1"
+        />
       )}
 
       {/* session-git-pr-context:当前分支 + 关联 PR 徽标(项目任务与对话一致;非 git 目录且无 PR 时自动隐藏) */}

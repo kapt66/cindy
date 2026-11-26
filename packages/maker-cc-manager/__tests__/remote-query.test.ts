@@ -44,6 +44,12 @@ const stopTaskCalls: string[] = [];
 function buildFakeFactory(): SdkQueryFactory {
   return (opts): SdkQueryLike => {
     async function* gen(): AsyncGenerator<unknown> {
+      // 复现「远端 query 在首个 turn 之前就死掉」：cwd 不存在时 SDK spawn 立即失败，
+      // daemon 的 consume loop 因此抛错（session-registry 的
+      // `session consume loop threw` → `session/closed(reason:'error', detail)`）。
+      if (opts.cwd === '/no-such-cwd') {
+        throw new Error('spawn claude ENOENT: no such file or directory (cwd=/no-such-cwd)');
+      }
       yield {
         type: 'system',
         subtype: 'init',
@@ -336,6 +342,27 @@ describe('RemoteQuery', () => {
     const doneP = drainToDone(remote);
     ctx!.client.dispose();
     await doneP;
+  });
+
+  // 远端 query 在首个 turn 之前就死掉时（典型：daemon 侧 SDK 用不存在的 cwd spawn
+  // `claude` 失败），daemon 的 `session/closed.reason/detail` 是**唯一**根因证据。
+  // 此前 remote-query 只 end 队列、把 reason/detail 丢掉，上层只剩通用
+  // `[REMOTE_DAEMON_CLOSED]`，本地 UI 只显示 `Session <id> is closed`，需要跨仓
+  // 对 journal 才能排障（2026-11-26 PSB cc-mgr 远端会话实报）。
+  it('surfaces the daemon session/closed reason and detail', async () => {
+    const closed: Array<{ reason: string; detail?: string }> = [];
+    const remote = await createRemoteQuery({
+      client: ctx!.client,
+      sessionId: 's-consume-loop-error',
+      startParams: { cwd: '/no-such-cwd', model: 'm', env: {} },
+      onSessionClosed: (info) => {
+        closed.push(info);
+      },
+    });
+    await drainToDone(remote);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.reason).toBe('error');
+    expect(closed[0]!.detail).toContain('ENOENT');
   });
 });
 

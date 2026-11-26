@@ -4587,8 +4587,7 @@
     },
     "experimental": {
       "title": "실험적 기능",
-      "toggleAria": "실험적 기능 전환: {{title}}",
-      "features": {}
+      "toggleAria": "실험적 기능 전환: {{title}}"
     },
     "lspMode": {
       "cell": {
@@ -13733,7 +13732,6 @@
       }
     }
   },
-  "markdown": {},
   "diffPanel": {
     "shell": {
       "resizeHandleAria": "패널 너비 조정",
@@ -22425,6 +22423,145 @@
       "network": "연결이 끊겨 다시 시도하는 중…",
       "timeout": "연결 시간이 초과되어 다시 시도하는 중…",
       "server": "서버가 혼잡해 다시 시도하는 중…"
+    }
+  },
+  "remoteWorkspace": {
+    "sidebar": {
+      "title": "원격 워크스페이스",
+      "newSession": "새 작업",
+      "empty": "아직 원격 워크스페이스 작업이 없습니다",
+      "emptyHint": "+ 버튼으로 워크스페이스를 선택하거나 새로 만드세요.",
+      "loadFailed": "원격 워크스페이스를 불러오지 못했습니다."
+    },
+    "admin": {
+      "title": "원격 워크스페이스",
+      "loading": "원격 워크스페이스를 읽는 중…",
+      "occupancyValue": "사용 중: {{value}}",
+      "occupancyFree": "없음",
+      "occupancyMine": "나",
+      "occupancyTakenByOther": "다른 사람",
+      "categories": {
+        "connection": "원격 연결",
+        "versionControl": "버전 관리",
+        "settings": "설정"
+      },
+      "emptyNoWorkspaceTitle": "아직 원격 워크스페이스가 없습니다",
+      "emptyNoWorkspaceHint": "먼저 원격 워크스페이스 작업을 열거나 PSB 웹 페이지에서 워크스페이스를 여세요.",
+      "emptyUnavailableTitle": "이 버전은 원격 워크스페이스를 지원하지 않습니다",
+      "emptyUnavailableHint": "Cindy를 업데이트하면 여기에서 원격 워크스페이스를 보고 조작할 수 있습니다.",
+      "emptyLoadFailedTitle": "원격 워크스페이스를 읽지 못했습니다",
+      "emptyLoadFailedHint": "네트워크를 확인한 뒤 다시 시도하세요. 열린 작업은 영향을 받지 않습니다.",
+      "placeholderComingSoon": "이후 버전에서 제공됩니다.",
+      "streamNotStarted": "스트리밍이 시작되지 않았습니다",
+      "streamStartHint": "시작하면 여기에서 원격 화면을 볼 수 있으며, 작업이 끝나도 계속 조작할 수 있습니다.",
+      "streamReasonNoDesktop": "이 워크스페이스에는 실행 중인 데스크톱이 없습니다. 먼저 PSB 웹 페이지의 ‘원격 제어’에서 시작하세요.",
+      "streamReasonCaptureNotReady": "데스크톱을 시작하는 중입니다. 잠시 후 다시 ‘시작’을 누르세요.",
+      "streamReasonNoStreaming": "해당 컴퓨터에서 스트리밍이 꺼져 있습니다. 먼저 PSB 클라이언트를 업데이트하세요.",
+      "actionOccupy": "점유",
+      "actionRelease": "점유 해제",
+      "actionOpenWeb": "웹에서 열기",
+      "actionOccupyDone": "워크스페이스를 점유했습니다",
+      "actionReleaseDone": "점유를 해제했습니다",
+      "enterFullscreen": "전체 화면",
+      "exitFullscreen": "전체 화면 종료",
+      "inputInteractive": "화면 조작 가능",
+      "inputCaptured": "전체 화면 입력 캡처 중",
+      "inputReadOnly": "보기 전용",
+      "inputInteractiveHint": "마우스와 키보드 입력이 원격 컴퓨터로 전달됩니다. 화면을 클릭하면 키보드로 조작할 수 있습니다.",
+      "inputCapturedHint": "전체 화면: F5 / F11 / F12 및 Ctrl+Shift+I, J, C를 제외한 모든 키와 마우스가 원격으로 전달됩니다. Esc로 전체 화면을 종료합니다.",
+      "inputReadOnlyHint": "보기 전용: 이 버전에는 원격 입력 채널이 없어 화면만 볼 수 있습니다.",
+      "detailLastError": "최근 오류",
+      "detailReasonCode": "사유 코드",
+      "detailDesktopSession": "데스크톱 상태",
+      "desktopSessionNone": "데스크톱 없음",
+      "desktopSessionStarting": "시작 중",
+      "desktopSessionRunning": "실행 중",
+      "streamInfo": "스트리밍 정보",
+      "streamInfoClose": "스트리밍 정보 닫기",
+      "streamInfoCodec": "코덱",
+      "streamInfoBitrate": "비트레이트",
+      "streamInfoDecodeTime": "디코딩 시간",
+      "streamInfoDropped": "드롭된 프레임",
+      "streamInfoQueue": "대기열",
+      "streamInfoConnection": "연결",
+      "exitFullscreenEsc": "전체 화면 종료(Esc)",
+      "openWebGone": "이 원격 워크스페이스는 더 이상 존재하지 않습니다",
+      "occupancySelfValue": "{{name}}(나)"
+    },
+    "badge": {
+      "online": "온라인",
+      "offline": "오프라인",
+      "occupied": "사용 중",
+      "pending": "준비 중",
+      "failed": "실패",
+      "agentUnsupported": "Agent 미지원"
+    },
+    "dialog": {
+      "title": "새 원격 워크스페이스 작업",
+      "subtitle": "워크스페이스를 선택해 작업을 시작하세요. 선택한 워크스페이스는 나만 사용할 수 있도록 확보됩니다.",
+      "tabExisting": "워크스페이스 선택",
+      "tabCreate": "워크스페이스 만들기",
+      "directorySecondary": "폴더: {{directory}}",
+      "workspaceListLoading": "워크스페이스를 불러오는 중…",
+      "workspaceListEmpty": "사용할 수 있는 워크스페이스가 없습니다.",
+      "refresh": "새로 고침",
+      "client": "머신",
+      "clientPlaceholder": "머신 선택",
+      "template": "프로젝트 템플릿",
+      "templatePlaceholder": "프로젝트 템플릿 선택",
+      "titleLabel": "제목(선택)",
+      "titlePlaceholder": "예: 체크아웃 스크립트 수정",
+      "createWorkspace": "워크스페이스 만들기",
+      "creatingWorkspace": "워크스페이스를 만드는 중…",
+      "select": "작업 시작",
+      "cancel": "취소",
+      "clientOffline": "머신이 오프라인입니다",
+      "working": "처리 중…"
+    },
+    "draft": {
+      "location": "원격 워크스페이스",
+      "selectWorkspaceFirst": "먼저 원격 워크스페이스를 선택하거나 만들어 주세요.",
+      "actionBusy": "전송 중입니다. 전송이 끝난 뒤 워크스페이스를 선택해 주세요."
+    },
+    "session": {
+      "stream": "스트림",
+      "start": "시작",
+      "stop": "중지",
+      "details": "상세",
+      "streamIdle": "스트리밍이 꺼져 있습니다.",
+      "streamConnecting": "스트림에 연결하는 중…",
+      "streamWaiting": "연결됨, 화면을 기다리는 중…",
+      "streamLive": "스트리밍 중",
+      "streamUnsupported": "이 머신은 스트리밍을 지원하지 않습니다.",
+      "streamFailed": "스트리밍 실패: {{message}}",
+      "stopFailed": "원격 컴퓨터에 연결하지 못해 스트리밍을 중지하지 못했습니다. 여기 화면은 지웠지만 그쪽에서는 계속 실행 중일 수 있습니다.",
+      "reboundNotice": "원격 Agent 세션이 다시 연결되었습니다. 이번 컨텍스트는 이어지지 않을 수 있습니다.",
+      "reboundNoticeDismiss": "닫기",
+      "openWorkspace": "브라우저에서 워크스페이스 열기",
+      "detailResolution": "해상도",
+      "detailCodec": "코덱",
+      "detailFps": "프레임 속도"
+    },
+    "input": {
+      "occupiedByOther": "다른 사람이 이 워크스페이스를 사용 중이라 지금은 메시지를 보낼 수 없습니다. 상대방에게 해제를 요청하거나 PSB 웹 페이지에서 사용 중을 해제한 뒤 다시 시도하세요.",
+      "clientOffline": "원격 머신이 오프라인이라 지금은 메시지를 보낼 수 없습니다.",
+      "workspaceNotReady": "원격 워크스페이스가 아직 준비되지 않았습니다."
+    },
+    "error": {
+      "auth": "원격 워크스페이스를 사용하려면 Cindy 조직 계정으로 로그인하세요.",
+      "authExpired": "로그인이 만료되었습니다. 다시 로그인하세요.",
+      "orgRequired": "원격 워크스페이스는 조직 구성원만 사용할 수 있습니다.",
+      "identityNotLinked": "Cindy 신원이 아직 PSB의 사용자와 연결되지 않았습니다. 관리자에게 연결을 요청하세요.",
+      "unreachable": "PSB에 연결하지 못했습니다. 네트워크를 확인하고 다시 시도하세요.",
+      "occupiedByOther": "이 워크스페이스는 {{name}}님이 사용 중입니다. 상대방에게 해제를 요청하거나 PSB 웹 페이지에서 사용 중을 해제한 뒤 다시 시도하세요.",
+      "workspaceOccupied": "이 워크스페이스는 다른 사용자가 사용 중이라 지금은 보내거나 시작할 수 없습니다. 상대방에게 해제를 요청하거나 PSB 웹 페이지에서 사용 중을 해제한 뒤 다시 시도하세요.",
+      "clientOffline": "원격 머신이 오프라인입니다.",
+      "notFound": "워크스페이스 또는 작업이 존재하지 않거나 접근 권한이 없습니다.",
+      "unknown": "작업을 완료하지 못했습니다. 나중에 다시 시도하세요."
+    },
+    "status": {
+      "needLogin": "로그인하지 않음",
+      "needOrg": "조직 계정 필요"
     }
   }
 }

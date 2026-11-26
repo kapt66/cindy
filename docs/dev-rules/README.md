@@ -53,6 +53,8 @@
 | Meka 独立插件渠道的版本语义、`x-cindy-version` 与渠道白名单 | [插件分发与版本兼容](plugin-distribution-and-version-compat.md) |
 | 插件 `mcpr` 卡槽、MCPRouter route 白名单与 Host 鉴权注入 | [MCPR 插件能力](mcpr-plugin-capability.md) |
 | MCPRouter 远程任务启动、恢复、SSH preflight 与 `remoteHostId` 路由 | [MCPR 远程会话路由](mcpr-remote-session-routing.md) |
+| PSB 远程工作区会话：`psb:` transport 分类、agent-tunnel 帧契约、HTTP 错误映射、IPC 面与串流观看端 | [PSB 远程会话传输](psb-remote-session-transport.md) |
+| PSB 跨仓契约（脱敏）：身份 / 鉴权 / 端点 / 隧道 / 串流 / 权限模型、`CINDY-RW-*` 最终结论与当前适配状态 | [PSB 跨仓契约摘要](../collaboration/psb-remote-workspace-contract.md) |
 | 跨端协议包边界与修改准入（本仓的权威口径） | [协议边界与子仓](protocol-and-submodules.md) |
 | Claude/Codex runtime pin、RustFS 运行时资产与 MCPRouter Linux runtime 交付 | [agent runtime 发布](agent-runtime-release.md) |
 | Desktop 单测耗时预算、tier 分块与 Windows 命令行长度预算 | [Desktop 单测性能](desktop-unit-test-performance.md) |

@@ -1,0 +1,481 @@
+/**
+ * psbClient 单测 —— PSB HTTP 客户端的失败映射与外壳解析。
+ *
+ * 测试价值
+ * - 生产入口与可观察结果：`createPsbApi(deps)` 是 main 进程访问 PSB 的唯一出口（`psbClient.ts`）。
+ *   经它发出请求后，渲染层能观察到的结果是「成功 DTO」或 `PsbClientError.failure`
+ *   （`code` / `messageKey` / 占用人名 message）——决定界面显示哪句可行动文案。
+ * - Bug／规则依据：`docs/dev-rules/psb-remote-session-transport.md` §3
+ *   （外壳 `{data}` / 401 只重签一次 / `403 IDENTITY_NOT_LINKED` 不重签 / 网络失败记
+ *   `PSB_UNREACHABLE` / 409 占用人名可插值）。
+ * - 现有覆盖缺口：`main/remote-workspace/` 是本轮新增的两个文件的直接单测（此前无覆盖）；
+ *   2026-11-26 PSB 给 `stream/status` 加了 `desktopSession` / `reasonCode` 两个加性字段，
+ *   旧用例只钉了 `capability` 外壳，没有证明这两个字段真的穿过 HTTP 解析层、也没证明旧服务端
+ *   （缺字段）仍可用。
+ * - 最小失败输入：假 fetch 依次返回 401 `AUTH_INVALID`、409
+ *   `WORKSPACE_OCCUPIED_BY_OTHER(details.name)`、或直接 reject（对应三条失败分支）；
+ *   `stream/status` 分别带/不带 `desktopSession` / `reasonCode`（加性字段透传与缺省回退）。
+ * - tier：unit（进程内假 fetch / 假 token，无真实网络与 Electron）。
+ * - 实测耗时：单独运行 1.95s（其中用例 11ms；其余为 vitest 启动与模块加载）。
+ */
+
+import { describe, expect, it, vi } from 'vitest';
+
+import type { AuthState } from '../../authManager';
+import { createIpcError } from '../../../shared/ipc-errors';
+import {
+  psbBannerMessageKeyForIpcCode,
+  psbFailureMessageKeyForIpcCode,
+  psbIpcCodeForFailure,
+  psbRemoteFailureFromIpcError,
+} from '../../../shared/psb-remote-workspace';
+import { createPsbApi, PsbClientError, PSB_HTTP_MAX_RESPONSE_BYTES, readWorkspaceWebUrl } from '../psbClient';
+import type { PsbConnectionTokenPort } from '../psbAuth';
+
+const AUTH_STATE = {
+  isAuthenticated: true,
+  user: { id: 'membership-1', membershipKind: 'org', orgSlug: 'xd' },
+} as unknown as AuthState;
+
+const LOGGER = { debug: vi.fn(), info: vi.fn(), warn: vi.fn() };
+
+interface TokenHarness {
+  readonly port: PsbConnectionTokenPort;
+  readonly tokenCalls: number[];
+  readonly invalidated: number[];
+}
+
+function makeTokens(): TokenHarness {
+  const tokenCalls: number[] = [];
+  const invalidated: number[] = [];
+  return {
+    port: {
+      getToken: async () => {
+        tokenCalls.push(tokenCalls.length + 1);
+        return `token-${tokenCalls.length}`;
+      },
+      invalidate: () => {
+        invalidated.push(invalidated.length + 1);
+      },
+    },
+    tokenCalls,
+    invalidated,
+  };
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function makeApi(
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response>,
+  tokens: PsbConnectionTokenPort,
+) {
+  return createPsbApi({
+    fetch: fetchImpl,
+    getAuthState: () => AUTH_STATE,
+    tokens,
+    logger: LOGGER,
+  });
+}
+
+describe('psbClient 请求外壳与错误映射', () => {
+  it('解析 { data } 外壳里的工作区行，并丢弃没有 id 的行', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(200, {
+          data: {
+            workspaces: [
+              { id: 'ws-1', title: 'SAGA2 设计', clientName: '设计机-01', state: 'ready' },
+              { title: '缺 id 的行' },
+            ],
+          },
+        }),
+      tokens.port,
+    );
+
+    const workspaces = await api.listWorkspaces();
+
+    expect(workspaces).toHaveLength(1);
+    expect(workspaces[0]).toMatchObject({ id: 'ws-1', title: 'SAGA2 设计', clientName: '设计机-01' });
+  });
+
+  it('响应缺少 { data } 外壳时判协议错，不静默回落默认值（2026-11-26 联调事故）', async () => {
+    // 真实事故：PSB 的 `stream/status` 曾返回**裸状态对象**（少了 `{data: …}` 一层），
+    // 宽松解析器把 `undefined` 静默回落成 `{capable:false, lastError:null}`，HTTP 200 看不出
+    // 任何异常——最终表现为「客户端明明声明支持串流，Cindy 却显示不支持」，只能人肉比对 /clients
+    // 才能发现。外壳缺失是契约违约，必须响亮失败（PSB_PROTOCOL），而不是猜默认值。
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () => jsonResponse(200, { capability: true, active: false, encoder: 'h264' }),
+      tokens.port,
+    );
+
+    const error = await api.getStreamStatus('session-1').catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect((error as PsbClientError).failure.code).toBe('PSB_PROTOCOL');
+    expect(LOGGER.warn).toHaveBeenCalledWith(
+      'psb response is missing the data envelope',
+      expect.objectContaining({ label: 'stream-status' }),
+    );
+  });
+
+  it('响应体超过上限时按协议错拒绝（不是网络失败，也不重试）', async () => {
+    const tokens = makeTokens();
+    let calls = 0;
+    const api = makeApi(async () => {
+      calls += 1;
+      return jsonResponse(200, {
+        data: { workspaces: [] },
+        padding: 'x'.repeat(PSB_HTTP_MAX_RESPONSE_BYTES + 16),
+      });
+    }, tokens.port);
+
+    const error = await api.listWorkspaces().catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    // 超限是契约违约（用户查网络没有意义），且不得按网络失败重签/重试。
+    expect((error as PsbClientError).failure.code).toBe('PSB_PROTOCOL');
+    expect(calls).toBe(1);
+    expect(tokens.invalidated).toHaveLength(0);
+    expect(LOGGER.warn).toHaveBeenCalledWith(
+      'psb response exceeded the size limit',
+      expect.objectContaining({ label: 'list-workspaces', limit: PSB_HTTP_MAX_RESPONSE_BYTES }),
+    );
+  });
+
+  it('透传 stream/status 的 reasonCode / desktopSession；缺字段回退 null（旧服务端兼容）', async () => {
+    const tokens = makeTokens();
+    let body: unknown = {
+      data: {
+        capability: true,
+        active: false,
+        width: 2560,
+        height: 1440,
+        fps: 60,
+        encoder: null,
+        lastErrorZh: '该工作区没有正在运行的桌面会话，请先到 PSB 网页「远程控制」页签启动。',
+        desktopSession: 'none',
+        reasonCode: 'NO_DESKTOP_SESSION',
+      },
+    };
+    const api = makeApi(async () => jsonResponse(200, body), tokens.port);
+
+    // 2026-11-26 加性字段：渲染层靠它们区分「去启动桌面会话」与「等首帧」，不能被解析层吞掉。
+    expect(await api.getStreamStatus('session-1')).toMatchObject({
+      capable: true,
+      active: false,
+      desktopSession: 'none',
+      reasonCode: 'NO_DESKTOP_SESSION',
+    });
+
+    // 0.1.158 之前的 PSB 不带这两个字段：解析成 null（未知），不猜 'none'、不报协议错。
+    body = { data: { capability: true, active: true, encoder: 'h264', lastErrorZh: null } };
+    expect(await api.getStreamStatus('session-2')).toMatchObject({
+      capable: true,
+      active: true,
+      desktopSession: null,
+      reasonCode: null,
+    });
+  });
+
+  it('401 AUTH_INVALID 只重签一次，第二次请求改用新 token', async () => {
+    const tokens = makeTokens();
+    const authorizationHeaders: string[] = [];
+    const api = makeApi(async (_input, init) => {
+      authorizationHeaders.push(String((init.headers as Record<string, string>)['authorization']));
+      if (authorizationHeaders.length === 1) {
+        return jsonResponse(401, { error: { code: 'AUTH_INVALID', message: 'expired' } });
+      }
+      return jsonResponse(200, { data: { workspaces: [] } });
+    }, tokens.port);
+
+    await api.listWorkspaces();
+
+    expect(authorizationHeaders).toEqual(['Bearer token-1', 'Bearer token-2']);
+    expect(tokens.invalidated).toHaveLength(1);
+  });
+
+  it('401 在重签后仍失败就停：不再循环签发', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () => jsonResponse(401, { error: { code: 'AUTH_INVALID', message: 'nope' } }),
+      tokens.port,
+    );
+
+    const error = await api.listWorkspaces().catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect((error as PsbClientError).status).toBe(401);
+    expect((error as PsbClientError).failure).toEqual({
+      code: 'AUTH_INVALID',
+      messageKey: 'remoteWorkspace.error.auth',
+      message: 'nope',
+    });
+    expect(tokens.tokenCalls).toHaveLength(2);
+  });
+
+  it('403 IDENTITY_NOT_LINKED 不是「token 坏了」，不重签', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(403, { error: { code: 'IDENTITY_NOT_LINKED', message: '通讯录无人' } }),
+      tokens.port,
+    );
+
+    const error = (await api.listWorkspaces().catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(tokens.tokenCalls).toHaveLength(1);
+    expect(tokens.invalidated).toHaveLength(0);
+    expect(error.failure).toMatchObject({
+      code: 'IDENTITY_NOT_LINKED',
+      messageKey: 'remoteWorkspace.error.identityNotLinked',
+    });
+  });
+
+  it('409 占用冲突保留占用人名，供文案插值', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          error: {
+            code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+            message: '这个工作区正被「张三」占用。',
+            details: { workspaceId: 'ws-1', name: '张三', occupiedAt: 1 },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api.occupyWorkspace('ws-1').catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.status).toBe(409);
+    expect(error.failure).toEqual({
+      code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+      messageKey: 'remoteWorkspace.error.occupiedByOther',
+      message: '张三',
+    });
+  });
+
+  it('网络层失败收敛成 PSB_UNREACHABLE（与业务失败分开）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(async () => {
+      throw new TypeError('fetch failed');
+    }, tokens.port);
+
+    const error = (await api.listClients().catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error).toBeInstanceOf(PsbClientError);
+    expect(error.status).toBeNull();
+    expect(error.failure).toEqual({
+      code: 'PSB_UNREACHABLE',
+      messageKey: 'remoteWorkspace.error.unreachable',
+      message: 'fetch failed',
+    });
+  });
+});
+
+describe('PSB 失败形状 ↔ IPC 失败码', () => {
+  it('失败形状映射成 PSB_ 命名空间码，渲染层能反查回文案键（占用/离线/鉴权各归各）', () => {
+    const cases = [
+      [
+        { code: 'WORKSPACE_OCCUPIED_BY_OTHER', messageKey: 'remoteWorkspace.error.occupiedByOther', message: '张三' },
+        'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
+        'remoteWorkspace.error.occupiedByOther',
+      ],
+      [
+        { code: 'CLIENT_OFFLINE', messageKey: 'remoteWorkspace.error.clientOffline', message: null },
+        'PSB_CLIENT_OFFLINE',
+        'remoteWorkspace.error.clientOffline',
+      ],
+      [
+        { code: 'AUTH_REQUIRED', messageKey: 'remoteWorkspace.status.needOrg', message: null },
+        'PSB_ORG_REQUIRED',
+        'remoteWorkspace.error.orgRequired',
+      ],
+      [
+        { code: 'AUTH_REQUIRED', messageKey: 'remoteWorkspace.status.needLogin', message: null },
+        'PSB_AUTH_REQUIRED',
+        'remoteWorkspace.error.auth',
+      ],
+      [
+        { code: 'PSB_UNREACHABLE', messageKey: 'remoteWorkspace.error.unreachable', message: 'fetch failed' },
+        'PSB_UNREACHABLE',
+        'remoteWorkspace.error.unreachable',
+      ],
+    ] as const;
+
+    for (const [failure, expectedCode, expectedKey] of cases) {
+      expect(psbIpcCodeForFailure(failure)).toBe(expectedCode);
+      expect(psbFailureMessageKeyForIpcCode(expectedCode)).toBe(expectedKey);
+    }
+  });
+
+  it('错误横幅文案键走共享表：被他人占用用无名字兜底键，其它码与操作失败表一致', () => {
+    // 同一个事实的两个消费面：操作 / 按钮失败可插值占用人名；错误横幅只有 code+可能为空的名字。
+    // 映射必须都来自共享契约（渲染层不手写 if），否则同一条失败会出现两套文案。
+    expect(psbBannerMessageKeyForIpcCode('PSB_WORKSPACE_OCCUPIED_BY_OTHER')).toBe(
+      'remoteWorkspace.error.workspaceOccupied',
+    );
+    for (const code of [
+      'PSB_AUTH_REQUIRED',
+      'PSB_CLIENT_OFFLINE',
+      'PSB_WORKSPACE_NOT_READY',
+      'PSB_NOT_FOUND',
+      'PSB_UNREACHABLE',
+      'PSB_STREAM_NOT_ACTIVE',
+    ]) {
+      expect(psbBannerMessageKeyForIpcCode(code)).toBe(psbFailureMessageKeyForIpcCode(code));
+    }
+    expect(psbBannerMessageKeyForIpcCode('PSB_SOMETHING_NEW')).toBeNull();
+  });
+
+  it('渲染层从 IPC 错误里取回失败形状；不是 PSB 码的失败返回 null', () => {    // Electron 跨进程后只保留 message：渲染层拿到的就是 `[CODE] message` 这一串。
+    const fromRenderer = new Error('[PSB_WORKSPACE_OCCUPIED_BY_OTHER] 张三');
+    expect(psbRemoteFailureFromIpcError(fromRenderer)).toEqual({
+      code: 'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
+      messageKey: 'remoteWorkspace.error.occupiedByOther',
+      message: '张三',
+    });
+
+    // 参数校验等本地失败不是 PSB 失败码，调用方回落通用文案。
+    const local = createIpcError('INVALID_PARAMS', 'payload must be an object');
+    expect(psbRemoteFailureFromIpcError(local)).toBeNull();
+    expect(psbRemoteFailureFromIpcError(new Error('boom'))).toBeNull();
+  });
+
+  it('协议错 / 未知码不给 PSB 失败码（落通用 INTERNAL），避免把技术失败当用户可行动原因', () => {
+    expect(
+      psbIpcCodeForFailure({ code: 'PSB_PROTOCOL', messageKey: 'remoteWorkspace.error.unknown', message: null }),
+    ).toBeNull();
+    expect(
+      psbIpcCodeForFailure({ code: 'PSB_UNKNOWN', messageKey: 'remoteWorkspace.error.unknown', message: 'x' }),
+    ).toBeNull();
+  });
+});
+
+describe('工作区网页地址：列表口优先、单行仅兜底（2026-11-26 真机事故）', () => {
+  /**
+   * 按路径分流假 fetch 并记录真的打了哪个口（`list` / `single`）。
+   *
+   * 事故的事实是「Cindy 身份下单行 GET 恒 403」：如果实现又退回单行，`calls` 断言会立刻红，
+   * 而不是等到真机上再看到一句误导的失败。
+   */
+  function routingFetch(routes: { list?: () => Response; single?: () => Response }): {
+    fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
+    calls: string[];
+  } {
+    const calls: string[] = [];
+    const fetchImpl = async (input: string): Promise<Response> => {
+      const isList = new URL(input).pathname.endsWith('/workspaces');
+      calls.push(isList ? 'list' : 'single');
+      const handler = isList ? routes.list : routes.single;
+      if (!handler) throw new TypeError(`unexpected PSB route in test: ${input}`);
+      return handler();
+    };
+    return { fetchImpl, calls };
+  }
+
+  const WORKSPACE_ROW = {
+    id: 'ws-saga2',
+    title: 'saga2_project',
+    state: 'ready',
+    webUrl: 'https://mekabot-test.meka.pawdy.fun/remote/workspaces/ws-saga2',
+    sessionsWebUrl: 'https://mekabot-test.meka.pawdy.fun/remote/workspaces/ws-saga2/sessions',
+  };
+
+  it('列表里有该工作区 → 用列表行的 webUrl 且不请求单行口', async () => {
+    const tokens = makeTokens();
+    const routing = routingFetch({
+      list: () => jsonResponse(200, { data: { workspaces: [WORKSPACE_ROW] } }),
+      single: () =>
+        jsonResponse(403, { error: { code: 'FORBIDDEN', message: '这个 Cindy 身份不能访问该接口。' } }),
+    });
+
+    const url = await readWorkspaceWebUrl(makeApi(routing.fetchImpl, tokens.port), 'ws-saga2');
+
+    expect(url).toBe(WORKSPACE_ROW.webUrl);
+    expect(routing.calls).toEqual(['list']);
+  });
+
+  it('单行口 403/404/405 都按「读口没有答案」→ null，不抛出误导文案', async () => {
+    for (const status of [403, 404, 405]) {
+      const tokens = makeTokens();
+      const routing = routingFetch({
+        list: () => jsonResponse(200, { data: { workspaces: [] } }),
+        single: () =>
+          jsonResponse(status, {
+            error: { code: status === 403 ? 'FORBIDDEN' : 'NOT_FOUND', message: '不可用' },
+          }),
+      });
+
+      const url = await readWorkspaceWebUrl(makeApi(routing.fetchImpl, tokens.port), 'ws-gone');
+
+      expect(url, `单行 ${status} 时应返回 null`).toBeNull();
+      expect(routing.calls).toEqual(['list', 'single']);
+    }
+  });
+
+  it('列表里没有这条工作区、单行口仍能答（旧服务端）→ 用单行行的 webUrl', async () => {
+    const tokens = makeTokens();
+    const routing = routingFetch({
+      list: () => jsonResponse(200, { data: { workspaces: [] } }),
+      single: () => jsonResponse(200, { data: { workspace: WORKSPACE_ROW } }),
+    });
+
+    const url = await readWorkspaceWebUrl(makeApi(routing.fetchImpl, tokens.port), 'ws-saga2');
+
+    expect(url).toBe(WORKSPACE_ROW.webUrl);
+    expect(routing.calls).toEqual(['list', 'single']);
+  });
+
+  it('列表行存在但没带 webUrl → null（PSB 没给地址就是没有，不兜底单行）', async () => {
+    const tokens = makeTokens();
+    const routing = routingFetch({
+      list: () => jsonResponse(200, { data: { workspaces: [{ ...WORKSPACE_ROW, webUrl: null }] } }),
+    });
+
+    expect(await readWorkspaceWebUrl(makeApi(routing.fetchImpl, tokens.port), 'ws-saga2')).toBeNull();
+    expect(routing.calls).toEqual(['list']);
+  });
+
+  it('列表鉴权失败仍明确报错（未登录 0 次请求；通讯录未关联不发单行请求）', async () => {
+    const tokens = makeTokens();
+    const signedOutRouting = routingFetch({ list: () => jsonResponse(200, { data: { workspaces: [] } }) });
+    const signedOutApi = createPsbApi({
+      fetch: signedOutRouting.fetchImpl,
+      getAuthState: () => ({ isAuthenticated: false, user: null }) as unknown as AuthState,
+      tokens: tokens.port,
+      logger: LOGGER,
+    });
+    await expect(readWorkspaceWebUrl(signedOutApi, 'ws-1')).rejects.toMatchObject({
+      failure: { code: 'AUTH_REQUIRED' },
+    });
+    expect(signedOutRouting.calls).toEqual([]);
+
+    const notLinkedRouting = routingFetch({
+      list: () =>
+        jsonResponse(403, { error: { code: 'IDENTITY_NOT_LINKED', message: '通讯录无人' } }),
+    });
+    await expect(
+      readWorkspaceWebUrl(makeApi(notLinkedRouting.fetchImpl, tokens.port), 'ws-1'),
+    ).rejects.toMatchObject({ failure: { code: 'IDENTITY_NOT_LINKED' } });
+    expect(notLinkedRouting.calls).toEqual(['list']);
+  });
+
+  it('网络失败仍明确报错，不静默变成「找不到工作区」', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(async () => {
+      throw new TypeError('fetch failed');
+    }, tokens.port);
+
+    await expect(readWorkspaceWebUrl(api, 'ws-1')).rejects.toMatchObject({
+      failure: { code: 'PSB_UNREACHABLE' },
+    });
+  });
+});

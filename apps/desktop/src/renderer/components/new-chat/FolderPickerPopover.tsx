@@ -22,6 +22,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { recentWorkdirsStore } from '@/lib/recentWorkdirsStore';
 import type { MekaRouterInstance } from '../../../shared/meka-router';
 import { MekaRemoteSessionPicker } from './MekaRemoteSessionPicker';
+import { PsbWorkspacePicker } from '@/features/remote-workspace/draft/PsbWorkspacePicker';
+import type { RemoteWorkspacePickerCreated } from '@/features/remote-workspace/dialog/psbDialogModel';
 
 const RECENT_FOLDERS_KEY = 'cc-agent-recent-folders';
 const MAX_RECENT = 5;
@@ -183,6 +185,18 @@ interface FolderPickerPopoverProps {
   mcprRemoteOnly?: boolean;
   mcprConfigured?: boolean;
   onConnectMcpr?: () => void;
+  /**
+   * 远程工作区渠道（PSB）：项目胶囊变成工作区下拉，内容由 `PsbWorkspacePicker` 渲染。
+   * 与 `mcprRemoteOnly` 同构的「二级 picker 只属于这个渠道」开关，两者互斥。
+   */
+  psbRemoteOnly?: boolean;
+  /** 当前草稿已选中的 PSB 工作区 id（null = 渠道已选、还没选工作区）。 */
+  psbSelectedWorkspaceId?: string | null;
+  onSelectPsbWorkspace?: (created: RemoteWorkspacePickerCreated) => void;
+  /** 草稿在途锁（发送中 / 目录恢复选择中 / worktree 创建中）：工作区下拉整块禁用。 */
+  psbPickerDisabled?: boolean;
+  /** 「新建远程工作区」入口：上层打开弹窗的新建页签（不在这里重复实现表单）。 */
+  onCreatePsbWorkspace?: () => void;
   side?: 'top' | 'right' | 'bottom' | 'left';
   align?: 'start' | 'center' | 'end';
   sideOffset?: number;
@@ -205,6 +219,11 @@ export function FolderPickerPopover({
   mcprRemoteOnly = false,
   mcprConfigured = false,
   onConnectMcpr,
+  psbRemoteOnly = false,
+  psbSelectedWorkspaceId = null,
+  onSelectPsbWorkspace,
+  psbPickerDisabled = false,
+  onCreatePsbWorkspace,
   side,
   align = 'end',
   sideOffset = 4,
@@ -463,7 +482,7 @@ export function FolderPickerPopover({
         }}
         aria-busy={selectionPending}
       >
-        {isProjectPicker && !mcprRemoteOnly && (
+        {isProjectPicker && !mcprRemoteOnly && !psbRemoteOnly && (
           <>
             {allowDialogue && (
               <>
@@ -644,7 +663,7 @@ export function FolderPickerPopover({
           </>
         )}
 
-        {isProjectPicker && mcprRemoteOnly ? (
+        {isProjectPicker && mcprRemoteOnly && !psbRemoteOnly ? (
           <div className="px-3 pb-1 pt-2">
             <span className="text-xs font-normal text-[var(--folder-label)]">
               {t('newChat.folderPicker.mcprRemoteProjects')}
@@ -652,7 +671,7 @@ export function FolderPickerPopover({
           </div>
         ) : null}
 
-        {isProjectPicker && mcprRemoteOnly && !mcprConfigured ? (
+        {isProjectPicker && mcprRemoteOnly && !psbRemoteOnly && !mcprConfigured ? (
           <button
             type="button"
             onClick={() => {
@@ -671,8 +690,25 @@ export function FolderPickerPopover({
           </button>
         ) : null}
 
-        {isProjectPicker && mcprRemoteOnly && mcprConfigured && onSelectRemoteSession ? (
+        {isProjectPicker && mcprRemoteOnly && !psbRemoteOnly && mcprConfigured && onSelectRemoteSession ? (
           <MekaRemoteSessionPicker open={open} onSelect={onSelectRemoteSession} />
+        ) : null}
+
+        {/* 远程工作区渠道：项目胶囊 = PSB 工作区下拉（选中即占用，失败不选中）+ 新建入口。 */}
+        {isProjectPicker && psbRemoteOnly ? (
+          <PsbWorkspacePicker
+            open={open}
+            selectedWorkspaceId={psbSelectedWorkspaceId}
+            disabled={psbPickerDisabled}
+            onSelect={(created) => {
+              onSelectPsbWorkspace?.(created);
+              onOpenChange(false);
+            }}
+            onCreate={() => {
+              onCreatePsbWorkspace?.();
+              onOpenChange(false);
+            }}
+          />
         ) : null}
 
         {/* Recent folders — list scrolls past 4.5 rows, label and
@@ -727,7 +763,7 @@ export function FolderPickerPopover({
           />
         )}
         {/* Choose a different folder */}
-        {!mcprRemoteOnly ? <button
+        {!mcprRemoteOnly && !psbRemoteOnly ? <button
           type="button"
           disabled={selectionPending}
           onClick={handleChooseDifferent}
@@ -760,7 +796,7 @@ export function FolderPickerPopover({
                 所以「在对端设备的语境里添加 SSH 项目」本身是语境错位;要用 SSH 先把设备切回本机,
                 与设备 pill 的语义一致。
             对端一个项目都没有时的空态入口不受影响 —— 那条走 tabBrowse 且**带**设备身份。 */}
-        {isProjectPicker && !mcprRemoteOnly && onAddRemoteProject && !deviceScope && (
+        {isProjectPicker && !mcprRemoteOnly && !psbRemoteOnly && onAddRemoteProject && !deviceScope && (
           <button
             type="button"
             disabled={selectionPending}

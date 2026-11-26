@@ -31,8 +31,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
-import { classifyRemoteSessionTransport } from '../remote-session-routing.js';
-import { parseMcprRemoteHostId } from '../../../shared/meka-router.js';
+import { classifyRemoteSessionTransport, isTunnelRemoteSessionTransport } from '../remote-session-routing.js';
 
 interface TeammateInstructionsModule {
   hasCurrentTeammateInstructions(
@@ -110,6 +109,8 @@ function stripTypeScriptSyntax(code: string): string {
 interface HookDeps {
   poolGet: ReturnType<typeof vi.fn>;
   createFileOps: ReturnType<typeof vi.fn>;
+  /** 共享隧道分派（`remote-tunnel-dispatch.openRemoteTunnel`）：Claude 钩子只把它**传下去**。 */
+  openRemoteTunnel: ReturnType<typeof vi.fn>;
 }
 
 /** 用真实钩子源码 + 注入依赖构造一个可调用函数（不 import 整个 index.ts）。 */
@@ -119,16 +120,19 @@ function buildCodexHook(deps: HookDeps): (remoteHostId: string) => unknown {
     'getRemoteSshPool',
     'createRemotePiFileOps',
     'classifyRemoteSessionTransport',
+    'isTunnelRemoteSessionTransport',
     `return ({ ${hookSource} }).getRemoteAgentFileOps;`,
   ) as (
     pool: () => { get: unknown },
     createFileOps: unknown,
     classify: unknown,
+    isTunnel: unknown,
   ) => (remoteHostId: string) => unknown;
   return factory(
     () => ({ get: deps.poolGet }),
     deps.createFileOps,
     classifyRemoteSessionTransport,
+    isTunnelRemoteSessionTransport,
   );
 }
 
@@ -143,31 +147,38 @@ function deps(): HookDeps {
   return {
     poolGet: vi.fn(() => undefined),
     createFileOps: vi.fn(() => SSH_FILE_OPS),
+    openRemoteTunnel: vi.fn(async () => ({ openStreamStub: true })),
   };
 }
 
 describe('Codex getRemoteAgentFileOps 的 transport 分类（WL-4.1.2）', () => {
-  it('`mcpr:<instance.id>` 不查 SSH pool，也不抛 remote SSH host ... is not connected', () => {
-    const d = deps();
-    const hook = buildCodexHook(d);
+  it.each(['mcpr:instance-1', 'psb:session-1'] as const)(
+    '`%s` 不查 SSH pool，也不抛 remote SSH host ... is not connected',
+    (remoteHostId) => {
+      const d = deps();
+      const hook = buildCodexHook(d);
 
-    expect(() => hook('mcpr:instance-1')).not.toThrow();
-    expect(d.poolGet).not.toHaveBeenCalled();
-    expect(d.createFileOps).not.toHaveBeenCalled();
+      expect(() => hook(remoteHostId)).not.toThrow();
+      expect(d.poolGet).not.toHaveBeenCalled();
+      expect(d.createFileOps).not.toHaveBeenCalled();
+    },
+  );
+
+  it('不完整/畸形的 `mcpr:` / `psb:` 同样不降级成 SSH host（保持隧道错误路径）', () => {
+    for (const remoteHostId of ['mcpr:', 'psb:'] as const) {
+      const d = deps();
+      const hook = buildCodexHook(d);
+
+      // `mcpr:` / `psb:` 是分类器按前缀识别的 malformed 值：它们必须留在各自的隧道错误路径，
+      // 不能落到 SSH pool 变成 SSH_HOST_NOT_FOUND。
+      expect(isTunnelRemoteSessionTransport(remoteHostId)).toBe(true);
+      expect(classifyRemoteSessionTransport(remoteHostId) === 'ssh').toBe(false);
+
+      expect(() => hook(remoteHostId)).not.toThrow();
+      expect(d.poolGet).not.toHaveBeenCalled();
+    }
   });
 
-  it('不完整/畸形的 `mcpr:` 同样不降级成 SSH host（保持 MCPRouter 错误路径）', () => {
-    const d = deps();
-    const hook = buildCodexHook(d);
-
-    // `mcpr:` 是分类器按前缀识别的 malformed 值：它必须留在 MCPRouter 错误路径，
-    // 不能落到 SSH pool 变成 SSH_HOST_NOT_FOUND。
-    expect(classifyRemoteSessionTransport('mcpr:')).toBe('mcpr');
-    expect(parseMcprRemoteHostId('mcpr:')).toBeNull();
-
-    expect(() => hook('mcpr:')).not.toThrow();
-    expect(d.poolGet).not.toHaveBeenCalled();
-  });
 
   it('返回的空 reader 让下游判「不可读 ⇒ 重新投递指令」，而不是跳过', async () => {
     const d = deps();
@@ -232,16 +243,17 @@ describe('空 reader 的下游契约（teammate 指令去重）', () => {
  *
  * Claude 的 `getRemoteAgentFileOps` 曾经是 SSH-only:`getRemoteSshPool().get()`
  * 未命中就抛 `remote SSH host "<id>" not found in pool — ...`。它的唯一消费方是
- * `ClaudeCodeAgent.listAgentSkills`, 所以 MCPRouter(`mcpr:`) Claude 会话做远端
+ * `ClaudeCodeAgent.listAgentSkills`, 所以隧道身份(`mcpr:` / `psb:`)的 Claude 会话做远端
  * Skill 发现时会拿 SSH pool 的错误。
  *
  * 2026-10-09:MCPRouter 侧新增 agent-tunnel `mode=exec`(与 `remoteHost.exec` 同形),
- * 因此 `mcpr:` 上不再退化成 `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败, 而是走
- * `createMcprPiFileOps(remoteHostId)` —— **与 SSH 同一份** file ops 实现。
- * 客户端**不**加路径/命令白名单:真正的边界是实例容器与用户身份(见
+ * 因此隧道 transport 上不再退化成 `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败, 而是走
+ * `createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel })` —— **与 SSH
+ * 同一份** file ops 实现,`openRemoteTunnel` 再按 transport 选隧道来源。
+ * 客户端**不**加路径/命令白名单:真正的边界是远端容器与用户身份(见
  * `pi-mcpr-remote.ts`)。
  *
- * 仍守住的不变量:分类先行(`mcpr:` 不碰 SSH pool)、不把 SSH 故障静默吞掉、
+ * 仍守住的不变量:分类先行(隧道身份不碰 SSH pool)、不把 SSH 故障静默吞掉、
  * 也不返回空 reader(空 catalog 会让 botProfileRuntime 把用户 Skill 全标成
  * unavailable, 与远端 harness 实际发现分叉 —— 见 botProfileRuntime.ts 的
  * 「catalog 读不到 ⇒ 抛错」)。
@@ -284,18 +296,24 @@ function buildClaudeHook(
     'getRemoteSshPool',
     'createRemotePiFileOps',
     'classifyRemoteSessionTransport',
+    'isTunnelRemoteSessionTransport',
+    'openRemoteTunnel',
     'createMcprPiFileOps',
     `return ({ ${hookSource} }).getRemoteAgentFileOps;`,
   ) as (
     pool: () => { get: unknown },
     createFileOps: unknown,
     classify: unknown,
+    isTunnel: unknown,
+    openTunnel: unknown,
     createMcprFileOps: unknown,
   ) => (remoteHostId: string) => unknown;
   return factory(
     () => ({ get: deps.poolGet }),
     deps.createFileOps,
     classifyRemoteSessionTransport,
+    isTunnelRemoteSessionTransport,
+    deps.openRemoteTunnel,
     deps.createMcprPiFileOps,
   );
 }
@@ -312,27 +330,35 @@ function claudeDeps(): HookDeps & { createMcprPiFileOps: ReturnType<typeof vi.fn
 }
 
 describe('Claude getRemoteAgentFileOps 的 transport 分类（任务 3）', () => {
-  it('`mcpr:<instance.id>` 走隧道 file ops,不查 SSH pool、不报 remote SSH host', () => {
-    const d = claudeDeps();
-    const hook = buildClaudeHook(d);
+  it.each(['mcpr:instance-1', 'psb:session-1'] as const)(
+    '`%s` 走隧道 file ops,不查 SSH pool、不报 remote SSH host',
+    (remoteHostId) => {
+      const d = claudeDeps();
+      const hook = buildClaudeHook(d);
 
-    expect(hook('mcpr:instance-1')).toBe(MCPR_FILE_OPS);
-    expect(d.createMcprPiFileOps).toHaveBeenCalledWith('mcpr:instance-1');
-    // 旧形态是 `remote SSH host "mcpr:..." not found in pool` —— 那是把 MCPRouter
-    // 身份当 SSH host 查出来的错误。
-    expect(d.poolGet).not.toHaveBeenCalled();
-    expect(d.createFileOps).not.toHaveBeenCalled();
-  });
+      expect(hook(remoteHostId)).toBe(MCPR_FILE_OPS);
+      // 隧道实现的选择交给共享分派:钩子只负责把 transport 分派器传下去。
+      expect(d.createMcprPiFileOps).toHaveBeenCalledWith(remoteHostId, {
+        openTunnel: d.openRemoteTunnel,
+      });
+      // 旧形态是 `remote SSH host "mcpr:..." not found in pool` —— 那是把隧道身份
+      // 当 SSH host 查出来的错误。
+      expect(d.poolGet).not.toHaveBeenCalled();
+      expect(d.createFileOps).not.toHaveBeenCalled();
+    },
+  );
 
-  it('不完整/畸形的 `mcpr:` 同样不降级成 SSH host', () => {
-    const d = claudeDeps();
-    const hook = buildClaudeHook(d);
+  it('不完整/畸形的 `mcpr:` / `psb:` 同样不降级成 SSH host', () => {
+    for (const remoteHostId of ['mcpr:', 'psb:'] as const) {
+      const d = claudeDeps();
+      const hook = buildClaudeHook(d);
 
-    expect(classifyRemoteSessionTransport('mcpr:')).toBe('mcpr');
-    expect(parseMcprRemoteHostId('mcpr:')).toBeNull();
+      expect(isTunnelRemoteSessionTransport(remoteHostId)).toBe(true);
+      expect(classifyRemoteSessionTransport(remoteHostId) === 'ssh').toBe(false);
 
-    expect(hook('mcpr:')).toBe(MCPR_FILE_OPS);
-    expect(d.poolGet).not.toHaveBeenCalled();
+      expect(hook(remoteHostId)).toBe(MCPR_FILE_OPS);
+      expect(d.poolGet).not.toHaveBeenCalled();
+    }
   });
 
   it('SSH host 仍然先查 pool 再建远端 file ops（新分支不改变既有行为）', () => {

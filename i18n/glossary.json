@@ -3265,6 +3265,25 @@
       "note": "远程连接、任务与设备列表中的另一台设备；明确是电脑时优先说远程电脑。不要把本地浏览器内部控制器称为远程设备。"
     },
     {
+      "id": "remote-workspace-admin",
+      "status": "proposed",
+      "en": "Remote workspace",
+      "translations": {
+        "zh-CN": "远程工作区",
+        "zh-TW": "遠端工作區",
+        "ja": "リモートワークスペース",
+        "ko": "원격 워크스페이스",
+        "es": "Espacio de trabajo remoto",
+        "fr": "Espace de travail distant",
+        "de": "Remote-Arbeitsbereich",
+        "pt-PT": "Espaço de trabalho remoto",
+        "pt-BR": "Espaço de trabalho remoto",
+        "zh-Hant-x-lzh": "遠端工作區",
+        "zh-Hans-x-lzh": "远程工作区"
+      },
+      "note": "远程工作区会话页标题行「…」之后的入口按钮、右侧栏标签页名与全局页签页面名（用户 2026-11-26 指定中文叫「远程工作区」，按钮位置从窗口右上角挪到会话标题行「…」之后）。页面是 PSB 网页「远程工作区」的简化版 / 快捷访问：按工作区工作、不依赖当前任务是否结束。与「远程桌面」「远程连接」不是同一功能；旧称「远程管理」已废弃，不要再使用。"
+    },
+    {
       "id": "request-refund",
       "status": "proposed",
       "en": "Request Refund",
@@ -3516,6 +3535,7 @@
         "desktop:newChat.chatInput.agentSwitch.confirmation.description",
         "desktop:newChat.collaboration.archiveWorkerConfirmDesc",
         "desktop:newChat.collaboration.stopConfirmDesc",
+        "desktop:remoteWorkspace.session.reboundNotice",
         "desktop:settings.about.debugLogDescription",
         "desktop:settings.builtinTools.toast.disabled",
         "desktop:settings.builtinTools.toast.enabled",

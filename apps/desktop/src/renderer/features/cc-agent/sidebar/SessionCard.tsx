@@ -78,6 +78,11 @@ import { SessionShareExportDialog } from './SessionShareExportDialog';
 import { SessionRenameInput } from '../SessionRenameInput';
 import { SidebarTitleMarquee, type SessionItemProps } from './SessionItem';
 import { RemoteProjectIcon } from './RemoteProjectIcon';
+import { isRemoteWorkspaceSession } from '@/features/remote-workspace/sidebar/isRemoteWorkspaceSession';
+import {
+  RemoteWorkspaceOpenButton,
+  RemoteWorkspaceStatusBadges,
+} from '@/features/remote-workspace/sidebar/RemoteWorkspaceRowDecor';
 import { isRemoteSessionWriteBlocked } from '../lib/remoteSessionWriteGuard';
 import { prefetchDirtyWorktreeForRemoval } from '@/lib/worktreeRemovalWarning';
 import { resolveSessionCardBody } from './sessionCardPreview';
@@ -775,6 +780,15 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
               className="relative flex h-[22px] min-w-0 flex-1 items-center gap-0"
             >
               <span className="flex shrink-0 items-center">{titlePrefixNode}</span>
+              {/* 远程工作区（`psb:`）会话：紧贴状态图标之后、标题之前 ——
+                  最前面的图标按钮（浏览器打开 PSB 工作区）+ 状态标签 + 占用锁。
+                  条件挂载:普通行不建立 store 订阅,行仍是 memo 的(SessionItem 同款红线)。 */}
+              {isRemoteWorkspaceSession(session) && (
+                <>
+                  <RemoteWorkspaceOpenButton session={session} isActive={isActive} />
+                  <RemoteWorkspaceStatusBadges session={session} />
+                </>
+              )}
               {isEditing ? (
                 <SessionRenameInput
                   sessionId={session.id}
@@ -996,6 +1010,16 @@ export const SessionCard = withSidebarNavigation<SessionCardProps>(function Sess
                   : 'group-hover/card:pr-14 peer-focus-within/card-actions:pr-14'),
             )}
           >
+            {/* 远程工作区（`psb:`）会话：卡片标题行最前面 —— 图标按钮（浏览器打开 PSB
+                工作区）+ 状态标签 + 占用锁，随后才是任务标题。与 list / text 两个变体
+                同一套组件，只换排列位置（卡片变体目前只用于置顶段，`psb:` 会话不在置顶段，
+                这里保持对齐以免将来变体启用时缺失）。 */}
+            {isRemoteWorkspaceSession(session) && (
+              <span className="mr-1.5 flex shrink-0 items-center gap-1">
+                <RemoteWorkspaceOpenButton session={session} isActive={isActive} />
+                <RemoteWorkspaceStatusBadges session={session} />
+              </span>
+            )}
             {/* 标题单行:与列表行同一个跑马灯,平时省略号,悬停卡片且溢出时横向带过全名。 */}
             <div
               className={cn('min-w-0', isEditing && 'invisible')}

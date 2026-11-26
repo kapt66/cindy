@@ -46,7 +46,8 @@ describe('NewMakerDraftRoute local first-message send', () => {
 
     expect(seed).toBeGreaterThan(-1);
     expect(seed).toBeLessThan(localFence);
-    expect(seedBlock).toContain('remoteHostId: workingDir ? (effectiveRemoteHostId ?? null) : null');
+    // 远端身份取这次发送真正解析出的值：PSB 会话懒建成功时是 psb:<id>，否则沿用草稿身份。
+    expect(seedBlock).toContain('remoteHostId: workingDir ? (sendRemoteHostId ?? null) : null');
   });
 
   it('does not register a memory-only pending payload for ordinary local text', () => {

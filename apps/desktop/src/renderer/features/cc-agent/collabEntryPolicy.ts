@@ -11,6 +11,8 @@
  * renderer 这一层只是体验层,不构成权限边界。
  */
 
+import { PSB_REMOTE_HOST_PREFIX } from '../../../shared/psb-remote-workspace';
+
 export interface CollabEntryTarget {
   /**
    * 会话/草稿的 workspace 形态。**必须由调用方显式给出,这里不从 workingDir 反推** ——
@@ -56,6 +58,20 @@ function nonEmpty(value: string | null | undefined): string | null {
 }
 
 /**
+ * 隧道远端（目前是 PSB 远程工作区）**不挂协同入口**。
+ *
+ * 理由不是体验，而是会把用户引到一条必失败的路：协同 Worker 的运行目录/进程都要求
+ * 「执行端 main 认识这个远端身份」，而 `psb:` 只负责 Agent 会话的字节流转发（`agent-tunnel`），
+ * 没有「在远端拉 Worker」的契约；一旦入口可点，下游 `resolveWorkerWorkingDir` 会把 `psb:<id>`
+ * 当 SSH host 去 preflight，报 `SSH_HOST_NOT_FOUND: unknown ssh host: psb:<id>`——正是本批要防的
+ * 「`psb:` 落进 SSH-only 探针」。草稿页早已这样禁（`NewMakerDraftRoute` 的 `isPsbDraft ? false`），
+ * 这里补上会话页的同一口径，避免两条路径再次分叉（issue #1170 的同类教训）。
+ */
+function isCollabUnsupportedRemote(remoteHostId: string | null): boolean {
+  return remoteHostId !== null && remoteHostId.startsWith(PSB_REMOTE_HOST_PREFIX);
+}
+
+/**
  * 五类场景一次说清:
  *
  * | 场景                              | eligible | 策略查询                        |
@@ -67,6 +83,7 @@ function nonEmpty(value: string | null | undefined): string | null {
  * | 本地 dialogue(已有运行目录)       | ✅       | 查询目录;Main 区分托管/显式目录 |
  * | Orca Worker 子会话                | ❌       | —                               |
  * | 另一台电脑派来的远端 Worker       | ❌       | —                               |
+ * | PSB 远程工作区(`psb:`)            | ❌       | —(远端无「拉 Worker」契约)       |
  *
  * 两个远端维度**可以同时成立**(在被控设备上打开的 SSH 远端项目):此时既要隧道到被控端,
  * 又要在被控端跳过项目级 —— 两个字段互相独立,不是二选一。
@@ -76,6 +93,7 @@ export function resolveCollabEntryPolicy(target: CollabEntryTarget): CollabEntry
   if (target.workspaceKind !== 'project' && target.workspaceKind !== 'dialogue') {
     return NOT_ELIGIBLE;
   }
+  if (isCollabUnsupportedRemote(nonEmpty(target.remoteHostId))) return NOT_ELIGIBLE;
   const workingDir = nonEmpty(target.workingDir);
   if (target.workspaceKind === 'project' && workingDir === null) {
     return NOT_ELIGIBLE;

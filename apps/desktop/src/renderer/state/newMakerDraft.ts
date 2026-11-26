@@ -35,6 +35,12 @@ import { isKnownProductDefaultTupleIdentity } from '@/lib/newMakerDefaultTuple';
 import type { OrcaWorkerPermissionMode } from '../../shared/orca-worker-permission-mode';
 import { normalizeWorkingDirForStorage } from '../../shared/workingDir';
 import { getManagedWorktreeBasePath } from '../../shared/managedWorktreePaths';
+import {
+  PSB_REMOTE_HOST_PREFIX,
+  buildPsbRemoteHostId,
+  buildPsbVirtualWorkingDir,
+  parsePsbRemoteHostId,
+} from '../../shared/psb-remote-workspace';
 
 const STORAGE_KEY = 'xdt:newMakerDraft:v1';
 let activeDataOwnerId: string | null = null;
@@ -112,6 +118,31 @@ export interface CollabDraft {
   workerConfig?: CollabWorkerConfig;
 }
 
+/**
+ * PSB 远程工作区目标的元数据（第三种 transport，`remoteHostId = psb:<PSB sessionId>`）。
+ *
+ * 产品口径（2026-11-25）：新建远程工作区只选/建工作区，引擎与模型在草稿页按既有链路选。
+ * 所以草稿目标先只有**工作区级**事实；PSB 会话在首条消息发送时懒创建，建出后才把
+ * `sessionId` 回写进来（`remoteHostId` 也随之派生）。
+ *
+ * 三面关系：
+ *   · `sessionId`（可空）拼出 `remoteHostId`（PSB 生成，Cindy 原样保存，不解析格式）；
+ *   · `workspaceId` + `directoryName` 拼出**虚拟** `workingDir`（只服务显示与选择，
+ *     不参与本机路径解析、不当 worktree 根、不做路径型附件的根）；
+ *   · 客户端名 / 工作区标题是 PSB 侧事实，不在 Cindy 本机会话行上，所以随草稿一起
+ *     持久化（跨重启恢复时不必再发一次列表请求）。
+ */
+export interface NewMakerDraftPsbTarget {
+  /** 懒创建的 PSB 会话 id；null/undefined = 还没建（首条消息发送时才建）。 */
+  sessionId?: string | null;
+  workspaceId: string;
+  clientId: string;
+  clientName: string;
+  workspaceTitle: string;
+  /** 服务端分配的工作区目录名（仅显示；拼虚拟 workingDir 用）。 */
+  directoryName: string | null;
+}
+
 export interface NewMakerDraft {
   /** 当前选中的 vendor。默认 'cc',用户切换后写回 + 持久化。 */
   vendor: MakerVendor;
@@ -130,6 +161,15 @@ export interface NewMakerDraft {
    */
   remoteProjectName: string | null;
   remoteInstanceName: string | null;
+  /**
+   * PSB 远程工作区目标（第三种 transport，工作区级；`sessionId` 首条消息发送时懒填）。
+   * null = 不是远程工作区草稿。
+   *
+   * 目标与 `remoteHostId` / 虚拟 `workingDir` 的关系由 `patchDraft` 统一维护：
+   * 有 `sessionId` 才派生 `psb:<id>` 身份，没会话 id 时草稿保持「只有目标、没有远程身份」。
+   * 它与 device-link / agentDevice / MCPR 目标互斥。
+   */
+  psbTarget: NewMakerDraftPsbTarget | null;
   /**
    * device-link 跨设备远程控制:本草稿目标被控设备 deviceId(非 null = 这是"在远程设备
    * 项目里新建对话")。**故意不跨重启持久化**——deviceId 绑定的是一台可能离线的活动设备,
@@ -281,6 +321,7 @@ function makeDefault(): NewMakerDraft {
     remoteHostId: null,
     remoteProjectName: null,
     remoteInstanceName: null,
+    psbTarget: null,
     deviceLinkDeviceId: null,
     deviceLinkDeviceName: null,
     agentDeviceId: null,
@@ -325,6 +366,50 @@ function normalizeDraftWorkingDir(raw: unknown): string | null {
   return getManagedWorktreeBasePath(normalized) ?? normalized;
 }
 
+/**
+ * 校验 / 归一一块 PSB 目标元数据；`workspaceId` 是唯一必需项，缺失即整块丢弃。
+ *
+ * `sessionId` 可空（首条消息发送前是常态）；给了就 trim，空串归一成 null。
+ * 展示字段（客户端名 / 标题）来自 PSB，允许为空——空串归一成空串，而不是 null，
+ * 这样调用方不用区分「没有这个字段」和「PSB 没给名字」。
+ */
+function normalizePsbTarget(value: unknown): NewMakerDraftPsbTarget | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = value as Partial<NewMakerDraftPsbTarget>;
+  const workspaceId = typeof raw.workspaceId === 'string' ? raw.workspaceId.trim() : '';
+  if (!workspaceId) return null;
+  const sessionId = typeof raw.sessionId === 'string' ? raw.sessionId.trim() : '';
+  const text = (input: unknown): string => (typeof input === 'string' ? input.trim() : '');
+  const directoryName = text(raw.directoryName);
+  return {
+    sessionId: sessionId || null,
+    workspaceId,
+    clientId: text(raw.clientId),
+    clientName: text(raw.clientName),
+    workspaceTitle: text(raw.workspaceTitle),
+    directoryName: directoryName || null,
+  };
+}
+
+/**
+ * 目标的 PSB 会话身份；没有 `sessionId`（还没发首条消息）时返回 null——
+ * 草稿此时只有工作区级目标，不该带任何 `psb:` / 虚拟目录身份。
+ */
+function psbTargetIdentity(target: NewMakerDraftPsbTarget): {
+  remoteHostId: string;
+  workingDir: string;
+} | null {
+  const sessionId = target.sessionId?.trim();
+  if (!sessionId) return null;
+  return {
+    remoteHostId: buildPsbRemoteHostId(sessionId),
+    workingDir: buildPsbVirtualWorkingDir({
+      workspaceId: target.workspaceId,
+      directoryName: target.directoryName,
+    }),
+  };
+}
+
 /** 严格校验 + 缺字段补齐——schema 损坏(老版本 / 手改 localStorage)时静默回退默认。 */
 function sanitize(raw: unknown): NewMakerDraft {
   const def = makeDefault();
@@ -337,10 +422,16 @@ function sanitize(raw: unknown): NewMakerDraft {
   // 迁到 'cc'(它已被 ChatInput 底部的协同 toggle 取代),避免空白入口。
   const vendor: MakerVendor = isSelectableVendor(r.vendor) ? r.vendor : def.vendor;
   const workingDir = normalizeDraftWorkingDir(r.workingDir);
-  const remoteHostId =
+  const rawRemoteHostId =
     typeof r.remoteHostId === 'string' && r.remoteHostId.trim().length > 0
       ? r.remoteHostId.trim()
       : null;
+  // 畸形 `psb:`（只有前缀）不是任何合法 transport 身份；保留它会被下游当 SSH 主机。
+  const remoteHostId =
+    rawRemoteHostId?.startsWith(PSB_REMOTE_HOST_PREFIX)
+      && parsePsbRemoteHostId(rawRemoteHostId) === null
+      ? null
+      : rawRemoteHostId;
   // 展示名只跟 remoteHostId 一起有效;老版本 localStorage 没有这两个字段 → null。
   const remoteProjectName = remoteHostId && typeof r.remoteProjectName === 'string' && r.remoteProjectName.trim()
     ? r.remoteProjectName.trim()
@@ -348,6 +439,48 @@ function sanitize(raw: unknown): NewMakerDraft {
   const remoteInstanceName = remoteHostId && typeof r.remoteInstanceName === 'string' && r.remoteInstanceName.trim()
     ? r.remoteInstanceName.trim()
     : null;
+  // PSB 远程工作区目标（第三种 transport）。身份三件必须成对：`psb:<id>` 只和
+  // **同一个 sessionId** 的元数据配对，虚拟 workingDir 也由目标重新拼回来。
+  // 只要有一块缺失/脏值就整块回退成「对话」——绝不能留下一个 `psb:` 开头的
+  // remoteHostId 却没有目标元数据，那会被下游当成 SSH 主机（脏 localStorage 的
+  // 安全网，见 shared/psb-remote-workspace.ts 文件头约束 1）。
+  const psbHostSessionId = parsePsbRemoteHostId(remoteHostId);
+  const psbTargetRaw = normalizePsbTarget((r as { psbTarget?: unknown }).psbTarget);
+  // 目标与存储的 `psb:` 身份成对校验：
+  //   · 目标无 sessionId（常态，还没发首条消息）→ 草稿不该有 psb 身份；
+  //   · 目标有 sessionId → 与存储身份一致时恢复；不一致（半截/串台）时丢掉会话 id，
+  //     保留工作区目标（重发时会懒建一条新的，不会是 SSH 主机）。
+  const psbTarget = (() => {
+    if (!psbTargetRaw) return null;
+    const targetSessionId = psbTargetRaw.sessionId ?? null;
+    if (targetSessionId && psbHostSessionId !== null && psbHostSessionId !== targetSessionId) {
+      return { ...psbTargetRaw, sessionId: null };
+    }
+    return psbTargetRaw;
+  })();
+  const psbIdentity = psbTarget ? psbTargetIdentity(psbTarget) : null;
+  const effectiveWorkingDir = psbTarget
+    ? (psbIdentity?.workingDir ?? null)
+    : psbHostSessionId !== null
+      ? null
+      : workingDir;
+  const effectiveRemoteHostId = psbTarget
+    ? (psbIdentity?.remoteHostId ?? null)
+    : psbHostSessionId !== null
+      ? null
+      : workingDir == null
+        ? null
+        : remoteHostId;
+  const effectiveRemoteProjectName = psbTarget
+    ? psbTarget.workspaceTitle || null
+    : effectiveWorkingDir == null
+      ? null
+      : remoteProjectName;
+  const effectiveRemoteInstanceName = psbTarget
+    ? psbTarget.clientName || null
+    : effectiveWorkingDir == null
+      ? null
+      : remoteInstanceName;
   const lastByVendorRaw = (r.lastByVendor ?? {}) as Partial<NewMakerDraft['lastByVendor']>;
   const fastModeByModelRaw =
     r.fastModeByModel && typeof r.fastModeByModel === 'object'
@@ -530,12 +663,17 @@ function sanitize(raw: unknown): NewMakerDraft {
     : DEFAULT_WORKTREE_ENABLED;
   return {
     vendor,
-    workingDir,
-    explicitNoProject: workingDir == null && r.explicitNoProject === true,
-    remoteHostId: workingDir == null ? null : remoteHostId,
+    workingDir: effectiveWorkingDir,
+    // PSB 目标没有本地项目目录：按「明确无项目」处理，避免下一次通用新建的默认目录
+    // 预填把远程目标盖掉。
+    explicitNoProject: psbTarget != null
+      ? true
+      : effectiveWorkingDir == null && r.explicitNoProject === true,
+    remoteHostId: effectiveRemoteHostId,
     // 展示名与 remoteHostId 同生共死:没有目标就没有名字,有目标才持久化。
-    remoteProjectName: workingDir == null ? null : remoteProjectName,
-    remoteInstanceName: workingDir == null ? null : remoteInstanceName,
+    remoteProjectName: effectiveRemoteProjectName,
+    remoteInstanceName: effectiveRemoteInstanceName,
+    psbTarget,
     // device-link 目标**不跨重启恢复**:绑定的是活动设备,重启后可能已离线 → 一律置 null。
     deviceLinkDeviceId: null,
     deviceLinkDeviceName: null,
@@ -950,16 +1088,24 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
   }
   if ('remoteHostId' in normalizedPatch) {
     const remoteHostId = normalizedPatch.remoteHostId;
-    normalizedPatch.remoteHostId =
+    const trimmed =
       typeof remoteHostId === 'string' && remoteHostId.trim().length > 0
         ? remoteHostId.trim()
         : null;
+    // 畸形 `psb:` 与 sanitize 同口径：不成身份就归 null，不留给下游当 SSH 主机。
+    normalizedPatch.remoteHostId =
+      trimmed?.startsWith(PSB_REMOTE_HOST_PREFIX) && parsePsbRemoteHostId(trimmed) === null
+        ? null
+        : trimmed;
   }
   // 远程目标的展示名与 remoteHostId 同一来源：缺省/空串一律归 null，不把脏值写进持久层。
   for (const key of ['remoteProjectName', 'remoteInstanceName'] as const) {
     if (!(key in normalizedPatch)) continue;
     const value = normalizedPatch[key];
     normalizedPatch[key] = typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+  if ('psbTarget' in normalizedPatch) {
+    normalizedPatch.psbTarget = normalizePsbTarget(normalizedPatch.psbTarget);
   }
   const next: NewMakerDraft = { ...currentDraft, ...normalizedPatch };
   if ('workingDir' in normalizedPatch && next.workingDir != null) {
@@ -984,6 +1130,63 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
   ) {
     next.remoteProjectName = null;
     next.remoteInstanceName = null;
+  }
+  // PSB 远程工作区目标（`remoteHostId = psb:<id>` + 虚拟 `workingDir`）是第三种 transport，
+  // 三件必须同源：
+  //   · patch 显式带目标 → 以目标为准重算身份三件（前端只声明目标，不各写一遍拼装）；
+  //   · patch 换了其它目标维度却没带目标 → 旧目标元数据必须丢掉，不能跟着草稿漂移；
+  //   · 目标与身份不一致（例如只剩 `psb:<id>`）→ 整块丢弃并清掉身份，
+  //     绝不能把 `psb:` 留给下游当 SSH 主机（见 shared/psb-remote-workspace.ts 约束 1）。
+  // PSB 远程工作区目标（第三种 transport）：
+  //   · patch 显式带目标 → 以目标为准写/清身份三件；没有 sessionId（首条消息还没发）
+  //     时只留工作区级目标，不产生任何 `psb:` / 虚拟目录；
+  //   · patch 换了其它目标维度却没带目标 → 旧目标元数据必须丢掉，不能跟着草稿漂移；
+  //   · 目标与身份不一致（例如只剩 `psb:<id>`）→ 整块丢弃并清掉身份，
+  //     绝不能把 `psb:` 留给下游当 SSH 主机（见 shared/psb-remote-workspace.ts 约束 1）。
+  const psbTargetInPatch = 'psbTarget' in normalizedPatch;
+  if (psbTargetInPatch && next.psbTarget) {
+    const identity = psbTargetIdentity(next.psbTarget);
+    // 有 sessionId 才派生远程身份；没有就保持「无远程身份 + 无工作目录」的纯目标态。
+    next.remoteHostId = identity?.remoteHostId ?? null;
+    next.workingDir = identity?.workingDir ?? null;
+    // 远程工作区目标没有本地项目目录；按「明确无项目」处理，避免默认目录预填覆盖目标。
+    next.explicitNoProject = true;
+    next.remoteProjectName = next.psbTarget.workspaceTitle || null;
+    next.remoteInstanceName = next.psbTarget.clientName || null;
+    // PSB 与 device-link / 「Agent 在另一台电脑运行」互斥（它本身就是一个远端执行目标）。
+    next.deviceLinkDeviceId = null;
+    next.deviceLinkDeviceName = null;
+    next.agentDeviceId = null;
+    next.agentDeviceName = null;
+  } else if (!psbTargetInPatch && (
+    'workingDir' in patch
+    || 'remoteHostId' in patch
+    || 'deviceLinkDeviceId' in patch
+    || 'agentDeviceId' in patch
+  )) {
+    // 目标维度变了但这次 patch 没带新目标：旧 PSB 目标不再描述当前草稿。
+    next.psbTarget = null;
+  }
+  if (next.psbTarget) {
+    const identity = psbTargetIdentity(next.psbTarget);
+    if (identity) {
+      // 有会话 id：身份只由目标推导，外部改写一律以目标为准。
+      next.remoteHostId = identity.remoteHostId;
+      next.workingDir = identity.workingDir;
+      next.explicitNoProject = true;
+    } else if (next.remoteHostId != null) {
+      // 没有会话 id 却被塞进了远程身份（SSH / MCPR / 半截 psb）→ 目标让位给那个显式目标。
+      next.psbTarget = null;
+    } else {
+      next.workingDir = null;
+      next.explicitNoProject = true;
+    }
+  }
+  if (!next.psbTarget && parsePsbRemoteHostId(next.remoteHostId) !== null) {
+    next.remoteHostId = null;
+    next.remoteProjectName = null;
+    next.remoteInstanceName = null;
+    if (next.deviceLinkDeviceId == null) next.workingDir = null;
   }
   // 改 workingDir 但**没有显式带** deviceLink 字段 → 清除远程目标,避免把本地项目误当成
   // 远程设备项目。
@@ -1041,7 +1244,7 @@ export function patchDraft(patch: Partial<NewMakerDraft>): void {
 /**
  * 把草稿的「这次要跑在哪」复位成干净的本机对话态。
  *
- * workingDir=null 经 patchDraft 级联清掉 remoteHostId / deviceLink*;extraDirs 与
+ * workingDir=null 经 patchDraft 级联清掉 remoteHostId / psbTarget / deviceLink*;extraDirs 与
  * collab.enabled 是本次草稿的一次性选择,这里显式清掉。vendor / lastByVendor /
  * fastModeByModel 等模型偏好保持不变(那是「我常用哪个」的记忆,与「这次跑在哪」正交)。
  *
@@ -1058,6 +1261,9 @@ export function resetDraftWorkspaceTargets(
   patchDraft({
     workingDir: null,
     explicitNoProject,
+    // PSB 远程工作区目标显式清掉：虽然 workingDir=null 的级联已覆盖，但「新增工作区
+    // 字段只改这一处」的契约要求这里就是全集，避免下一个维护者误以为它不会被清。
+    psbTarget: null,
     extraDirs: [],
     writableDirs: [],
     collab: { ...currentDraft.collab, enabled: false },

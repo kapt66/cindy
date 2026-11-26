@@ -54,6 +54,19 @@ export interface PiSessionRegistryOptions {
   idleTimeoutMs?: number;
   /** Called when a session closes (pi exited / killed / recycled). */
   onSessionClosed?: (sessionId: string, reason: 'completed' | 'killed' | 'idle_timeout' | 'error', detail?: string) => void;
+  /**
+   * pi 子进程的默认 cwd（daemon **被 spawn 时**的工作目录，由 `runDaemon` 在 `chdir('/')`
+   * 之前抓取）。
+   *
+   * 为什么需要它：daemon 自己会 `chdir('/')`（脱离 SSH 会话 cwd，见 `bin/pi-manager.ts`），
+   * 而 `spawn('bash', ['-c', cmd])` 默认继承 daemon 的 **当前** cwd —— 不传本字段时 pi 子进程
+   * 就在 `/` 启动。PSB 远程工作区的宿主按会话记录里的工作区 spawn daemon（`cwd=<workspace>`）
+   * 但不在 `cmd` 里写 `cd`，于是 pi 的 cwd 变成 `/`（真机缺陷）。把 spawn cwd 显式钉在 daemon
+   * 的**启动 cwd** 上，宿主给的目录才会真正生效；SSH / MCPR 的 `cmd` 里本来就有 `cd`，行为不变。
+   *
+   * 目录在 ensure 时已被删除 → 不传（退回继承 `/` 的旧行为，绝不因残留 cwd 让会话起不来）。
+   */
+  defaultChildCwd?: string;
   /** Optional logger. Defaults to console. */
   logger?: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
 }
@@ -92,6 +105,8 @@ export class PiSessionRegistry {
   private readonly envDir: string;
   private readonly idleTimeoutMs: number;
   private readonly onSessionClosed?: PiSessionRegistryOptions['onSessionClosed'];
+  /** daemon 启动 cwd；pi 子进程默认在它里面 spawn（见选项注释）。 */
+  private readonly defaultChildCwd: string | undefined;
   private readonly logger: Required<PiSessionRegistryOptions>['logger'];
   private readonly idleTimer: NodeJS.Timeout | null = null;
   /** 关停中:拒绝新 ensure, 防孤儿子进程(自审轮 2 HIGH)。 */
@@ -104,6 +119,7 @@ export class PiSessionRegistry {
     this.envDir = opts.envDir;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? 1_800_000;
     this.onSessionClosed = opts.onSessionClosed;
+    this.defaultChildCwd = opts.defaultChildCwd;
     this.logger = opts.logger ?? console;
     // 目录显式 0700 —— 默认 0755(umask 022)会让同机其他用户看到 sessionId
     // 文件名(自审轮 5 HIGH-2)。
@@ -475,10 +491,16 @@ export class PiSessionRegistry {
     // stdio 显式 ['pipe','pipe','pipe'] → spawn 返回 ChildProcessWithoutNullStreams,
     // 保持 child.stdout/stderr 非空类型(显式注解 ChildProcess 会让它们变 nullable)。
     let child: ChildProcessWithoutNullStreams;
+    // 子进程 cwd：daemon 被 spawn 时的工作目录（见 PiSessionRegistryOptions.defaultChildCwd）。
+    // 目录已被删除时不传，退回继承 daemon 当前 cwd（`/`）的旧行为。
+    const childCwd = this.defaultChildCwd !== undefined && fs.existsSync(this.defaultChildCwd)
+      ? this.defaultChildCwd
+      : undefined;
     try {
       child = spawn('bash', ['-c', cmd], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: childEnv,
+        ...(childCwd === undefined ? {} : { cwd: childCwd }),
       });
     } catch (err) {
       this.logger.warn?.('pi spawn threw synchronously — cleaning up env-file', {

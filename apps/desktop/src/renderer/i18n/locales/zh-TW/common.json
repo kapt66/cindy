@@ -4587,8 +4587,7 @@
     },
     "experimental": {
       "title": "實驗性功能",
-      "toggleAria": "切換實驗功能：{{title}}",
-      "features": {}
+      "toggleAria": "切換實驗功能：{{title}}"
     },
     "lspMode": {
       "cell": {
@@ -13733,7 +13732,6 @@
       }
     }
   },
-  "markdown": {},
   "diffPanel": {
     "shell": {
       "resizeHandleAria": "調整面板寬度",
@@ -22425,6 +22423,145 @@
       "network": "連線中斷，正在重試…",
       "timeout": "連線逾時，正在重試…",
       "server": "伺服器忙碌中，正在重試…"
+    }
+  },
+  "remoteWorkspace": {
+    "sidebar": {
+      "title": "遠端工作區",
+      "newSession": "新建任務",
+      "empty": "還沒有遠端工作區任務",
+      "emptyHint": "用 + 按鈕選擇或新建一個工作區。",
+      "loadFailed": "無法載入遠端工作區清單。"
+    },
+    "admin": {
+      "title": "遠端工作區",
+      "loading": "正在讀取遠端工作區…",
+      "occupancyValue": "佔用：{{value}}",
+      "occupancyFree": "無人佔用",
+      "occupancyMine": "你",
+      "occupancyTakenByOther": "他人",
+      "categories": {
+        "connection": "遠端連線",
+        "versionControl": "版本控制",
+        "settings": "設定"
+      },
+      "emptyNoWorkspaceTitle": "還沒有遠端工作區",
+      "emptyNoWorkspaceHint": "先開啟一個遠端工作區任務；也可以在 PSB 網頁裡開啟一個工作區。",
+      "emptyUnavailableTitle": "此版本暫不支援遠端工作區",
+      "emptyUnavailableHint": "更新 Cindy 後即可在這裡檢視和操作遠端工作區。",
+      "emptyLoadFailedTitle": "未能讀取遠端工作區",
+      "emptyLoadFailedHint": "檢查網路後重試；已開啟的任務不受影響。",
+      "placeholderComingSoon": "後續提供。",
+      "streamNotStarted": "串流未啟動",
+      "streamStartHint": "啟動後在這裡觀看遠端畫面，任務結束也不影響。",
+      "streamReasonNoDesktop": "這個工作區還沒有執行中的桌面，請先在 PSB 網頁的「遠端控制」裡啟動。",
+      "streamReasonCaptureNotReady": "桌面正在啟動，稍等片刻再點「啟動」。",
+      "streamReasonNoStreaming": "這台電腦沒有開啟串流能力，請先更新那台電腦上的 PSB 用戶端。",
+      "actionOccupy": "佔用",
+      "actionRelease": "解除佔用",
+      "actionOpenWeb": "在網頁開啟",
+      "actionOccupyDone": "已佔用工作區",
+      "actionReleaseDone": "已解除佔用",
+      "enterFullscreen": "全螢幕",
+      "exitFullscreen": "結束全螢幕",
+      "inputInteractive": "畫面可操作",
+      "inputCaptured": "全螢幕接管中",
+      "inputReadOnly": "唯讀觀看",
+      "inputInteractiveHint": "滑鼠與鍵盤已交給遠端；點一下畫面即可用鍵盤操作。",
+      "inputCapturedHint": "全螢幕中：鍵鼠全部轉發給遠端，僅 F5 / F11 / F12 與 Ctrl+Shift+I、J、C 留給本機；Esc 結束全螢幕。",
+      "inputReadOnlyHint": "唯讀觀看：此版本沒有遠端輸入通道，只能看畫面、不能操作。",
+      "detailLastError": "最近錯誤",
+      "detailReasonCode": "原因碼",
+      "detailDesktopSession": "桌面狀態",
+      "desktopSessionNone": "未啟動桌面",
+      "desktopSessionStarting": "啟動中",
+      "desktopSessionRunning": "執行中",
+      "streamInfo": "串流資訊",
+      "streamInfoClose": "關閉串流資訊",
+      "streamInfoCodec": "編碼 / 解碼器",
+      "streamInfoBitrate": "位元率",
+      "streamInfoDecodeTime": "解碼耗時",
+      "streamInfoDropped": "掉幀",
+      "streamInfoQueue": "佇列",
+      "streamInfoConnection": "連線",
+      "exitFullscreenEsc": "結束全螢幕（Esc）",
+      "openWebGone": "這個遠端工作區已不存在",
+      "occupancySelfValue": "{{name}}（你）"
+    },
+    "badge": {
+      "online": "線上",
+      "offline": "離線",
+      "occupied": "使用中",
+      "pending": "準備中",
+      "failed": "失敗",
+      "agentUnsupported": "不支援 Agent"
+    },
+    "dialog": {
+      "title": "新建遠端工作區任務",
+      "subtitle": "選擇一個工作區開始任務；選定後會為你保留該工作區。",
+      "tabExisting": "選擇工作區",
+      "tabCreate": "新建工作區",
+      "directorySecondary": "目錄：{{directory}}",
+      "workspaceListLoading": "正在載入工作區…",
+      "workspaceListEmpty": "沒有可用的工作區。",
+      "refresh": "重新整理",
+      "client": "機器",
+      "clientPlaceholder": "選擇機器",
+      "template": "專案模板",
+      "templatePlaceholder": "選擇專案模板",
+      "titleLabel": "標題（可選）",
+      "titlePlaceholder": "例如：修一下檢出指令碼",
+      "createWorkspace": "新建工作區",
+      "creatingWorkspace": "正在新建工作區…",
+      "select": "開始任務",
+      "cancel": "取消",
+      "clientOffline": "機器離線",
+      "working": "正在處理…"
+    },
+    "draft": {
+      "location": "遠端工作區",
+      "selectWorkspaceFirst": "請先選擇或新增一個遠端工作區。",
+      "actionBusy": "正在傳送訊息，請等這次傳送結束後再選擇工作區。"
+    },
+    "session": {
+      "stream": "串流",
+      "start": "開始",
+      "stop": "停止",
+      "details": "詳情",
+      "streamIdle": "串流未啟動。",
+      "streamConnecting": "正在連線串流…",
+      "streamWaiting": "已連線，等待畫面…",
+      "streamLive": "串流中",
+      "streamUnsupported": "這台機器不支援串流。",
+      "streamFailed": "串流失敗：{{message}}",
+      "stopFailed": "停止串流時連不上遠端電腦。本機畫面已清空，但遠端可能仍在串流。",
+      "reboundNotice": "遠端 Agent 會話已重新連線。本輪上下文可能不會延續。",
+      "reboundNoticeDismiss": "關閉",
+      "openWorkspace": "在瀏覽器中開啟工作區",
+      "detailResolution": "解析度",
+      "detailCodec": "編碼",
+      "detailFps": "影格率"
+    },
+    "input": {
+      "occupiedByOther": "這個工作區正被他人使用，暫時無法傳送訊息。請對方釋放，或到 PSB 網頁解除佔用後再試。",
+      "clientOffline": "遠端機器離線，暫時無法傳送訊息。",
+      "workspaceNotReady": "遠端工作區還沒有就緒。"
+    },
+    "error": {
+      "auth": "請先以 Cindy 組織帳號登入，才能使用遠端工作區。",
+      "authExpired": "登入已過期，請重新登入。",
+      "orgRequired": "只有組織成員可以使用遠端工作區。",
+      "identityNotLinked": "你的 Cindy 身分還沒有關聯到 PSB 中的人員，請聯絡管理員進行關聯。",
+      "unreachable": "連接不上 PSB，請檢查網路後重試。",
+      "occupiedByOther": "這個工作區正被 {{name}} 佔用。請對方釋放，或到 PSB 網頁解除佔用後再試。",
+      "workspaceOccupied": "這個工作區正被別人占用，暫時不能傳送或啟動。請對方釋放，或到 PSB 網頁解除占用後再試。",
+      "clientOffline": "遠端機器離線。",
+      "notFound": "工作區或任務不存在，或你沒有存取權限。",
+      "unknown": "操作失敗，請稍後重試。"
+    },
+    "status": {
+      "needLogin": "未登入",
+      "needOrg": "需要組織帳號"
     }
   }
 }

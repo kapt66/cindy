@@ -4587,8 +4587,7 @@
     },
     "experimental": {
       "title": "実験的機能",
-      "toggleAria": "実験的機能を切り替え: {{title}}",
-      "features": {}
+      "toggleAria": "実験的機能を切り替え: {{title}}"
     },
     "lspMode": {
       "cell": {
@@ -13733,7 +13732,6 @@
       }
     }
   },
-  "markdown": {},
   "diffPanel": {
     "shell": {
       "resizeHandleAria": "パネル幅を調整",
@@ -22425,6 +22423,145 @@
       "network": "接続が切れました。再試行しています…",
       "timeout": "接続がタイムアウトしました。再試行しています…",
       "server": "サーバーが混雑しています。再試行しています…"
+    }
+  },
+  "remoteWorkspace": {
+    "sidebar": {
+      "title": "リモートワークスペース",
+      "newSession": "新しいタスク",
+      "empty": "リモートワークスペースのタスクはまだありません",
+      "emptyHint": "+ ボタンからワークスペースを選択するか、新しく作成してください。",
+      "loadFailed": "リモートワークスペースを読み込めませんでした。"
+    },
+    "admin": {
+      "title": "リモートワークスペース",
+      "loading": "リモートワークスペースを読み込み中…",
+      "occupancyValue": "占有：{{value}}",
+      "occupancyFree": "未使用",
+      "occupancyMine": "あなた",
+      "occupancyTakenByOther": "他のユーザー",
+      "categories": {
+        "connection": "リモート接続",
+        "versionControl": "バージョン管理",
+        "settings": "設定"
+      },
+      "emptyNoWorkspaceTitle": "リモートワークスペースがありません",
+      "emptyNoWorkspaceHint": "先にリモートワークスペースのタスクを開くか、PSB の Web ページでワークスペースを開いてください。",
+      "emptyUnavailableTitle": "このバージョンはリモートワークスペースに対応していません",
+      "emptyUnavailableHint": "Cindy を更新すると、ここでリモートワークスペースを表示・操作できます。",
+      "emptyLoadFailedTitle": "リモートワークスペースを読み込めませんでした",
+      "emptyLoadFailedHint": "ネットワークを確認して再試行してください。開いているタスクには影響しません。",
+      "placeholderComingSoon": "今後のバージョンで提供します。",
+      "streamNotStarted": "ストリーミングは未開始です",
+      "streamStartHint": "開始するとここでリモート画面を表示します。タスクが終了しても操作できます。",
+      "streamReasonNoDesktop": "このワークスペースには実行中のデスクトップがありません。先に PSB の Web ページ「リモートコントロール」で起動してください。",
+      "streamReasonCaptureNotReady": "デスクトップを起動しています。しばらくしてからもう一度「開始」を押してください。",
+      "streamReasonNoStreaming": "そのコンピューターではストリーミングが有効になっていません。先に PSB クライアントを更新してください。",
+      "actionOccupy": "占有",
+      "actionRelease": "占有を解除",
+      "actionOpenWeb": "Web で開く",
+      "actionOccupyDone": "ワークスペースを占有しました",
+      "actionReleaseDone": "占有を解除しました",
+      "enterFullscreen": "全画面",
+      "exitFullscreen": "全画面を終了",
+      "inputInteractive": "画面を操作できます",
+      "inputCaptured": "全画面で入力を取得中",
+      "inputReadOnly": "閲覧のみ",
+      "inputInteractiveHint": "マウスとキーボードはリモートに送られます。画面をクリックするとキーボードで操作できます。",
+      "inputCapturedHint": "全画面中：キーとマウスはすべてリモートに送られます（F5 / F11 / F12 と Ctrl+Shift+I、J、C を除く）。Esc で全画面を終了します。",
+      "inputReadOnlyHint": "閲覧のみ：このバージョンにはリモート入力チャンネルがないため、画面は見られますが操作はできません。",
+      "detailLastError": "直近のエラー",
+      "detailReasonCode": "理由コード",
+      "detailDesktopSession": "デスクトップ状態",
+      "desktopSessionNone": "デスクトップなし",
+      "desktopSessionStarting": "起動中",
+      "desktopSessionRunning": "実行中",
+      "streamInfo": "ストリーム情報",
+      "streamInfoClose": "ストリーム情報を閉じる",
+      "streamInfoCodec": "コーデック",
+      "streamInfoBitrate": "ビットレート",
+      "streamInfoDecodeTime": "デコード時間",
+      "streamInfoDropped": "ドロップフレーム",
+      "streamInfoQueue": "キュー",
+      "streamInfoConnection": "接続",
+      "exitFullscreenEsc": "全画面を終了（Esc）",
+      "openWebGone": "このリモートワークスペースはもう存在しません",
+      "occupancySelfValue": "{{name}}（あなた）"
+    },
+    "badge": {
+      "online": "オンライン",
+      "offline": "オフライン",
+      "occupied": "使用中",
+      "pending": "準備中",
+      "failed": "失敗",
+      "agentUnsupported": "Agent 非対応"
+    },
+    "dialog": {
+      "title": "リモートワークスペースの新しいタスク",
+      "subtitle": "ワークスペースを選んでタスクを開始します。選んだワークスペースはあなた専用に確保されます。",
+      "tabExisting": "ワークスペースを選ぶ",
+      "tabCreate": "ワークスペースを作成",
+      "directorySecondary": "フォルダー: {{directory}}",
+      "workspaceListLoading": "ワークスペースを読み込み中…",
+      "workspaceListEmpty": "利用できるワークスペースがありません。",
+      "refresh": "更新",
+      "client": "マシン",
+      "clientPlaceholder": "マシンを選択",
+      "template": "プロジェクトテンプレート",
+      "templatePlaceholder": "プロジェクトテンプレートを選択",
+      "titleLabel": "タイトル（任意）",
+      "titlePlaceholder": "例：チェックアウトスクリプトを修正",
+      "createWorkspace": "ワークスペースを作成",
+      "creatingWorkspace": "ワークスペースを作成中…",
+      "select": "タスクを開始",
+      "cancel": "キャンセル",
+      "clientOffline": "マシンはオフラインです",
+      "working": "処理中…"
+    },
+    "draft": {
+      "location": "リモートワークスペース",
+      "selectWorkspaceFirst": "先にリモートワークスペースを選択するか作成してください。",
+      "actionBusy": "送信中です。送信が終わってからワークスペースを選んでください。"
+    },
+    "session": {
+      "stream": "ストリーム",
+      "start": "開始",
+      "stop": "停止",
+      "details": "詳細",
+      "streamIdle": "ストリーミングはオフです。",
+      "streamConnecting": "ストリームに接続中…",
+      "streamWaiting": "接続済み。画面を待っています…",
+      "streamLive": "ストリーミング中",
+      "streamUnsupported": "このマシンはストリーミングに対応していません。",
+      "streamFailed": "ストリーミングに失敗しました：{{message}}",
+      "stopFailed": "リモートのコンピューターに接続できず、ストリーミングを停止できませんでした。この画面は消去しましたが、あちらではまだ続いている可能性があります。",
+      "reboundNotice": "リモートの Agent セッションが再接続しました。今回のコンテキストは引き継がれない可能性があります。",
+      "reboundNoticeDismiss": "閉じる",
+      "openWorkspace": "ブラウザーでワークスペースを開く",
+      "detailResolution": "解像度",
+      "detailCodec": "コーデック",
+      "detailFps": "フレームレート"
+    },
+    "input": {
+      "occupiedByOther": "このワークスペースは他のユーザーが使用中のため、現在メッセージを送信できません。相手に解放してもらうか、PSB の Web ページで使用中の解除をしてから再試行してください。",
+      "clientOffline": "リモートのマシンがオフラインのため、現在メッセージを送信できません。",
+      "workspaceNotReady": "リモートワークスペースはまだ準備できていません。"
+    },
+    "error": {
+      "auth": "リモートワークスペースを使うには、Cindy の組織アカウントでログインしてください。",
+      "authExpired": "ログインの有効期限が切れました。もう一度ログインしてください。",
+      "orgRequired": "リモートワークスペースは組織のメンバーだけが利用できます。",
+      "identityNotLinked": "お使いの Cindy の識別情報は、まだ PSB のユーザーに紐付いていません。管理者に連携を依頼してください。",
+      "unreachable": "PSB に接続できませんでした。ネットワークを確認してもう一度お試しください。",
+      "occupiedByOther": "このワークスペースは {{name}} が使用中です。相手に解放してもらうか、PSB の Web ページで使用中の解除をしてから再試行してください。",
+      "workspaceOccupied": "このワークスペースは他のユーザーが使用中です。今は送信も起動もできません。相手に解放してもらうか、PSB の Web ページで使用中の解除をしてから再試行してください。",
+      "clientOffline": "リモートのマシンがオフラインです。",
+      "notFound": "ワークスペースまたはタスクが存在しないか、アクセス権がありません。",
+      "unknown": "操作に失敗しました。しばらくしてからもう一度お試しください。"
+    },
+    "status": {
+      "needLogin": "未ログイン",
+      "needOrg": "組織アカウントが必要です"
     }
   }
 }

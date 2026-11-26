@@ -519,7 +519,11 @@ export function sanitizePiEnsureEnv(
  * 注入防护:双引号内非 `$HOME/` 前缀的 `$`、反引号、双引号会展开 —— 一律拒。
  */
 export function buildPiLaunchCommand(opts: {
-  cwd: string;
+  /**
+   * 启动目录。`null` = **宿主拥有工作目录**（PSB 远程工作区：宿主按服务端会话记录里的工作区
+   * spawn，Cindy 传的是 `/psb-remote/…` 虚拟路径，`cd` 到它只会 `exit 1`）。
+   */
+  cwd: string | null;
   binaryPath: string;
   args: readonly string[];
 }): string {
@@ -527,8 +531,11 @@ export function buildPiLaunchCommand(opts: {
     const rest = s.startsWith('$HOME/') ? s.slice('$HOME/'.length) : s;
     return /[\$`"]/.test(rest);
   };
-  if (unsafeDollar(opts.cwd) || unsafeDollar(opts.binaryPath)) {
-    throw new Error('pi-manager: unsafe cwd or binaryPath (contains $, backtick, or double-quote)');
+  if (unsafeDollar(opts.binaryPath)) {
+    throw new Error('pi-manager: unsafe binaryPath (contains $, backtick, or double-quote)');
+  }
+  if (opts.cwd !== null && unsafeDollar(opts.cwd)) {
+    throw new Error('pi-manager: unsafe cwd (contains $, backtick, or double-quote)');
   }
   const quotePiArg = (arg: string): string => {
     if (!arg.startsWith('$HOME/')) return shellQuote(arg);
@@ -538,10 +545,9 @@ export function buildPiLaunchCommand(opts: {
     }
     return `"${arg}"`;
   };
-  return [
-    `cd "${opts.cwd}" || exit 1`,
-    `exec "${opts.binaryPath}" ${opts.args.map(quotePiArg).join(' ')}`,
-  ].join('\n');
+  const launch = `exec "${opts.binaryPath}" ${opts.args.map(quotePiArg).join(' ')}`;
+  if (opts.cwd === null) return launch;
+  return [`cd "${opts.cwd}" || exit 1`, launch].join('\n');
 }
 
 /**

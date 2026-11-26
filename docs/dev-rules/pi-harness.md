@@ -688,6 +688,15 @@ Pi CLI 管理入口、内核自更新与旧工具兼容的执行边界见
     字段 `truncated:true`(只在服务端输出触顶其 16 MiB 上限时出现);客户端把它当**失败**
     (`[MCPR_EXEC_TRUNCATED]`),绝不把截断输出当完整数据 —— 一次被截断的 `readFile` 若被当成
     完整文件会静默污染 agentHome / 技能正文,事后极难回溯;末帧的未知字段一律忽略(加性演进基线)。
+  - **cwd 归宿主时不写 `cd`（`psb:`，2026-11-26）**：PSB 远程工作区按会话记录里的服务端工作区
+    spawn pi，Cindy 手里的 `/psb-remote/<目录>` 是**本机虚拟路径**。`pi/ensure` 的 `cmd` 里拼
+    `cd "<虚拟路径>"` 会让 `bash -c` 立即 `exit 1`（表象是 `pi process exited (code=null,
+    signal=null)`）。因此 `buildPiLaunchCommand` 接受 `cwd: string | null`：`psb:` 传 `null`
+    （不写 `cd`，由宿主的 spawn cwd 决定），SSH / MCPR 保持原语义。判定走唯一分类器
+    `remoteSessionHostOwnsCwd`（`maker-host/remote-session-routing.ts`，内部即
+    `classifyRemoteSessionTransport`），不在钩子里手写 `startsWith('psb:')`；回归见
+    `piRemoteTransport.test.ts` 与 `pi-mcpr-remote.ts` 的注释。Codex 侧同一裁决见
+    `docs/dev-rules/psb-remote-session-transport.md` §2。
   - **二进制路径**:runtime 自己物化 pi。客户端解析顺序 =
     `CINDY_PI_AGENT_BIN`(runtime 注入,零协议新增)→ 实例 PATH 上的 `pi` → 与 SSH 安装布局
     同约定的 `$HOME/.xdt-server/v1/pi/pi`;三者都不可执行才抛

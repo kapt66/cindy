@@ -460,6 +460,31 @@ export interface MakerSendTransactionDeps {
    * 随后本事务按空 session 走 lazy-create,避免 peek 之后对已关闭对象 send。
    */
   prepareUnhealthySession?(sessionId: string): Promise<boolean | void>;
+  /**
+   * psb: 远程工作区会话的**发送前透明重建**（见 `main/remote-workspace/sessionRebind.ts`）。
+   *
+   * 旧 PSB 会话已终态（或 PSB 说它已不存在）且当前没有回合在跑时，实现方会在同一工作区
+   * 新建一条 PSB 会话、把本地会话行重绑过去并广播事件，然后返回新身份；事务据此关掉仍持
+   * 旧身份的空闲 runtime，并让本次 lazy-create 用新身份开隧道（用户不必重试）。
+   *
+   * 返回 `null` = 不是 psb 会话或本次无需重建。失败直接抛可行动的 `PSB_*` IPC 错误：
+   * 本地会话行与运行时保持原状，下一次发送可以重试。
+   *
+   * 只在调用方带了 `createOpts` 时调用（重建后的新身份必须能从 createOpts 带进 lazy-create）。
+   */
+  preparePsbRemoteRebind?(sessionId: string): Promise<{
+    previousRemoteHostId: string;
+    remoteHostId: string;
+  } | null>;
+  /**
+   * psb: 远程工作区会话的**发送前占用闸门**（PSB 服务端会拒绝未锁定者的写入）。
+   *
+   * 在真正下发到 agent-tunnel/远端之前调用：工作区仍由自己占用 → 放行；已被释放（无人占用）
+   * → 自动重新占用后放行；被他人占用 → 抛可行动错误（消息保留、可重试）。实现方按「缓存 +
+   * 足够新的 PSB 快照」控制请求次数（见 `main/remote-workspace/workspaceLock.ts`）。
+   * 不是 psb 会话时实现方直接返回（不发请求）。
+   */
+  preparePsbWorkspaceLock?(sessionId: string): Promise<void>;
   /** Retire external ownership before selecting a runtime or applying a route. */
   prepareExternalInput?(sessionId: string): Promise<void>;
   /** Restore durable task status before route changes or native session resume. */
@@ -1161,6 +1186,26 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
           ),
         );
       }
+      // psb: 远程工作区会话的上一条 PSB 会话已终态（或已不存在）时，这里在解析 runtime
+      // 之前透明重建并重绑，让这一轮照常发出去 —— 远程任务的交互因此与本地一致
+      // （见 `main/remote-workspace/sessionRebind.ts` 与
+      // `docs/dev-rules/psb-remote-session-transport.md` §6.1）。
+      // 只有带了 createOpts 才尝试：新身份必须由 createOpts 带进下面的 lazy-create，
+      // 否则重建完也没有入口把新身份交给 runtime。
+      if (createOpts && deps.preparePsbRemoteRebind) {
+        const rebound = await deps.preparePsbRemoteRebind(sessionId);
+        if (rebound) {
+          // 仍持有旧 PSB 身份的空闲 runtime 必须关掉：lazy-create 会用新身份重新开隧道。
+          // 这里与 workdir 漂移回收同一口径（抑制 onSessionClosed 的重建窗口副作用）。
+          await deps.closeSessionIfCurrent(sessionId);
+          (createOpts as CreateOpts).remoteHostId = rebound.remoteHostId;
+          deps.log.info('send: rebound the task to a rebuilt psb remote session', {
+            sessionId,
+            previousRemoteHostId: rebound.previousRemoteHostId,
+            remoteHostId: rebound.remoteHostId,
+          });
+        }
+      }
       await deps.prepareUnhealthySession?.(sessionId);
       let sess = deps.getSession(sessionId);
       let requireCodexErrorRecovery = false;
@@ -1187,6 +1232,13 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       if (sess?.isTurnRunning()) {
         throwIpcError('SESSION_RUNNING', `Session ${sessionId} is already running a turn`);
       }
+      // psb: 发送前的**占用闸门**（PSB 服务端对工作区写操作校验锁定）。放在这里而不是更前面：
+      //  - 已经过了 `SESSION_RUNNING`，插话/排队被拒时仍报原来的原因，不被占用文案抢答；
+      //  - 已经过了发送前重建：重建出来的新 PSB 身份在库与 createOpts 里已就位，闸门按它判定；
+      //  - 还没进 `ensureRemoteReadyForSessionStart` / lazy-create：失败时本轮没有开隧道、没有
+      //    落任何远端写入，用户重发即可（消息体仍在草稿/队列里）。
+      // 工作区仍由自己占用 → 放行；已被释放 → 自动重新占用；被他人占用 → 抛可行动失败。
+      if (deps.preparePsbWorkspaceLock) await deps.preparePsbWorkspaceLock(sessionId);
       await deps.ensureRemoteReadyForSessionStart({ session: sess, createOpts });
 
       if (sess) {

@@ -1,9 +1,9 @@
 /**
- * remote transport 分类在渲染层的接线契约（2026-11-23）。
+ * remote transport 分类在渲染层的接线契约（2026-11-23，2026-11-25 增补 `psb:`）。
  *
  * 背景：SSH-only 的「读远端 Codex 清单」探针（`maker:remote-ssh:list-codex-models`）只对**真 SSH
- * 执行主机**成立。`mcpr:<instance-id>` 是 MCPRouter 的隧道身份，它的模型面就是本机 AI Gateway
- * 目录（远端 bridge 只带本机 key），喂进探针只会得到一个假失败。
+ * 执行主机**成立。`mcpr:<instance-id>` 与 `psb:<sessionId>` 都是隧道身份，它们的模型面就是本机
+ * AI Gateway 目录（远端只带 key），喂进探针只会得到一个假失败。
  *
  * 这条规则各炸过一次：
  *   · 2026-10-08 `ChatInput` 把任意 `remoteHostId` 当 SSH Codex 主机 → 报错 + 禁止发送；
@@ -32,6 +32,8 @@ const chatInputSource = read('../components/new-chat/ChatInput.tsx');
 const selectionSource = read('../features/cc-agent/sshSessionModelSelection.ts');
 const errorBannerSource = read('../components/chat/ErrorBanner.tsx');
 const mainHandlerSource = read('../../main/remote-ssh/index.ts');
+/** 主进程唯一 transport 分类器：渲染层判据必须与它同源（不可 import，只能静态核对常量）。 */
+const routingSource = read('../../main/maker-host/remote-session-routing.ts');
 
 describe('SSH-only 模型清单探针的接线', () => {
   it('唯一判据模块仍是 transport 品牌类型与两个入口判据的唯一定义处', () => {
@@ -39,9 +41,18 @@ describe('SSH-only 模型清单探针的接线', () => {
     expect(decisionSource).toContain('export function asSshRemoteHostId(');
     expect(decisionSource).toContain('export function resolveRemoteCodexModelHostId(');
     expect(decisionSource).toContain('export function resolveSshCodexCatalogHostId(');
-    // 判据必须与主进程共用前缀常量，不得退回写死的 'mcpr:' 字面量。
+    // 判据必须与主进程共用前缀常量，不得退回写死的 'mcpr:' / 'psb:' 字面量。
     expect(decisionSource).toContain('MCPR_REMOTE_HOST_PREFIX');
+    expect(decisionSource).toContain('PSB_REMOTE_HOST_PREFIX');
     expect(decisionSource).not.toMatch(/startsWith\(\s*['"]mcpr:/);
+    expect(decisionSource).not.toMatch(/startsWith\(\s*['"]psb:/);
+  });
+
+  it('主进程分类器与渲染层镜像判据引用同一批 shared 前缀常量（第三种 transport 不得漏镜像）', () => {
+    expect(routingSource).toContain('MCPR_REMOTE_HOST_PREFIX');
+    expect(routingSource).toContain('PSB_REMOTE_HOST_PREFIX');
+    expect(routingSource).toContain("export type RemoteSessionTransport = 'local' | 'ssh' | 'mcpr' | 'psb';");
+    expect(routingSource).not.toMatch(/startsWith\(\s*['"](?:mcpr|psb):/);
   });
 
   it('钩子入口只接受品牌类型，且发 IPC 前做运行时复核', () => {

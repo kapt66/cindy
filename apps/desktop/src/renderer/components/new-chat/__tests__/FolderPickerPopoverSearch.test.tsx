@@ -250,4 +250,28 @@ describe('FolderPickerPopover wheel routing', () => {
     fireEvent.wheel(heading, { deltaY: 24, cancelable: false });
     expect(list.scrollTop).toBe(24);
   });
+
+  // 远程工作区渠道（PSB）：项目胶囊变成工作区下拉，不再列本机项目 / 对话 / 浏览入口。
+  it('scopes the popover to the PSB workspace picker in the remote-workspace channel', () => {
+    render(
+      <FolderPickerPopover
+        open
+        onOpenChange={vi.fn()}
+        onSelect={vi.fn()}
+        projectOptions={manyProjects}
+        psbRemoteOnly
+        psbSelectedWorkspaceId={null}
+        onSelectPsbWorkspace={vi.fn()}
+        onCreatePsbWorkspace={vi.fn()}
+      >
+        <button type="button">trigger</button>
+      </FolderPickerPopover>,
+    );
+    // 工作区下拉本体出现（真实组件；无 PSB 桥时会显示可重试的读取失败，而不是空白）。
+    expect(screen.getByTestId('psb-workspace-picker')).toBeTruthy();
+    // 本机项目列表 / 对话入口 / 浏览文件夹入口全部让位给渠道内容。
+    expect(screen.queryByText('newChat.folderPicker.projects')).toBeNull();
+    expect(screen.queryByText('newChat.folderPicker.dialogue')).toBeNull();
+    expect(screen.queryByText('newChat.folderPicker.browseProjectFolder')).toBeNull();
+  });
 });

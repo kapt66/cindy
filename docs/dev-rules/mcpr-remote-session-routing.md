@@ -4,9 +4,10 @@
 > **读取时机**：修改 Desktop 远程任务启动、恢复、SSH preflight、MCPRouter tunnel 或
 > `remoteHostId` 处理时。
 
-## 1. 两种远程身份
+## 1. 三种远程身份
 
-`remoteHostId` 不是统一的 SSH 主机名字段，而是两种 transport 身份的联合：
+`remoteHostId` 不是统一的 SSH 主机名字段，而是**三种** transport 身份的联合
+（第三种 `psb:` 的工程契约见 [PSB 远程会话传输](psb-remote-session-transport.md)）：
 
 - `mcpr:<instance-id>`：MCPRouter 账号隧道的逻辑实例身份。这里的值必须是服务端实例记录的
   稳定 `id`（不是可变的显示/业务名称 `instanceId`）。`routerService.normalizeInstance()`
@@ -15,9 +16,18 @@
   `MCPR_REMOTE_HOST_PREFIX` 识别，具体实例值再由 `parseMcprRemoteHostId` 校验；它必须
   进入 `openMcprTunnel`、`remoteCcQueryFactory` 或 `createMcprCodexTransport`，不能查 SSH
   pool。即使值是不完整的 `mcpr:`，也不能降级成 SSH host。
+- `psb:<PSB session-id>`：PSB 远程工作区会话身份（会话跑在 PSB 远端客户端机器的工作区里，
+  Cindy 只是客户端）。同样是**隧道逻辑身份**：必须进入 `openPsbAgentTunnel`
+  （`maker-host/remote-tunnel-dispatch.ts` 的 `psb` 分支），不得进入 SSH pool；分类器按
+  `PSB_REMOTE_HOST_PREFIX` 识别，畸形 `psb:` 同样不回落 SSH。它与 `mcpr:` 共用**同一份**
+  agent-tunnel 帧契约与「不是 SSH 主机」这条边界，差别只在地址与鉴权（Bearer Connection JWT）。
 - 其它非空值：SSH Remote 的 host id，才允许进入 `ensureRemoteHostReady`、
   `ensureRemoteAgentInstalledOrInstall`、`getRemoteSshPool().get` 以及 SSH MCP bridge
   的注入/恢复逻辑。
+
+`classifyRemoteSessionTransport` 是唯一分类入口；新增远程 transport 时必须同时扩主进程分类器与
+渲染层镜像判据（`renderer/lib/remoteCodexModelHost.ts`），两者的输入矩阵测试断言逐字一致。
+「有 `remoteHostId`」只等于「这是远端会话」，不等于「这是 SSH 主机」。
 
 空值表示本地任务，不进入任一远程 preflight。
 
@@ -43,7 +53,12 @@ transport 分类，再执行 transport 专属动作。MCPRouter 会话不得因�
 
 `apps/desktop/src/main/maker-host/remote-session-routing.ts` 是分类的唯一纯函数入口。新增
 远程路径时复用 `classifyRemoteSessionTransport`，不要复制 `startsWith('mcpr:')` 或直接
-把 `remoteHostId` 传给 SSH API。
+把 `remoteHostId` 传给 SSH API。**「cwd 归远端宿主」也由同一模块派生**：
+`remoteSessionHostOwnsCwd(remoteHostId)`（目前只有 `psb:` 为真）是 cwd 所有权的唯一判据，
+desktop 在 maker-core 的 `lifecycleHooks.prepareStartOptions` 里用它给所有 `createSession`
+入口打 `remoteHostOwnsCwd`（不在各 funnel / 钩子里手写前缀判断；`pi-mcpr-remote.ts` 也走它）。
+Codex 侧对 cwd / roots / sandboxPolicy 的消费见
+[PSB 远程会话传输](psb-remote-session-transport.md) §2。
 
 ### 2.1 远程 transport 必须随会话退休一起释放（2026-10-30）
 
@@ -63,6 +78,13 @@ dispose）。
 worker → 归档 → 读数 **1**，12 小时后仍为 1，重启客户端才归 0。修复后同一复现路径要求
 归档读数为 **0**；`remoteTransportRegistry.test.ts` 覆盖单次释放、重复释放、dispose 抛错
 与同 id 替换四种情形。
+
+**第二条长连接：Codex capability 控制通道（2026-11-26 审查补）**：隧道 Codex 会话除了数据面
+transport，还有一条 `mode=cc-mgr` 控制通道（`main/maker-host/mcpr-codex-capability.ts`，按完整
+`remoteHostId` 缓存）。它只在**流自己 close** 时清缓存；PSB 的会话停止 / 重绑不会替我们关它。
+PSB 分支因此在 data-plane transport 终态时调 `releaseTunnelCodexControlChannel(remoteHostId)`
+（`end()` + 清缓存，幂等，`McprCodexTransportOptions.onClosed` 接线）；回归见
+`mcprCodexCapability.test.ts`。MCPRouter 分支仍由 `bundleRelease` / 流 close 收口，不额外改。
 
 ## 3. 合并防回归
 

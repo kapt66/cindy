@@ -34,6 +34,9 @@ export type BuiltinTabKindId =
   | 'background-tasks'
   | 'resource-usage'
   | 'cindy-make'
+  /** 远程工作区「远程工作区」全局页签(不跟任务):跟随当前打开会话的远程工作区管理页,
+   *  见 features/remote-workspace/admin。 */
+  | 'remote-workspace-admin'
   /** 全局页签(不跟对话):承载插件的 mainView / panel 页面,见 globalTabs.ts。 */
   | 'plugin-view'
   /** 任务页签(跟对话):承载插件的 taskView 页面,存在各任务自己的页签桶里。 */

@@ -129,6 +129,23 @@ describe('decodeRemoteErrorMessage', () => {
       'Automatic review was unavailable, and the confirmation request was not completed. This is not a user rejection.',
     );
   });
+
+  // 2026-11-26 用户口径：PSB 工作区写操作被占用闸门拒绝时，会话页横幅必须显示可行动文案，
+  // 而不是 Electron 的 `Error invoking remote method … [PSB_…] …` 包装串或裸码。
+  it('decodes PSB write-gate failures to actionable workspace copy', () => {
+    expect(
+      decodeRemoteErrorMessage(
+        "Error invoking remote method 'maker:input:enqueue': Error: [PSB_WORKSPACE_OCCUPIED_BY_OTHER] 张三",
+      ),
+    ).toBe(i18n.t('remoteWorkspace.error.workspaceOccupied'));
+    expect(decodeRemoteErrorMessage('[PSB_CLIENT_OFFLINE] 远端客户端当前离线。')).toBe(
+      i18n.t('remoteWorkspace.error.clientOffline'),
+    );
+    // 未登记的 PSB 码不猜文案（保持原串，交给诊断）。
+    expect(decodeRemoteErrorMessage('[PSB_SOMETHING_NEW] 未知失败')).toBe(
+      '[PSB_SOMETHING_NEW] 未知失败',
+    );
+  });
 });
 
 describe('remote session limit guidance', () => {

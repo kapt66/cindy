@@ -1,5 +1,6 @@
 /**
- * Pi 远端钩子的 transport 分类回归（2026-09-29 缺口 → 2026-10-09 `mode=pi` 隧道落地）。
+ * Pi/Claude 远端钩子的 transport 分类回归（2026-09-29 缺口 → 2026-10-09 `mode=pi` 隧道落地
+ * → 2026-11-25 第三种 transport `psb:` 接入）。
  *
  * 现场（2026-09-29）：用户在 MCPR 位置下切到 Pi 引擎建任务，第一条消息报
  * ```
@@ -11,11 +12,14 @@
  * 都先调 `getRemotePiTransport`，而当时 Pi 的远端钩子一个都没走 transport 分类。
  *
  * 2026-10-09 起 MCPRouter 有了两条隧道（`mode=pi` 数据面 / `mode=exec` 执行面），
+ * 2026-11-25 起 PSB 远程工作区用**同一份** mode 与客户端实现接入（`psb:` transport）。
  * 因此本文件守的是**新契约**：
- *   1. 每个 Pi 远端钩子在 `mcpr:` 上都必须走**隧道实现**（零次触碰 SSH pool），
- *      SSH 分支的行为一字不变；
- *   2. 源码级不变量：`index.ts` 里每个 `getRemoteSshPool().get(remoteHostId)` 所在的
- *      钩子体内都必须先出现共享分类器 —— 这条能抓住**将来新增**的未分类钩子。
+ *   1. 每个 Pi 远端钩子在隧道身份（`mcpr:` / `psb:`）上都必须走**隧道实现**
+ *      （零次触碰 SSH pool），SSH 分支的行为一字不变；
+ *   2. 钩子只认共享判据 `isTunnelRemoteSessionTransport` 与共享分派 `openRemoteTunnel`，
+ *      不得出现第三处 `startsWith('psb:')` / `startsWith('mcpr:')`；
+ *   3. 源码级不变量：`index.ts` 里每个 `getRemoteSshPool().get(remoteHostId)` 所在的
+ *      钩子体内都必须先出现共享判据 —— 这条能抓住**将来新增**的未分类钩子。
  *
  * 提取而不是 import：`maker-host/index.ts` 是巨型组装函数，import 会拉起整个 Electron
  * main 依赖树；与 `mcprRemoteFileOps.test.ts` / `remoteCcQueryFactory.test.ts` 同一模式。
@@ -27,7 +31,7 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 
-import { classifyRemoteSessionTransport } from '../remote-session-routing.js';
+import { classifyRemoteSessionTransport, isTunnelRemoteSessionTransport } from '../remote-session-routing.js';
 
 const source = readFileSync(resolve(__dirname, '..', 'index.ts'), 'utf8').replace(/\r\n?/g, '\n');
 
@@ -116,6 +120,8 @@ interface PiHookDeps {
   mcprBridgeUnavailable: ReturnType<typeof vi.fn>;
   mcprProxyEnv: ReturnType<typeof vi.fn>;
   sshProxyEnv: ReturnType<typeof vi.fn>;
+  /** 共享隧道分派（`remote-tunnel-dispatch.openRemoteTunnel`）：钩子只把它**传下去**。 */
+  openRemoteTunnel: ReturnType<typeof vi.fn>;
 }
 
 /**
@@ -133,6 +139,8 @@ function buildPiHook(
   const hookSource = stripTypeScriptSyntax(piHookSource(name));
   const injected: Record<string, unknown> = {
     classifyRemoteSessionTransport,
+    isTunnelRemoteSessionTransport,
+    openRemoteTunnel: deps.openRemoteTunnel,
     getRemoteSshPool: () => ({ get: deps.poolGet }),
     createRemotePiFileOps: deps.createFileOps,
     createMcprPiFileOps: deps.createMcprFileOps,
@@ -177,6 +185,7 @@ function deps(): PiHookDeps {
     }),
     mcprProxyEnv: vi.fn(() => null),
     sshProxyEnv: vi.fn(async () => null),
+    openRemoteTunnel: vi.fn(async () => ({ openStreamStub: true })),
   };
 }
 
@@ -217,84 +226,121 @@ function callHook(
   return buildPiHook(name, d)(...hookArgs(name, remoteHostId));
 }
 
-describe('Pi 远端钩子：`mcpr:<id>` 必须走隧道实现，且不得进入 SSH pool', () => {
-  it.each(PI_REMOTE_HOOKS)('%s 在 mcpr: 上零次触碰 SSH pool', async (name) => {
+/**
+ * 两种隧道 transport 的身份样本。
+ *
+ * 用**同一批用例**跑两边,是因为契约本身就是「同一份字节流 + 不同隧道来源」:只测 mcpr 会让
+ * `psb:` 重新掉进 SSH pool 时没人发现(2026-09-29 的 LAZY_CREATE_FAILED 就是这样漏出来的)。
+ */
+const TUNNEL_HOST_IDS = ['mcpr:instance-1', 'psb:session-1'] as const;
+const TRANSPORT_MATRIX = TUNNEL_HOST_IDS.flatMap((remoteHostId) =>
+  PI_REMOTE_HOOKS.map((name) => [remoteHostId, name] as const),
+);
+
+describe('Pi 远端钩子：隧道身份(`mcpr:` / `psb:`)必须走隧道实现，且不得进入 SSH pool', () => {
+  it.each(TRANSPORT_MATRIX)('%s 上的 %s 零次触碰 SSH pool', async (remoteHostId, name) => {
     const d = deps();
     await Promise.resolve()
-      .then(() => callHook(name, 'mcpr:instance-1', d))
+      .then(() => callHook(name, remoteHostId, d))
       .catch(() => undefined);
     expect(d.poolGet).not.toHaveBeenCalled();
     expect(d.createFileOps).not.toHaveBeenCalled();
   });
 
-  it('getRemotePiTransport 走 mode=pi 隧道（不查 pool、不做 SSH 安装前置）', async () => {
-    const d = deps();
-    await callHook('getRemotePiTransport', 'mcpr:instance-1', d);
-    expect(d.createMcprTransport).toHaveBeenCalledTimes(1);
-    expect(d.createMcprTransport.mock.calls[0][0]).toMatchObject({
-      remoteHostId: 'mcpr:instance-1',
-      remoteBinaryPath: '$HOME/.xdt-server/v1/pi/pi',
-      cwd: '/inst/wd',
-      sessionId: 's1',
-    });
-    expect(d.poolGet).not.toHaveBeenCalled();
-  });
-
-  it.each(['getRemotePiFileOps', 'getRemoteAgentFileOps'] as const)(
-    '%s 走 mode=exec 隧道 file ops（与 SSH 同一份实现）',
-    (name) => {
+  it.each(TUNNEL_HOST_IDS)(
+    'getRemotePiTransport(%s) 走 mode=pi 隧道（不查 pool、不做 SSH 安装前置）',
+    async (remoteHostId) => {
       const d = deps();
-      expect(callHook(name, 'mcpr:instance-1', d)).toBe(MCPR_FILE_OPS);
-      expect(d.createMcprFileOps).toHaveBeenCalledWith('mcpr:instance-1');
+      await callHook('getRemotePiTransport', remoteHostId, d);
+      expect(d.createMcprTransport).toHaveBeenCalledTimes(1);
+      expect(d.createMcprTransport.mock.calls[0][0]).toMatchObject({
+        remoteHostId,
+        remoteBinaryPath: '$HOME/.xdt-server/v1/pi/pi',
+        cwd: '/inst/wd',
+        sessionId: 's1',
+        // 钩子必须把**共享**隧道分派传下去,不能自己按前缀选实现。
+        openTunnel: d.openRemoteTunnel,
+      });
       expect(d.poolGet).not.toHaveBeenCalled();
     },
   );
 
-  it('resolveRemotePiBinaryPath 走隧道侧解析（不 exec probe SSH）', async () => {
-    const d = deps();
-    await expect(callHook('resolveRemotePiBinaryPath', 'mcpr:instance-1', d)).resolves.toBe(
-      '$HOME/.xdt-server/v1/pi/pi',
-    );
-    expect(d.resolveMcprBinaryPath).toHaveBeenCalledWith('mcpr:instance-1');
-    expect(d.poolGet).not.toHaveBeenCalled();
-  });
+  it.each(TUNNEL_HOST_IDS)(
+    '%s 上的 exec file-ops 钩子走 mode=exec 隧道（与 SSH 同一份实现）',
+    (remoteHostId) => {
+      for (const name of ['getRemotePiFileOps', 'getRemoteAgentFileOps'] as const) {
+        const d = deps();
+        expect(callHook(name, remoteHostId, d)).toBe(MCPR_FILE_OPS);
+        expect(d.createMcprFileOps).toHaveBeenCalledWith(remoteHostId, {
+          openTunnel: d.openRemoteTunnel,
+        });
+        expect(d.poolGet).not.toHaveBeenCalled();
+      }
+    },
+  );
 
-  it('rewriteRemotePiMcpBridgeUrl 在 mcpr: 上显式失败（绝不把 loopback URL 交给实例）', async () => {
-    const d = deps();
-    // 该钩子是 async：抛错表现为 rejected promise，必须用 rejects 断言（否则既漏断言
-    // 又留下 unhandled rejection）。
-    await expect(
-      Promise.resolve().then(() => callHook('rewriteRemotePiMcpBridgeUrl', 'mcpr:instance-1', d)),
-    ).rejects.toThrow(/\[MCPR_PI_MCP_BRIDGE_UNAVAILABLE\]/);
-    expect(d.mcprBridgeUnavailable).toHaveBeenCalledWith('mcpr:instance-1');
-    expect(d.poolGet).not.toHaveBeenCalled();
-  });
-
-  it('getRemotePiAgentProxyEnv 在 mcpr: 上返回 null（没有反向转发，不注入代理 env）', async () => {
-    const d = deps();
-    await expect(callHook('getRemotePiAgentProxyEnv', 'mcpr:instance-1', d)).resolves.toBeNull();
-    expect(d.mcprProxyEnv).toHaveBeenCalled();
-    expect(d.sshProxyEnv).not.toHaveBeenCalled();
-    expect(d.poolGet).not.toHaveBeenCalled();
-  });
-
-  it.each(['readSkillSource', 'fingerprintSkillSource'] as const)(
-    '%s 的 mcpr: 分支走隧道 file ops（不报 remote SSH host）',
-    async (name) => {
+  it.each(TUNNEL_HOST_IDS)(
+    'resolveRemotePiBinaryPath(%s) 走隧道侧解析（不 exec probe SSH）',
+    async (remoteHostId) => {
       const d = deps();
+      await expect(callHook('resolveRemotePiBinaryPath', remoteHostId, d)).resolves.toBe(
+        '$HOME/.xdt-server/v1/pi/pi',
+      );
+      expect(d.resolveMcprBinaryPath).toHaveBeenCalledWith(remoteHostId, {
+        openTunnel: d.openRemoteTunnel,
+      });
+      expect(d.poolGet).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(TUNNEL_HOST_IDS)(
+    'rewriteRemotePiMcpBridgeUrl(%s) 显式失败（绝不把 loopback URL 交给实例）',
+    async (remoteHostId) => {
+      const d = deps();
+      // 该钩子是 async：抛错表现为 rejected promise，必须用 rejects 断言（否则既漏断言
+      // 又留下 unhandled rejection）。
       await expect(
-        Promise.resolve().then(() => callHook(name, 'mcpr:instance-1', d)),
-      ).resolves.toBe(name === 'readSkillSource' ? 'mcpr' : 'mcpr-hash');
-      expect(d.createMcprFileOps).toHaveBeenCalledWith('mcpr:instance-1');
+        Promise.resolve().then(() => callHook('rewriteRemotePiMcpBridgeUrl', remoteHostId, d)),
+      ).rejects.toThrow(/\[MCPR_PI_MCP_BRIDGE_UNAVAILABLE\]/);
+      expect(d.mcprBridgeUnavailable).toHaveBeenCalledWith(remoteHostId);
       expect(d.poolGet).not.toHaveBeenCalled();
     },
   );
 
-  it('畸形的 `mcpr:` 同样留在隧道一侧（不降级成 SSH host）', () => {
-    const d = deps();
-    expect(classifyRemoteSessionTransport('mcpr:')).toBe('mcpr');
-    expect(callHook('getRemotePiFileOps', 'mcpr:', d)).toBe(MCPR_FILE_OPS);
-    expect(d.poolGet).not.toHaveBeenCalled();
+  it.each(TUNNEL_HOST_IDS)(
+    'getRemotePiAgentProxyEnv(%s) 返回 null（没有反向转发，不注入代理 env）',
+    async (remoteHostId) => {
+      const d = deps();
+      await expect(callHook('getRemotePiAgentProxyEnv', remoteHostId, d)).resolves.toBeNull();
+      expect(d.mcprProxyEnv).toHaveBeenCalled();
+      expect(d.sshProxyEnv).not.toHaveBeenCalled();
+      expect(d.poolGet).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(TUNNEL_HOST_IDS)(
+    '%s 上的伙伴 Skill 源读取走隧道 file ops（不报 remote SSH host）',
+    async (remoteHostId) => {
+      for (const name of ['readSkillSource', 'fingerprintSkillSource'] as const) {
+        const d = deps();
+        await expect(
+          Promise.resolve().then(() => callHook(name, remoteHostId, d)),
+        ).resolves.toBe(name === 'readSkillSource' ? 'mcpr' : 'mcpr-hash');
+        expect(d.createMcprFileOps).toHaveBeenCalledWith(remoteHostId, {
+          openTunnel: d.openRemoteTunnel,
+        });
+        expect(d.poolGet).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('畸形的 `mcpr:` / `psb:` 同样留在隧道一侧（不降级成 SSH host）', () => {
+    for (const remoteHostId of ['mcpr:', 'psb:'] as const) {
+      const d = deps();
+      expect(isTunnelRemoteSessionTransport(remoteHostId)).toBe(true);
+      expect(callHook('getRemotePiFileOps', remoteHostId, d)).toBe(MCPR_FILE_OPS);
+      expect(d.poolGet).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -362,7 +408,8 @@ describe('Pi 远端钩子：SSH 分支的既有行为不变', () => {
 describe('源码级不变量：index.ts 里每个 SSH pool 查询所在的钩子都必须先分类', () => {
   /**
    * 扫描所有 `getRemoteSshPool().get(remoteHostId)`，回溯到最近的 6 空格缩进属性声明
-   * （`      name: `），取出该属性体，要求体内出现共享分类器。
+   * （`      name: `），取出该属性体，要求体内出现共享判据
+   * （`isTunnelRemoteSessionTransport(` 或 `classifyRemoteSessionTransport(`）。
    *
    * 缩进必须精确匹配 6 空格：钩子体内是 8 空格，用 `lastIndexOf('\n      ')` 之类的
    * 前缀匹配会落到体内任意一行上，取到的就不是属性声明。
@@ -400,7 +447,13 @@ describe('源码级不变量：index.ts 里每个 SSH pool 查询所在的钩子
           }
         }
       }
-      if (!body.includes('classifyRemoteSessionTransport(')) {
+      // 两条共享判据任一即可:`isTunnelRemoteSessionTransport`(新写法)或
+      // `classifyRemoteSessionTransport(...)` 显式比较(需要区分两条隧道时的写法)。
+      // 两者都是唯一分类入口的产物,禁止的是「不分类就查 SSH pool」。
+      if (
+        !body.includes('isTunnelRemoteSessionTransport(')
+        && !body.includes('classifyRemoteSessionTransport(')
+      ) {
         offences.push(`${declaration.name} (offset ${cursor})`);
       }
       cursor = source.indexOf(needle, cursor + needle.length);
@@ -409,13 +462,13 @@ describe('源码级不变量：index.ts 里每个 SSH pool 查询所在的钩子
     expect(offences, `未先分类就查 SSH pool 的钩子：\n${offences.join('\n')}`).toEqual([]);
   });
 
-  it('remotePiSkipMcpBridge 只对 mcpr 跳过 in-process bridge（SSH/本机不跳）', () => {
+  it('remotePiSkipMcpBridge 对两条隧道 transport 都跳过 in-process bridge（SSH/本机不跳）', () => {
     const declaration = '\n      remotePiSkipMcpBridge: ';
     expect(source.split(declaration).length - 1, 'remotePiSkipMcpBridge 应唯一').toBe(1);
     const start = source.indexOf(declaration);
     // 条件是跨行的，取一个有界窗口（只看一行会漏）。
     const body = source.slice(start, start + 400);
-    expect(body).toContain("classifyRemoteSessionTransport(remoteHostId) === 'mcpr'");
+    expect(body).toContain('isTunnelRemoteSessionTransport(remoteHostId)');
     expect(body).toContain('shouldSkipMcprPiMcpBridge()');
   });
 });

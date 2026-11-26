@@ -484,6 +484,62 @@ describe('Codex managed Skill startup', () => {
     } finally { await agent.dispose(); }
   });
 
+  it('PSB 远程工作区：cwd / roots 一律不含虚拟 workingDir 与本机附加目录', async () => {
+    // Bug／规则依据：PSB 远程工作区的 cwd 由宿主（PSB 会话记录里的工作区）决定，Cindy 的
+    // `workingDir` 是 `/psb-remote/<目录>` 本机虚拟路径、远端不存在。真机上把它塞进
+    // thread/start 会让 codex exec 在不存在的目录里启动（`Failed to create unified exec
+    // process: No such file or directory`），Agent 自报 cwd 变成 `/` 或直接失败。
+    // **版本门禁必须打开**：`runtimeWorkspaceRoots` 只在 app-server ≥0.144.6 才下发；旧用例
+    // 用默认的 `mock-codex`（无版本串）时门禁为 false，于是「下行帧不含虚拟路径」天然成立，
+    // 是一条假阳性断言。最小失败输入：`workingDir = '/psb-remote/saga2_project-2'`、
+    // `extraDirs = ['/local/reference-dir']`、`writableDirs = ['/local/writable-dir']`，
+    // 且 app-server UA = 仓库 pin 的 `0.159.2`（`supportsCodexReadonlyReferenceDirs` 为真）。
+    MockCodexTransport.userAgent = 'mock-codex/0.159.2';
+    const getRemoteCodexTransport = vi.fn(() => {
+      const transport = new MockCodexTransport();
+      createdTransports.push(transport);
+      return transport;
+    });
+    const agent = new CodexAgent(createDeps({}, { getRemoteCodexTransport }));
+    try {
+      const psb = await agent.startSession({
+        sessionId: 'psb-cwd',
+        remoteHostId: 'psb:c79aa2b2-8a35-4c3f-9784-8a74abb9c2c9',
+        remoteHostOwnsCwd: true,
+        model: 'gpt-5.4',
+        workingDir: '/psb-remote/saga2_project-2',
+        extraDirs: ['/local/reference-dir'],
+        writableDirs: ['/local/writable-dir'],
+      });
+      // 发出一个真实 turn：writableRoots / turn 级 runtimeWorkspaceRoots 都在 turn/start 上。
+      await psb.send({ type: 'user', content: 'hello' });
+      const psbRequests = createdTransports[0]!.lines.map(line => JSON.parse(line))
+        .filter(item => typeof item.method === 'string');
+      const threadStart = psbRequests.find(item => item.method === Method.ThreadStart);
+      expect(threadStart?.params.cwd).toBe('.');
+      // 名下的 permission profile 内嵌 workingDir / writableDirs，remoteHostOwnsCwd 时不得启用。
+      expect(threadStart?.params).not.toHaveProperty('permissions');
+      expect(threadStart?.params).not.toHaveProperty('runtimeWorkspaceRoots');
+      const turnStart = psbRequests.filter(item => item.method === Method.TurnStart).at(-1);
+      expect(turnStart?.params).not.toHaveProperty('runtimeWorkspaceRoots');
+      // 任何下行帧（含 config / sandboxPolicy / 自动审阅参数）都不许出现本机路径。
+      const downlink = JSON.stringify(psbRequests);
+      expect(downlink).not.toContain('/psb-remote/');
+      expect(downlink).not.toContain('/local/reference-dir');
+      expect(downlink).not.toContain('/local/writable-dir');
+      await psb.close();
+
+      // 反证：SSH / MCPR 的 workingDir 是远端真实路径，必须继续原样下发。
+      const ssh = await agent.startSession({
+        sessionId: 'ssh-cwd', remoteHostId: 'ssh-host-1', model: 'gpt-5.4', workingDir: '/repo',
+      });
+      const sshThreadStart = createdTransports[1]!.lines.map(line => JSON.parse(line))
+        .find(item => item.method === Method.ThreadStart);
+      expect(sshThreadStart?.params.cwd).toBe('/repo');
+      await ssh.close();
+    } finally { await agent.dispose(); }
+  });
+
   it.each(['projection', 'reload'])('does not submit a thread after %s failure', async (failure) => {
     const prepareCodexSkills = vi.fn(async () => {
       if (failure === 'projection') throw new Error('projection unavailable');

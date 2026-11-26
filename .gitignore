@@ -198,6 +198,10 @@ apps/mobile/e2e/visual-baselines/
 # 会话工具临时产物(永不入仓)
 tmp/
 github-result-*.json
+# 跨仓协调流水(PSB / MCPR 联调台账)：含本机绝对路径、内部主机与真实身份信息，
+# 只在本机维护，不得入仓。供文档引用的脱敏稳定契约摘要见
+# docs/collaboration/psb-remote-workspace-contract.md（文档不得引用本文件）。
+/联动需求.md
 # Agent 解冲突/审计时提取的三方对比脚手架(ours/theirs/base 副本、diff、
 # 等价性分类输出)。它们只服务于单次分析,不得进入提交。
 .tmp-*

@@ -95,8 +95,10 @@ describe('CCAgentSessionView 接线不变式', () => {
     expect(sessionViewSrc).not.toContain('beforeEnqueue: checkVendorReady');
     // device-link 远程交接期间仍要禁用(见 remoteHandoffPreparing):那几段 await
     // 可能数十秒,不禁用的话用户补发的消息会插到草稿提交的首条之前。
-    expect(sessionViewSrc).toContain(
-      "disabled={readOnly || remoteHandoffPreparing || session?.source === 'review'}",
+    // 条件后来还叠加了远程工作区占用态(`psbInputBlocked`),所以按表达式匹配
+    // 「readOnly / remoteHandoffPreparing / review」三者仍在 composer 的 disabled 里。
+    expect(sessionViewSrc).toMatch(
+      /disabled=\{\s*readOnly \|\|\s*remoteHandoffPreparing \|\|\s*session\?\.source === 'review'/,
     );
   });
   it('补选目录后的续发保持 delivery mode，并按本地/远端策略清理原 composer', () => {

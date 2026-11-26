@@ -217,6 +217,45 @@ describe('ensure', () => {
     expect(onSessionClosed).toHaveBeenCalledWith('test', 'completed', expect.stringContaining('exited'));
   });
 
+  // 1a-bis. PSB 远程工作区 cwd 回归:daemon 被宿主用会话工作区 spawn,但它自己 chdir('/');
+  // pi 子进程必须显式在「daemon 启动 cwd」里 spawn,否则 Agent 自报 cwd=/(真机缺陷)。
+  it('should spawn pi in the daemon launch cwd when defaultChildCwd is set', async () => {
+    const launchCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-launch-cwd-'));
+    cleanupFns.push(() => fs.rmSync(launchCwd, { recursive: true, force: true }));
+    const { registry } = await createRegistry({ defaultChildCwd: launchCwd });
+
+    const child = makeChild();
+    mockSpawn.mockReturnValueOnce(child);
+    mockCreateServer.mockReturnValueOnce(makeServer());
+
+    await registry.ensure('cwd-session', 'exec pi', { K: 'v' }, 'hash-cwd', false);
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'bash',
+      ['-c', 'exec pi'],
+      expect.objectContaining({ cwd: launchCwd }),
+    );
+    child.emit('close', 0, null);
+  });
+
+  // 1a-ter. launch cwd 已在 ensure 前被删除 → 不传 cwd(退回继承 daemon 当前 cwd 的旧行为,
+  // 绝不因残留路径让会话起不来)。
+  it('should omit spawn cwd when the daemon launch cwd no longer exists', async () => {
+    const missingCwd = path.join(os.tmpdir(), `pi-launch-cwd-missing-${process.pid}-${Date.now()}`);
+    const { registry } = await createRegistry({ defaultChildCwd: missingCwd });
+
+    const child = makeChild();
+    mockSpawn.mockReturnValueOnce(child);
+    mockCreateServer.mockReturnValueOnce(makeServer());
+
+    await registry.ensure('missing-cwd-session', 'exec pi', { K: 'v' }, 'hash-cwd2', false);
+
+    const spawnOptions = mockSpawn.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(spawnOptions).toBeDefined();
+    expect(spawnOptions).not.toHaveProperty('cwd');
+    child.emit('close', 0, null);
+  });
+
   // 1b. 已存在 + 同 envHash + restart=false → isReattach=true（不杀）
   it('should reattach when same envHash and restart=false', async () => {
     const { registry } = await createRegistry();

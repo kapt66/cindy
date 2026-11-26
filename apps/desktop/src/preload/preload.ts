@@ -41,6 +41,21 @@ import type { ByokStatus } from '../shared/modelAccess.js';
 import type { LocalPluginOauthRequest, LocalPluginSecretRequest } from '../shared/pluginOauth';
 import { REMOTE_VIEWER } from '../shared/remoteDesktopViewer';
 import {
+  PSB_REMOTE_CHANNELS,
+  type PsbSessionsReboundEvent,
+  type PsbStreamEvent,
+  type PsbWorkspaceChangedEvent,
+} from '../shared/psb-remote-workspace';
+import {
+  PSB_ADMIN_CHANNELS,
+  type PsbAdminStreamEvent,
+  type PsbWorkspaceAdminContextChangedEvent,
+  type PsbWorkspaceAdminContextResult,
+  type PsbWorkspaceAdminStreamStartResult,
+  type PsbWorkspaceAdminStreamStatusResult,
+} from '../shared/psb-workspace-admin';
+import type { PsbRemoteBridge } from '../renderer/features/remote-workspace/bridge';
+import {
   LOGIN_ITEM_GET_CHANNEL,
   LOGIN_ITEM_SET_CHANNEL,
   type LoginItemState,
@@ -860,6 +875,72 @@ const fanOutRemoteSshSilentInstallStatus = createIpcFanOut(
 const fanOutRemoteSshCcMgrUpgradeAvailable = createIpcFanOut(
   'maker:remote-ssh:cc-mgr-upgrade-available',
 );
+// PSB 远程工作区：串流事件（帧 / 状态 / 光标 / 关闭 / 错误）、工作区快照变更、
+// 以及「发送时透明重建」后的远程会话重绑通知。
+// 通道名来自共享契约，preload 不 import main（chunk 边界）。
+const fanOutPsbStreamEvent = createIpcFanOut(PSB_REMOTE_CHANNELS.STREAM_EVENT);
+const fanOutPsbWorkspaceChanged = createIpcFanOut(PSB_REMOTE_CHANNELS.WORKSPACE_CHANGED);
+const fanOutPsbSessionsRebound = createIpcFanOut(PSB_REMOTE_CHANNELS.SESSIONS_REBOUND);
+// 「远程工作区」管理页（工作区级，与用户任务解耦）：当前工作区上下文变化 + 内部观看端串流事件。
+const fanOutPsbAdminContextChanged = createIpcFanOut(PSB_ADMIN_CHANNELS.CONTEXT_CHANGED);
+const fanOutPsbAdminStreamEvent = createIpcFanOut(PSB_ADMIN_CHANNELS.STREAM_EVENT);
+
+/**
+ * PSB 远程工作区的 preload 桥。
+ *
+ * 返回类型显式声明为渲染层窄入口的 `PsbRemoteBridge`：preload 与
+ * `renderer/features/remote-workspace/bridge.ts` 的签名漂移会在这里编译失败，组件不必各自
+ * 解构 `window.electronAPI.psbRemote`。推送走 `createIpcFanOut`（懒绑定 + 引用计数），
+ * 回调只透传 payload，丢弃 `IpcRendererEvent`。
+ */
+function createPsbRemoteBridge(): PsbRemoteBridge {
+  return {
+    status: () => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STATUS),
+    listWorkspaces: (input) =>
+      ipcRenderer.invoke(PSB_REMOTE_CHANNELS.LIST_WORKSPACES, input ?? {}),
+    listClients: () => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.LIST_CLIENTS),
+    listProjectTemplates: () => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.LIST_TEMPLATES),
+    createWorkspace: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.CREATE_WORKSPACE, input),
+    occupyWorkspace: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.OCCUPY_WORKSPACE, input),
+    releaseWorkspace: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.RELEASE_WORKSPACE, input),
+    createSession: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.CREATE_SESSION, input),
+    refreshWorkspaces: (input) =>
+      ipcRenderer.invoke(PSB_REMOTE_CHANNELS.REFRESH_WORKSPACES, input ?? {}),
+    sessionStatus: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.SESSION_STATUS, input),
+    stopSession: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STOP_SESSION, input),
+    openWebWorkspace: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.OPEN_WEB_WORKSPACE, input),
+    streamStatus: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_STATUS, input),
+    streamStart: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_START, input),
+    streamStop: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_STOP, input),
+    streamInput: (input) => ipcRenderer.invoke(PSB_REMOTE_CHANNELS.STREAM_INPUT, input),
+    onStreamEvent: (handler) =>
+      fanOutPsbStreamEvent((data) => handler(data as PsbStreamEvent)),
+    onWorkspaceChanged: (handler) =>
+      fanOutPsbWorkspaceChanged((data) => handler(data as PsbWorkspaceChangedEvent)),
+    onSessionsRebound: (handler) =>
+      fanOutPsbSessionsRebound((data) => handler(data as PsbSessionsReboundEvent)),
+    // 「远程工作区」管理页：工作区级上下文 + 内部观看端会话的串流事件。
+    adminContext: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.CONTEXT, input ?? {}) as Promise<PsbWorkspaceAdminContextResult>,
+    onAdminContextChanged: (handler) =>
+      fanOutPsbAdminContextChanged((data) =>
+        handler(data as PsbWorkspaceAdminContextChangedEvent),
+      ),
+    adminStreamStart: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.STREAM_START, input) as Promise<PsbWorkspaceAdminStreamStartResult>,
+    adminStreamStop: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.STREAM_STOP, input) as Promise<void>,
+    adminStreamStatus: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.STREAM_STATUS, input) as Promise<PsbWorkspaceAdminStreamStatusResult>,
+    // 键鼠输入与「画面捕获态」开关：都是工作区级（会话由 main 从工作区解析）。
+    adminStreamInput: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.STREAM_INPUT, input) as Promise<void>,
+    setAdminStreamCaptureActive: (input) =>
+      ipcRenderer.invoke(PSB_ADMIN_CHANNELS.STREAM_CAPTURE, input) as Promise<void>,
+    onAdminStreamEvent: (handler) =>
+      fanOutPsbAdminStreamEvent((data) => handler(data as PsbAdminStreamEvent)),
+  };
+}
 // Hook 连接(hook-control)状态推送(单条连接快照)。
 const fanOutHookControlStatus = createIpcFanOut('maker:hook-control:status-changed');
 // 所有官方机器人共用的项目偏好快照推送(含 IM 里 /model 卡改动并入后的实时同步)。
@@ -4343,6 +4424,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('meka-settings:project:set-bindings', { projectId, instanceIds }),
     },
   },
+
+  // PSB 远程工作区（会话跑在 PSB 远端机器的工作区里）。方法集合由渲染层窄入口
+  // `PsbRemoteBridge` 决定，组件经 `renderer/features/remote-workspace/bridge.ts` 使用。
+  psbRemote: createPsbRemoteBridge(),
 
   // Open URL in system default browser
   openExternal: (url: string): Promise<{ success: boolean }> =>

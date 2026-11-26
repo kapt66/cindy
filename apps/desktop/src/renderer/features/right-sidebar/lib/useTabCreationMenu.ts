@@ -14,6 +14,8 @@ import type { TabKindId, TabKindMenuMeta } from '../types';
 import { canOpenSideChat, openSideChatTab, type SideChatTabPlacement } from './openSideChatTab';
 import {
   addGlobalPluginTab, globalTabTitleForGhost, isGlobalTabCapableGhost,
+  addRemoteWorkspaceAdminTab, findRemoteWorkspaceAdminTab, isRemoteWorkspaceAdminKind,
+  preferredRemoteWorkspaceAdminGroup,
   setActiveGlobalTabId, useGlobalTabs, type PluginViewTabState,
 } from '../globalTabs';
 import type { TabGroupId } from '../tabGroups';
@@ -80,14 +82,20 @@ export function useTabCreationMenu({
     if (item.kind.startsWith('ghost:')) return false;
     if (item.kind === 'subagents' && !subagentsAvailable) return false;
     if (item.kind === 'side-chat' && (isBotSession || !canOpenSideChat(session))) return false;
-    return !isBotSession || !BOT_SECONDARY_KINDS.has(item.kind);
+    return !isBotSession || !BOT_SECONDARY_KINDS.has(item.kind) || isRemoteWorkspaceAdminKind(item.kind);
   }).map(item => {
     const busy = item.kind === 'side-chat' && !!sessionId && openingSessionId === sessionId;
+    // 「远程工作区」是全局页签(不跟任务、不按会话分桶):没有打开任务 / 打开的不是远程工作区
+    // 任务时也允许打开,页面自己显示提示态;已有同一页时菜单显示「已打开」。
+    const adminKind = isRemoteWorkspaceAdminKind(item.kind);
     return {
       ...item,
       busy,
-      disabled: !sessionId || !item.enabled || busy
-        || (item.kind === 'side-chat' && isRemoteSessionWriteBlocked(session)),
+      ...(adminKind ? { alreadyOpen: findRemoteWorkspaceAdminTab() !== null } : {}),
+      disabled: adminKind
+        ? !item.enabled || busy
+        : !sessionId || !item.enabled || busy
+          || (item.kind === 'side-chat' && isRemoteSessionWriteBlocked(session)),
     };
   });
 
@@ -101,6 +109,20 @@ export function useTabCreationMenu({
       if (tab) {
         options?.onGlobalTabSelected?.(tab.id, plugin.open);
         setActiveGlobalTabId(tab.id);
+      }
+      return;
+    }
+    // 「远程工作区」:与标题栏按钮同一个动作 —— 打开或聚焦那一个全局页签。所有宿主
+    // (主窗 / 边组 / 弹出窗口 / 空面板快捷入口)都经这里,不存在第二套创建路径。
+    // 落点 = 打开菜单的那条标签栏所在的组(在插件窗口那排点 +,就落在同一排)。
+    if (isRemoteWorkspaceAdminKind(kind)) {
+      const existed = findRemoteWorkspaceAdminTab() !== null;
+      const adminTab = addRemoteWorkspaceAdminTab({
+        groupId: options?.groupId ?? preferredRemoteWorkspaceAdminGroup(),
+      });
+      if (adminTab) {
+        options?.onGlobalTabSelected?.(adminTab.id, existed);
+        setActiveGlobalTabId(adminTab.id);
       }
       return;
     }

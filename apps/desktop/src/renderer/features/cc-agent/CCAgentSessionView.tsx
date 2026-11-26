@@ -84,6 +84,7 @@ import {
   Monitor,
   Sparkles,
   Square,
+  TriangleAlert,
   X,
 } from 'lucide-react';
 
@@ -378,6 +379,10 @@ import {
 import { getCollaborationStartErrorMessage, workerAgentDeviceErrorMessage } from './collaborationErrors';
 import { canShowCollabToggleForSession } from './lib/collaborationEligibility';
 import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
+import { usePsbRemoteSessionStatus } from '@/features/remote-workspace/stream/usePsbRemoteSessionStatus';
+import { usePsbSessionRebind } from '@/features/remote-workspace/stream/psbSessionRebind';
+import { RemoteSessionRebindNotice } from '@/features/remote-workspace/stream/RemoteSessionRebindNotice';
+import { psbStreamSessionId } from '@/features/remote-workspace/stream/psbStreamSession';
 import { useCollabProjectPolicy } from './hooks/useCollabProjectPolicy';
 import { resolveCollabEntryPolicy } from './collabEntryPolicy';
 import { consumePendingRemoteCollab, enableRemoteCollabForSession } from './remoteCollabHandoff';
@@ -2117,6 +2122,24 @@ function CCAgentSessionContent({
   const cindyMakeInputLocked = Boolean(
     cindyMakeComposerPhase || cindyMakePendingTest || remoteMakeCards.blocked,
   );
+  // 远程工作区（`psb:`）会话：占用 / 在线 / 就绪三条由 PSB 判定，这里只读快照。
+  // 判据与文案的全部来源是共享纯函数 `psbSessionInputAllowed()` + `remoteWorkspace.input.*`；
+  // 只读实例（分屏内嵌 / 远程 Worker 面板）不重复轮询。
+  //
+  // **终态不锁死任务**（与本地任务一致）：PSB 会话 `stopped` / `failed` 时主进程在用户下一次
+  // 发送时透明重建并重绑，推送 `psbRemote.sessionsRebound`。这里用重绑覆盖把远端身份换成新
+  // 会话（输入判据与串流观看端一起指向它），并给一行可关闭的淡提示 —— 不再出现
+  // 「这个任务已经结束」这类死路警告条。「远程工作区」页签按工作区工作，不参与这次重绑。
+  const psbRebind = usePsbSessionRebind(sessionId, session?.remoteHostId);
+  const psbSessionId = psbStreamSessionId(psbRebind.remoteHostId);
+  const psbRemoteStatus = usePsbRemoteSessionStatus(psbSessionId, { enabled: !readOnly });
+  // 「没读到快照」时不锁输入（网络抖动不该锁死 composer）；读到过就按最后一次已知状态执行。
+  // 终态不会走到这里：`psbSessionInputAllowed()` 对终态返回允许（发送时重建）。
+  const psbInputBlocked = psbSessionId !== null && !psbRemoteStatus.inputAllowed;
+  const psbInputBlockedReason =
+    psbInputBlocked && psbRemoteStatus.inputBlockedReasonKey
+      ? t(psbRemoteStatus.inputBlockedReasonKey)
+      : null;
   useEffect(() => {
     if (!sessionId || !isOrcaLeadSessionView || !historyLoaded) return;
     const recoveredAssignment = getRecoverableDeferredUiAssignment({
@@ -5470,7 +5493,7 @@ function CCAgentSessionContent({
     return entry ? <PendingQueueBubble pluginUi={pluginUi} entry={entry} sessionId={sessionId} index={index} count={pendingQueue.length}
       editingClientId={activeQueueComposerEdit?.clientId ?? null}
       steeringClientIds={steeringQueueClientIds} editLocks={queueEditLocks} interactionLocks={queueInteractionLocks}
-      readOnly={readOnly || queueAbortPending}
+      readOnly={readOnly || queueAbortPending || psbInputBlocked}
       simplifiedBotConversation={Boolean(botChatIdentity)} localSend={isLocalUserSend(entry.clientId)} onEdit={beginQueueComposerEdit}
       onSteer={steerQueuedMessage} onRemove={removeFromQueue} onMove={moveQueueItem} /> : null;
   };
@@ -5712,7 +5735,7 @@ function CCAgentSessionContent({
     },
   }), [handleSend, session]);
   const messageStreamWithQuickSend = (
-    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
+    <SessionQuickSendProvider value={readOnly || cindyMakeInputLocked || psbInputBlocked ? null : quickSend}>{messageStreamEl}</SessionQuickSendProvider>
   );
 
   const composerRuntimeVisible =
@@ -6112,6 +6135,30 @@ function CCAgentSessionContent({
               data-chat-composer-stack
             >
               {!readOnly && sessionId && <McpAppPermissionPrompt sessionId={sessionId} floating />}
+              {/* 远程工作区：远程会话被透明重建后的**轻提示**（会话已换新、本轮上下文可能不
+                  延续）。它是信息不是告警：任务没有结束，用户直接继续发消息即可 —— 所以用
+                  中性一行淡提示并允许关闭，不用橙色警告条，也不阻塞输入。 */}
+              {!readOnly && psbRebind.noticeVisible ? (
+                <RemoteSessionRebindNotice onDismiss={psbRebind.dismissNotice} />
+              ) : null}
+              {/* 远程工作区：工作区被他人占用 / 客户端离线 / 未就绪时，输入框置灰并说明原因
+                  （产品正本 psb-remote-workspace-sessions.md §2.4）。**终态不在这里** ——
+                  终态发送会透明重建远程会话，和本地任务一样可以继续。
+                  不复用 TakeoverMask —— 那是"本机 IM 接管"语义，这里是"远端工作区不可写"，
+                  用户不能也不需要在本机收回。 */}
+              {psbInputBlocked && psbInputBlockedReason ? (
+                <div
+                  role="status"
+                  className="flex w-full items-start gap-1.5 rounded-lg bg-[var(--warning-bg-soft)] px-2.5 py-1.5 text-12 leading-5 text-[var(--text-primary)]"
+                >
+                  <TriangleAlert
+                    size={14}
+                    className="mt-0.5 shrink-0 text-[var(--warning-fg)]"
+                    aria-hidden
+                  />
+                  <span className="min-w-0 break-words">{psbInputBlockedReason}</span>
+                </div>
+              ) : null}
               {!readOnly && !session?.remoteHostId && (
                 <PluginUiEnablePrompt key={`${sessionId}:${remoteDeviceId ?? agentDeviceId ?? 'local'}`} deviceId={remoteDeviceId ?? agentDeviceId ?? undefined} />
               )}
@@ -6359,9 +6406,17 @@ function CCAgentSessionContent({
                   isAgentBusy={isAgentBusy}
                   onStop={handleStopSession}
                   pendingQueue={pendingQueue}
-                  disabled={readOnly || remoteHandoffPreparing || session?.source === 'review'}
+                  disabled={
+                    readOnly ||
+                    remoteHandoffPreparing ||
+                    session?.source === 'review' ||
+                    psbInputBlocked
+                  }
                   settingsLocked={
-                    readOnly || session?.source === 'review' || Boolean(activeQueueComposerEdit)
+                    readOnly ||
+                    session?.source === 'review' ||
+                    Boolean(activeQueueComposerEdit) ||
+                    psbInputBlocked
                   }
                   queueEditingClientId={activeQueueComposerEdit?.clientId ?? null}
                   onQueueEditSubmit={submitQueueComposerEdit}

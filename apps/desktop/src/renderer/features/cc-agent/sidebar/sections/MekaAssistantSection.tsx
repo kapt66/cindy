@@ -34,6 +34,12 @@ import { SessionEntryList } from '../SessionEntryList';
 import { SidebarFilterPopover } from '../SidebarFilterPopover';
 import { HEADER_ACTIONS_CLASS, HEADER_HOVER_ACTION_CLASS, SidebarFoldAllButton } from '../SidebarHeaderActions';
 import type { SessionClickHandler } from '../SessionItem';
+import { isRemoteWorkspaceSession } from '../../../remote-workspace/sidebar/isRemoteWorkspaceSession';
+import { RemoteWorkspaceSection } from '../../../remote-workspace/sidebar/RemoteWorkspaceSection';
+import type { RemoteWorkspacePickerCreated } from '../../../remote-workspace/dialog/RemoteWorkspacePickerDialog';
+
+/** 没有远程工作区会话时的稳定空数组（保持下游 memo 依赖稳定）。 */
+const NO_REMOTE_WORKSPACE_SESSIONS: readonly Session[] = [];
 
 function MekaTreeAction({ label, onClick }: { label: string; onClick: () => void }) {
   return (
@@ -153,8 +159,12 @@ export function buildMekaProjectSessionGroups(
   projects: readonly MekaProject[],
   sessions: readonly Session[],
 ): MekaProjectSessionGroup[] {
+  // 远程工作区（`psb:`）会话不是 Meka 项目会话：它归侧栏「远程工作区」节点（产品正本
+  // `docs/product-rules/psb-remote-workspace-sessions.md` §2.1「同一个会话只有一个归属位置」）。
+  // 上游 `visibleMekaSessions` 已排除，这里再兜一次 —— 本函数是导出的纯函数，别处也可能直接调。
   const sessionsByProject = new Map<string, Session[]>();
   for (const session of sessions) {
+    if (isRemoteWorkspaceSession(session)) continue;
     const key = session.mekaProjectId ?? '';
     const group = sessionsByProject.get(key);
     if (group) group.push(session);
@@ -218,6 +228,17 @@ interface MekaAssistantSectionProps {
   dialogueCount?: number;
   /** 是否有远程设备连接:「按设备分组」选项的出现条件。 */
   hasRemoteDevices?: boolean;
+  /**
+   * 远程工作区（`psb:`）会话 —— 与 Meka 项目无关的独立节点，**排在 Meka 分类最上面**
+   * （在项目分组之前；用户裁决）。由父层按筛选条件算出（`CCAgentSidebarUpper` 的
+   * `visibleRemoteWorkspaceSessions`）。
+   */
+  remoteWorkspaceSessions?: readonly Session[];
+  /**
+   * 远程工作区弹窗选定工作区（工作区级载荷，不含会话 id / 引擎）。父层负责导航到草稿页
+   * （`/cc-agent/new` + `psbTarget`）；本段不写草稿字段（草稿归属 `NewMakerDraftRoute`）。
+   */
+  onRemoteWorkspaceTargetSelected?: (target: RemoteWorkspacePickerCreated) => void;
 }
 
 export function MekaAssistantSection({
@@ -240,6 +261,8 @@ export function MekaAssistantSection({
   allKnownProjects,
   dialogueCount = 0,
   hasRemoteDevices = false,
+  remoteWorkspaceSessions = NO_REMOTE_WORKSPACE_SESSIONS,
+  onRemoteWorkspaceTargetSelected,
 }: MekaAssistantSectionProps) {
   const { t } = useTranslation();
   // Meka 保留自己的项目 / 正式流程分组树,但会话行复用主列表的显示偏好。
@@ -308,6 +331,15 @@ export function MekaAssistantSection({
     }
     setCollapsedProjects(new Set(groupKeys));
   }, [foldState, groupKeys]);
+
+  // 远程工作区弹窗选定工作区后只上抛：导航与草稿落地由 CCAgentSidebarUpper /
+  // NewMakerDraftRoute 负责（见 dialog 任务的交接契约 workspacePrompt:'generic' + psbTarget）。
+  const handleRemoteWorkspaceTargetSelected = useCallback(
+    (target: RemoteWorkspacePickerCreated) => {
+      onRemoteWorkspaceTargetSelected?.(target);
+    },
+    [onRemoteWorkspaceTargetSelected],
+  );
 
   const renderSessions = (entries: Session[], sectionCollapsed: boolean, nested = false) => (
     <div className={cn(nested && 'pl-3')}>
@@ -395,6 +427,28 @@ export function MekaAssistantSection({
 
       <SectionCollapse collapsed={collapsed}>
         <div className="flex flex-col gap-1 pt-1 pr-0 pl-3">
+          {/*
+            「远程工作区」固定在 Meka 分类**最上面**（用户裁决：先于 Meka 项目分组，空态/有会话
+            都不变）。它是与项目行同级、但不属于任何 Meka 项目的节点：即使一条会话都没有也常驻，
+            因为「＋ 新建会话」是这个能力的唯一入口。`psb:` 会话不进下面的项目分组，也已被普通
+            项目/对话段排除，所以这里不会重复出现。
+          */}
+          <RemoteWorkspaceSection
+            sessions={remoteWorkspaceSessions}
+            activeSessionId={activeSessionId}
+            runningSessionIds={runningSessionIds}
+            attachedSessionIds={attachedSessionIds}
+            notifications={notifications}
+            scheduleSessionIndex={scheduleSessionIndex}
+            selectedSessionIds={selectedSessionIds}
+            onSessionClick={onSessionClick}
+            onAction={onAction}
+            onRename={onRename}
+            onTogglePin={onTogglePin}
+            onScheduleAction={onScheduleAction}
+            sessionVariant={mainSessionVariant}
+            onWorkspaceSelected={handleRemoteWorkspaceTargetSelected}
+          />
           {groups.map((group) => {
             const key = mekaProjectGroupKey(group.projectId);
             const projectCollapsed = collapsedProjects.has(key);

@@ -462,10 +462,13 @@ export function MainLayout() {
   );
   const taskLiveScreenEntries =
     remoteDesktopDeviceId && rightSidebarSessionId ? liveScreenEntries : [];
-  // Windows chip 栈按入口个数让位：远程桌面 1 个 + 设备画面若干，每个 28px + 4px 间距。
-  const remoteTaskEntriesWidth = remoteDesktopDeviceId
-    ? (1 + Math.min(taskLiveScreenEntries.length, TASK_LIVE_SCREEN_LIMIT)) * 32
+  // Windows 浮动 chip 栈按入口个数让位：远程桌面 1 个 + 设备画面若干，每个 28px + 4px 间距。
+  // 「远程工作区」入口不在标题栏右端 —— 它跟着会话标题行走（见 SessionContentHeader），
+  // 所以不计入这条栈，也不占 ContentHeader 的 trailing 宽度。
+  const remoteTaskEntryCount = remoteDesktopDeviceId
+    ? 1 + Math.min(taskLiveScreenEntries.length, TASK_LIVE_SCREEN_LIMIT)
     : 0;
+  const remoteTaskEntriesWidth = remoteTaskEntryCount * 32;
   const rowRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLElement>(null);
   // B1a(去方位化):左侧占位块(pinning spacer + Sidebar)的 wrapper。
@@ -1905,8 +1908,10 @@ export function MainLayout() {
                   // M2(2026-07-09 口径修订):mac 右上浮层随面板在场常驻(折叠
                   // toggle 永远钉窗口右上角),ContentHeader 右端占位不再分侧别。
                   rightSidebarAvailable={rightSidebarAvailable}
-                  // mac:远程桌面入口落在顶栏右端,紧挨窗口右上角的右栏开关(右栏展开时
-                  // 仍在聊天区顶栏右端)。Windows 走下方内容区 chip 栈。
+                  // 标题栏右端：插件顶栏条目 + 远程桌面（mac）。
+                  // 「远程工作区」入口不在这里 —— 用户 2026-11-26 口径是放进会话标题行
+                  // （标题后的「…」之后，见 SessionContentHeader），不再占窗口右上角。
+                  // Windows 的远程桌面 / 设备画面 / 右栏开关仍走下方内容区 chip 栈。
                   trailing={
                     pluginTitlebarEntries.length > 0 || (isMac && remoteDesktopDeviceId) ? (
                       <>
@@ -1949,7 +1954,8 @@ export function MainLayout() {
                       FadeSwitcher 之外 —— 它是全局状态提示,不参与路由切换动画。 */}
                   <CredentialStoreBanner />
                   {!isSecondaryWindow() && <div ref={setPerformanceTraceStatusHost} className="shrink-0" />}
-                  {/* Windows 的显示侧栏和远程桌面入口始终留在聊天区同一角。 */}
+                  {/* Windows 的显示侧栏、远程桌面与设备画面入口始终留在聊天区同一角；
+                      「远程工作区」不在这里 —— 它跟着会话标题行走（见 SessionContentHeader）。 */}
                   {!isMac && (showWindowsRightSidebarTrigger || remoteDesktopDeviceId) && (
                     <div
                       data-testid="right-sidebar-fixed-trigger"

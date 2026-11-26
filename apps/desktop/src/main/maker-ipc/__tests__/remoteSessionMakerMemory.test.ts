@@ -23,11 +23,11 @@ const source = readFileSync(resolve(__dirname, '..', 'register.ts'), 'utf8').rep
 const memorySource = readFileSync(resolve(__dirname, '../../app-settings/memory.ts'), 'utf8').replace(/\r\n?/g, '\n');
 
 describe('ensureRemoteReadyForSessionStart Maker Memory flag (R1 P1)', () => {
-  it('keeps MCPRouter sessions out of the SSH readiness preflight', () => {
+  it('keeps tunnel transports (`mcpr:` / `psb:`) out of the SSH readiness preflight', () => {
     const fnStart = source.indexOf('async function ensureRemoteReadyForSessionStart');
     const functionEnd = source.indexOf('\n  // 暴露给 maker-host 的 orca bridge deps', fnStart);
     const mcprGuard = source.indexOf(
-      "classifyRemoteSessionTransport(remoteHostIdToEnsure) === 'mcpr'",
+      'isTunnelRemoteSessionTransport(remoteHostIdToEnsure)',
       fnStart,
     );
     const sshPreflight = source.indexOf(

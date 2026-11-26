@@ -2047,6 +2047,15 @@ export interface StartSessionOptions {
    */
   remoteHostId?: string;
   /**
+   * 远端宿主拥有工作目录（PSB 远程工作区）：`workingDir` 只是本机的**虚拟路径**
+   * （形如 `/psb-remote/<目录名>`），那台机器上不存在。发给远端引擎的 cwd / startParams
+   * 一律改用 `'.'`，由远端按自己的会话 cwd（PSB 会话记录里的工作区）解析。
+   *
+   * 缺省 / false → 既有语义（本地 / SSH / MCPR 的 `workingDir` 是真实路径，照常下发）。
+   * 由宿主（desktop）按 transport 判定后设置；agent 不认识 transport 前缀。
+   */
+  remoteHostOwnsCwd?: boolean;
+  /**
    * 设备托管：Agent 进程在本机运行(用本机的程序、登录、供应商与网络)，任务、项目文件与
    * 命令执行在同账号的另一台电脑上。workingDir 是本机的影子目录(只放同步过来的项目说明，
    * 供 Agent 照常加载)；文件与命令工具、Cindy 工具全部经 tunnel 回到任务所在电脑执行。

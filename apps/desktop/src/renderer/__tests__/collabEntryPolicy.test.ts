@@ -150,12 +150,47 @@ describe('resolveCollabEntryPolicy 五类场景', () => {
       }),
     ).toEqual({ eligible: true, skipProjectQuery: false });
   });
+
+  it('PSB 远程工作区(psb:):不挂入口——远端没有「拉 Worker」契约,点了只会撞 SSH preflight', () => {
+    // 会话页与会话创建后都会走这里。若放行，下游 `resolveWorkerWorkingDir` 会把 `psb:<id>`
+    // 当 SSH host 去 preflight（`SSH_HOST_NOT_FOUND: unknown ssh host: psb:<id>`），
+    // 用户被引到「去设置里添加远程主机」。草稿页早已禁（`isPsbDraft ? false`），这里补上
+    // 会话页同一口径，避免两条路径分叉（issue #1170 的同类教训）。
+    expect(
+      resolveCollabEntryPolicy({
+        workspaceKind: 'project',
+        workingDir: '/psb-remote/saga2_project',
+        remoteHostId: 'psb:5805fe95-fbd7-4e21-8748-789213a6089c',
+      }).eligible,
+    ).toBe(false);
+    expect(
+      resolveCollabEntryPolicy({
+        workspaceKind: 'dialogue',
+        workingDir: '/psb-remote/saga2_project',
+        remoteHostId: 'psb:5805fe95-fbd7-4e21-8748-789213a6089c',
+      }).eligible,
+    ).toBe(false);
+    // `mcpr:` 隧道远端保持既有行为（本轮不改变 MCPRouter 的协同口径）。
+    expect(
+      resolveCollabEntryPolicy({
+        workspaceKind: 'project',
+        workingDir: '/remote/mcpr-project',
+        remoteHostId: 'mcpr:092af411-7a76-4b40-a4fe-6b4fa9c8f8cc',
+      }).eligible,
+    ).toBe(true);
+  });
 });
 
 describe('drift 守卫:两个入口共用同一份判定', () => {
   it('Meka 专用资格函数不得覆盖 Cindy 普通对话草稿的通用 policy', () => {
     const src = read('features/cc-agent/NewMakerDraftRoute.tsx');
-    expect(src).toContain("const showCollabToggle = isMekaDraft");
+    // 结构在 2026-11-25 多了一层 PSB 远程工作区豁免（psb 会话不支持协同，见
+    // docs/product-rules/psb-remote-workspace-sessions.md 的能力边界）：PSB 显式 false，
+    // 其后仍必须是「Meka 专用 helper / 通用 policy」二选一 —— 不能把 Meka helper 当成
+    // 所有草稿的默认资格，否则 Cindy 普通对话草稿会被 Meka 判据吞掉（历史回归）。
+    expect(src).toContain('const showCollabToggle = isPsbDraft');
+    expect(src).toContain(': isMekaDraft');
+    expect(src).toContain('? canShowMekaCollabToggleForDraft({');
     expect(src).toContain(': collabEntry.eligible;');
   });
 

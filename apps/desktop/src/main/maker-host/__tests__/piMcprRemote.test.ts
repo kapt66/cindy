@@ -339,6 +339,32 @@ describe('createMcprPiTransport：启动身份与 SSH 一致（envHash 覆盖 cm
     await vi.waitFor(() => expect(lines).toContain('{"type":"event","event":"ready"}'));
   });
 
+  it('psb: 宿主拥有 cwd —— cmd/env 里不得出现 cd 或虚拟路径（真机 Agent cwd=/ 回归）', async () => {
+    // Bug／规则依据：PSB 远程工作区的 cwd 由宿主（PSB 会话记录里的工作区）决定，Cindy 的
+    // `/psb-remote/<目录>` 是**本机虚拟路径**，远端不存在。把它送进 `pi/ensure` 的 cmd 会让
+    // `bash -c` 立即 exit 1；只作为哈希输入也会让 attach 身份漂移。最小失败输入：
+    // `cwd = '/psb-remote/saga2_project-2'` 且 `remoteHostId` 以 `psb:` 开头。
+    const { opener, streams } = recordingOpener();
+    const transport = createMcprPiTransport({
+      remoteHostId: 'psb:c79aa2b2-8a35-4c3f-9784-8a74abb9c2c9',
+      remoteBinaryPath: '$HOME/.xdt-server/v1/pi/pi',
+      args: ['--mode', 'rpc'],
+      cwd: '/psb-remote/saga2_project-2',
+      env: { CINDY_PI_API_KEY: 'k' },
+      sessionId: 's1',
+      logger,
+      openTunnel: opener,
+    });
+    await vi.waitFor(() => expect(streams.length).toBe(1));
+    await streams[0].ready(1);
+    streams[0].emit(`${JSON.stringify({ type: 'response', id: 1, result: { protocolVersion: PROTOCOL_VERSION } })}\n`);
+    await streams[0].ready(2);
+    const ensure = JSON.parse(streams[0].lines()[1]) as { params: Record<string, unknown> };
+    expect(ensure.params.cmd).toBe('exec "$HOME/.xdt-server/v1/pi/pi" \'--mode\' \'rpc\'');
+    expect(JSON.stringify(ensure.params)).not.toContain('/psb-remote/');
+    await transport.close('test');
+  });
+
   it('同一个 spawn 身份两次构造得到同一个 envHash；改 cwd 则不同', async () => {
     const hashes: string[] = [];
     for (const cwd of ['/inst/wd', '/inst/wd', '/inst/other']) {

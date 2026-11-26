@@ -16,8 +16,10 @@ const sessionViewSource = readFileSync(
 describe('NewMakerDraftRoute worktree send flow', () => {
   it('enters a real session before creating the worktree in the background', () => {
     // 发送门已保证用户勾选时资格就绪；副作用分支仍以勾选 + baseRepo 双重防御。
+    // PSB 远程工作区草稿（2026-11-25：会话首条消息懒建）的 workingDir 是虚拟引用，
+    // 不参与本机路径解析，也不能建本机 worktree —— 条件里必须排除。
     const worktreeBranch = source.indexOf(
-      'if (!isRemoteProjectDraft && wt.enabled && wt.baseRepo) {',
+      'if (!isRemoteProjectDraft && !isPsbDraft && wt.enabled && wt.baseRepo) {',
     );
     const createSession = source.indexOf('const newSession = await createSession', worktreeBranch);
     const touchUserSend = source.indexOf('sessionService.touchUserSend', createSession);

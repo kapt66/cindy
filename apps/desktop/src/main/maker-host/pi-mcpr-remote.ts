@@ -33,6 +33,7 @@ import {
 import type { ExecStreamHandle } from '@cindy/maker-remote-ssh';
 
 import { mcprExec, openMcprTunnel, type McprTunnelMode } from './mcpr-tunnel.js';
+import { remoteSessionHostOwnsCwd } from './remote-session-routing.js';
 import {
   buildPiLaunchCommand,
   computePiLaunchEnvHash,
@@ -443,12 +444,22 @@ export interface McprPiTransportOptions {
  */
 export function createMcprPiTransport(opts: McprPiTransportOptions): PiTransport {
   const env = sanitizePiEnsureEnv(opts.env);
+  // PSB 远程工作区的**工作目录权威在宿主**：宿主按 PSB 会话记录里的工作区 spawn，Cindy 手里的
+  // `/psb-remote/<目录>` 只是本机虚拟路径（远端不存在）。把它拼进 `cd` 会让 `bash -c` 立即
+  // `exit 1`（联调实测：`pi process exited (code=null, signal=null)`）。因此对 `psb:` 不写 `cd`，
+  // 与 codex 的 `$codexBridge` 口径一致（cwd 由服务端决定，客户端不传）。判定走唯一分类器
+  // （`remoteSessionHostOwnsCwd` → `classifyRemoteSessionTransport`），不在钩子里手写前缀。
+  const hostOwnsCwd = remoteSessionHostOwnsCwd(opts.remoteHostId);
   const command = buildPiLaunchCommand({
-    cwd: opts.cwd,
+    cwd: hostOwnsCwd ? null : opts.cwd,
     binaryPath: opts.remoteBinaryPath,
     args: [...opts.args],
   });
-  const envHash = computePiLaunchEnvHash({ env, command, cwd: opts.cwd });
+  const envHash = computePiLaunchEnvHash({
+    env,
+    command,
+    cwd: hostOwnsCwd ? '' : opts.cwd,
+  });
   const sessionId = opts.sessionId ?? undefined;
   const provider: PiByteChannelProvider = {
     transportId: opts.remoteHostId,

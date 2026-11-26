@@ -3991,3 +3991,122 @@ passed（`chatInputModelLoading` / `unifiedModelPanelRendering` / `newMakerDraft
 typecheck 证据，打包后仍须按「实机验证」逐条确认）；② Pi 类型 MCPRouter 实例的草稿选择器
 实机点击（同一判据覆盖，本轮未点）；③ 真 SSH 草稿的远端 Codex 清单读取（既有行为，本轮未做
 实机回归）。
+
+### WL-30 远程工作区（`psb:` 第三种远端 transport、PSB 鉴权与端点）（2026-11-25 登记；2026-11-26 联调后按最终行为重写）
+
+**保护的不变量**
+1. `psb:<sessionId>` 是第三种远端身份：分类顺序为 `psb` → `mcpr` → `ssh`，渲染层镜像判据把
+   `psb:` 判为**非 SSH**；`psb:` 不得进入 SSH pool、SSH-only 探针、远端 Codex 清单探针与
+   「同步 Codex 登录」按钮（模型面用本机目录，与 MCPR 同口径）。
+2. 隧道帧契约与 MCPRouter `agent-tunnel` 逐字一致：`mode` 四选一且**必须显式写**、`bundleVersion`
+   只在 `cc-mgr` / `codex-appserver` 上且取自 `CC_MGR_BUNDLE_VERSION`、exec 冻结 NDJSON 形状且
+   `truncated` 当失败、关闭码 `4003` / `4004`（含 JSON `cause`）与握手 401/403/404/409/429 可归因；
+   opt-in 的 `agent-tunnel.ready` 是**文本帧**，只做控制面、绝不进业务字节流，客户端必须在 URL
+   显式带 `readyFrame=1`（默认不发，不声明会固定等满 5s / 1.2s 兜底）。PSB 只换地址与鉴权
+   （`Authorization: Bearer`），不得另造帧格式。
+3. 鉴权复用「Meka 提交」那条 Cindy Connection JWT（audience `<orgSlug>:meka-submit`，仅组织
+   成员，不新增 audience），token 只在 main 内存、不落盘、不进渲染层 / IPC / 日志；401 只重签
+   一次，403 `IDENTITY_NOT_LINKED` 不重签。
+4. 端点只有一个开关：`CINDY_MEKA_PSB_HOST` 的启动期白名单解析（与 Meka 提交插件同一份），HTTP、
+   两条 WebSocket 与网页跳转一起改道；不新增第二个开关，不做 `http` / `ws` 明文降级。出网与
+   main 其它请求同一份代理语义：HTTP 走 `outboundFetch`，隧道经 `agentForUrl` 注入出站 agent
+   （`ws` 自己不读系统代理，漏了会变成「列表能读、隧道连不上」）。
+5. 隧道退休必须释放：创建点经 `remoteTransportRegistry` 登记，退休释放走
+   `releaseRemoteTransport`；漏了会让远端把会话当成一直开着（MCPR 已发生过同类事故）。
+6. 串流是**可交互观看**（2026-11-26 替换旧的「只读观看」）：订阅建立后默认允许键鼠 / 滚轮，
+   全屏时独占键鼠（允许清单除外）；上行**只有** `{kind:'input'}`（不发 `open` / `close`，
+   订阅 = WS 升级、退订 = 断开）。关面板 / 切页签 / 卸载必须**断开 WS**（断开即退订，否则观看
+   名额不释放）；失焦 / 退出全屏 / 断连必须补发 release-all。**名额与浏览器页面共用，默认 4**
+   （部署级 `PSB_STREAM_MAX_SUBSCRIBERS`），不是每会话上限 2。输入授权由 PSB 权限模型（0.1.172）
+   判定，Cindy 不做客户端互斥。
+7. 工作区级「远程工作区」页按**工作区**工作，不依赖当前任务的 PSB 会话生命周期；页面维护的内部
+   「Cindy 观看端」会话是**已知偏差**：PSB 已要求改用工作区级
+   `POST /api/cindy/remote/workspaces/:id/stream/subscribe` 并删除该内部会话，Cindy 尚未适配
+   （原因 / 影响 / 迁移条件见工程契约 §11.7），验收时不得按最终设计描述。
+
+**代码锚点**
+- 共享契约：`apps/desktop/src/shared/psb-remote-workspace.ts`（`psb:` 身份前缀与纯函数、PSB 路径、
+  DTO 解析、IPC 通道、状态 / 锁 / 输入判据、`PSB_*` 失败码映射）与
+  `apps/desktop/src/shared/psb-workspace-admin.ts`（工作区级上下文 / 管理页通道 / 内部会话标题 /
+  输入事件校验）。
+- main：`apps/desktop/src/main/remote-workspace/psbAuth.ts`（宿主直签 Connection JWT）、
+  `psbEndpoint.ts`（正式 / 测试站点根）、`psbClient.ts`（HTTP 与错误映射）、`psbTunnel.ts`
+  （agent-tunnel + 就绪帧 + 系统代理）、`streamViewer.ts`（串流观看端）、
+  `workspaceLock.ts`（写操作前的占用闸门，TTL 缓存）、`sessionRebind.ts`（发送前透明重建）、
+  `streamCapture.ts`（全屏捕获态的宿主快捷键抑制）、`adminService.ts` + `adminRuntime.ts`
+  （工作区级管理页；**内部会话是已知偏差**，见工程 §11.7）、`index.ts`（服务单例）与 `push.ts`
+  （推送）。
+- transport 分类：`apps/desktop/src/main/maker-host/remote-session-routing.ts`（`'psb'` 分支与
+  `isTunnelRemoteSessionTransport`）；渲染层镜像判据在
+  `apps/desktop/src/renderer/lib/remoteCodexModelHost.ts`。
+- 渲染层唯一入口：`apps/desktop/src/renderer/features/remote-workspace/bridge.ts`
+  （`PsbRemoteBridge`）；侧栏分组在 `features/remote-workspace/sidebar/`，串流观看端与输入采集在
+  `features/remote-workspace/stream/`，工作区级页面与输入 / 捕获 / 光标在
+  `features/remote-workspace/admin/`，入口与页签落点守卫在
+  `features/remote-workspace/admin/__tests__/remoteWorkspaceAdminPlacement.guard.test.ts`。
+- maker-host 接入层：`apps/desktop/src/main/maker-host/remote-tunnel-dispatch.ts`
+  （transport → 字节流的唯一分派点，非隧道 transport 不回落 SSH）与
+  `apps/desktop/src/main/maker-host/psb-agent-tunnel.ts`（三种 Harness 共用的唯一取 token 处）。
+- 文案：i18n `remoteWorkspace` 命名空间（`SUPPORTED_LOCALES` 的全部语言）。
+
+**自动化门禁**
+- `pnpm --filter desktop run typecheck`。
+- 定向 vitest：routing 分类矩阵、`remoteCodexModelHost.test.ts` 输入矩阵、
+  `remoteTransportProbeWiring.guard.test.ts` 与 `psbRemoteIpcWiring.guard.test.ts` 接线守卫，
+  `main/remote-workspace/__tests__/` 的客户端 / 端点 / 隧道 / 观看端 / 管理页 / 透明重建 /
+  键鼠输入 / 光标用例，以及 `features/remote-workspace/**/__tests__/` 的页面、生命周期与输入用例。
+- 本项易漂移点的直接证据：系统代理 = **代码接线**（`psbTunnel.ts` 的 `agentForUrl` +
+  `psb-agent-tunnel.ts` 注入 `createOutboundHttpAgent`；当前**没有**独立单测，登记为验证缺口）；
+  可交互上行只有 `input` = `streamViewer.test.ts`；名额 / `subscriberId` = `streamViewer.test.ts` +
+  产品 §8.2；真机结论 = 产品 §8.2 / 工程契约 §10–§12。
+- `pnpm test:guard`；提交前一次性跑 `pnpm test:unit:related`。
+- `pnpm check:dev-docs`（纯文档改动口径）。
+- 白名单结构契约：`pnpm test:runner` 的 `meka-whitelist-contract.test.mjs` 校验本项四项必填字段、
+  编号与文档内命令真实存在。
+- 本条只登记可复现的测试入口与命令，**不代写 PASS**：代码侧门禁结果由实现任务在交付中实跑回填；
+  单测文件本身是仓库内可复核证据，单文件复现命令见工程契约 §8。
+
+**实机验证**
+1. **测试部署**（`CINDY_MEKA_PSB_HOST=mekabot-test.meka.pawdy.fun` + 重启）：**已执行**（2026-11-25 夜
+   至 11-26 多轮）——工作区列表 / 占用与释放 → 建会话（与网页的逐项双向验收见产品 §8.2 未验证项）→ `mode=exec`（`pwd`
+   落在工作区目录）→ pi / cc-mgr / codex-appserver 各完成真实回合 → 串流首帧与解码 → 4004 归因 →
+   终态透明重建 → 可交互输入 / 全屏捕获 / 极简全屏 + HUD / 停止清屏 / 「在网页打开」/ 工作区级页面。
+   结论与边界见产品规则 §8.2、工程契约 §10–§12；不入库的截图与联调流水不作为引用锚点。
+2. **正式部署**：只读链路（列表 / 占用 / 建会话）+ 一次隧道握手**未复测**；与测试部署同一份代码，
+   差异只在 `CINDY_MEKA_PSB_HOST` 是否设置。登记为「未验证 + 原因」。
+3. 状态：测试部署真机通过（下列未验证项除外）；正式部署未执行。
+
+**与上游的关系**：刻意新增（Meka 私有）。上游没有 PSB 这条 transport，`psb:` 分类、PSB 客户端、
+IPC 面、串流观看端与工作区页都在本仓；上游同步时按本项验收，不得被上游版本覆盖成「任意
+`remoteHostId` 都是 SSH 主机」，也不得把 PSB 客户端退化成 MCPR 的别名。
+
+**未验证**：
+1. **工作区级 `stream/subscribe` 未适配（已知偏差，P0）**：用户点「启动」时仍会创建 / 复用内部
+   「Cindy 观看端」Agent 会话（读状态已不创建，见工程 §11.2 / §11.7）；PSB 已交付该端点契约
+   （上线状态以 PSB 部署为准）并要求删除。原因、影响、迁移条件见工程契约 §11.7，验收时按偏差登记。
+2. **宿主光标形状同步**（`stream.cursor`）：文本区 I-beam / 窗口边缘 resize / 忙碌 loading 的
+   **形态**变化（外观保持宿主本机主题：CSS 关键字映射，不用远端位图）、移出画面恢复宿主默认、
+   HUD / 按钮不受远端形状影响、全屏内只在画面区域生效——均未真机复验（需要 running 桌面会话，
+   双方已安排取证；单测已覆盖映射表 / 未知→default / 非法→null / 只在画面区域 / 停止与 closed 恢复）。
+3. **「进入页面不自动启动 / 离开自动停止」新口径**：旧「进页自动出画面 / 切回自动重订」真机结论
+   已作废，新口径的真机复验未完成（判据已有单测）。
+4. **多观看者输入（PSB 0.1.172 权限模型）**：未构造多观看者真机场景；协商 `errors=frame` 的
+   `stream.control` 拒绝帧未实测、Cindy 未启用该协商。
+5. **Windows 远端 `SendInput`**：PSB 未做生产验证；**慢订阅者（收帧后 4004）**：弱网 / 积压场景
+   未构造，归因只有单测。
+6. **正式部署**：只读链路未复测（见「实机验证」第 2 条）。
+7. **新「远程工作区」页的完整目检**：Light / Dark 颜色用模拟媒体切换验证过，但窄窗口 / 全屏 /
+   真实鼠标走查（占用失败、详情浮层、页头截断）与终态轻提示的 Dark 目检未完成；
+   F5/F11/F12 与开发者工具组合放行、退出全屏后宿主快捷键恢复只在 accelerator 用例里部分覆盖。
+8. **既有能力边界**：分离侧栏窗口不暴露 `psbRemote` 桥、无「请求关键帧」通道（工程契约 §9.6）。
+9. **系统代理接线无独立单测**：`psbTunnel` 的 `agentForUrl` 只靠代码接线与 `outboundFetch.test.ts`
+   对 `createOutboundHttpAgent` 的覆盖，PSB 隧道侧没有专属用例；修改代理语义时补一条。
+10. **PSB codex 真机回合（2026-11-26 审查修复**后**）未验证**：本轮改了 codex 的
+    `readyFrame=1`、`remoteHostOwnsCwd` 下的 cwd / `runtimeWorkspaceRoots` / permission profile /
+    `sandboxPolicy.writableRoots` 收口，以及 `psb:<sessionId>` 控制隧道释放——这些直接改变远端
+    app-server 的启动参数与隧道生命周期。**只有单测与 typecheck**（`packages/maker-core` 的 PSB
+    用例、`psbTunnelWiring.test.ts`、`mcprCodexCapability.test.ts`、`remote-session-routing.test.ts`），
+    **没有**在修复后的代码上重跑 PSB codex 真机回合；此前 11-26 上午的真机结论属于修复前代码。
+    原因：本轮开发实例被其它联调占用、未重启应用。影响：不得把「修复后的 codex 远端回合」写成
+    已验证；下一次测试部署重启后优先复测（`thread/start` / `turn/start` 下行参数、首帧时间、
+    停止后控制隧道消失）。

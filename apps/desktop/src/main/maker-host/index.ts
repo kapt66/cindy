@@ -207,6 +207,8 @@ import { registerUsagePricing, clearUsagePricing } from './model-usage-pricing.j
 import { getSessionFastMode } from './session-effort-store.js';
 import {
   buildRemoteCodexBridgeHeader,
+  buildTunnelRemoteCodexBridgeHeader,
+  releaseTunnelCodexControlChannel,
   routeCodexThreadRegister,
   routeCodexThreadUnregister,
 } from './mcpr-codex-capability.js';
@@ -224,7 +226,6 @@ import {
 import { ensurePiManagerInstalled } from './pi-manager-client.js';
 import { createPiRemoteProviderForwardLease } from './pi-remote-provider-forward.js';
 import { openCcManagerSession } from './cc-manager-client.js';
-import { openMcprTunnel } from './mcpr-tunnel.js';
 import {
   createMcprPiFileOps,
   createMcprPiTransport,
@@ -234,10 +235,14 @@ import {
   shouldSkipMcprPiMcpBridge,
 } from './pi-mcpr-remote.js';
 import { parseMcprRemoteHostId } from '../../shared/meka-router.js';
+import { parsePsbRemoteHostId } from '../../shared/psb-remote-workspace.js';
 import {
   classifyRemoteSessionTransport,
+  isTunnelRemoteSessionTransport,
+  remoteSessionHostOwnsCwd,
   resolveRemoteCodexCredentialMode,
 } from './remote-session-routing.js';
+import { openRemoteTunnel } from './remote-tunnel-dispatch.js';
 import { routeInjectedRemoteMcpApprovalsThroughCindy } from './remote-claude-permission-mode.js';
 import { getRemoteClaudeBinaryPath } from '../remote-ssh/cc-manager-install.js';
 import {
@@ -1542,9 +1547,9 @@ export function getMaker(): Maker {
       // §1/§2):`mcpr:<instance.id>` 是 MCPRouter 隧道的逻辑身份, 永远不在 SSH pool 里,
       // 不能因为「都是远程」就交给 SSH API。
       getRemoteAgentFileOps: (remoteHostId) => {
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          // MCPRouter 侧现在**有** file-ops 通道了:agent-tunnel `mode=exec` 提供与 SSH
-          // `remoteHost.exec` 同形的实例内执行,所以 Claude 的远端 Skill 发现
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          // 隧道 transport(`mcpr:` / `psb:`)现在**有** file-ops 通道:agent-tunnel `mode=exec`
+          // 提供与 SSH `remoteHost.exec` 同形的实例内执行,所以 Claude 的远端 Skill 发现
           // (`scanRemoteClaudeSkills` 的 listDir/stat/readFile)与 `listAgentSkills` 的
           // 远端目录都走**同一份** `createRemotePiFileOps` 实现(2026-10-09 起;
           // 此前这里是 `[MCPR_FILE_OPS_UNAVAILABLE]` 硬失败)。
@@ -1552,7 +1557,7 @@ export function getMaker(): Maker {
           // 注意仍然**不**退化成空 reader:botProfileRuntime 的远程 Skill catalog 契约要求
           // 「读不到 ⇒ 抛错」,空 catalog 会把用户配置的 Skill 全标成 unavailable,而 harness
           // 仍能发现远端环境技能 ⇒ 快照与实际分叉(有测试守这条)。exec 失败按普通错误上浮。
-          return createMcprPiFileOps(remoteHostId);
+          return createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel });
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -1640,13 +1645,30 @@ export function getMaker(): Maker {
         makerMemoryScopeKey,
         botSession,
       }) => {
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          const stream = await openMcprTunnel(remoteHostId);
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          // 两种隧道 transport 共用这一条 Claude 通道:打开的都是一条 cc-mgr 字节流
+          // (`mode=cc-mgr`),差别只在隧道属于谁 —— `openRemoteTunnel` 按 transport 分派
+          // (`remote-tunnel-dispatch.ts`),`openCcManagerSession` 与 retirement 登记完全相同。
+          //
+          // **cwd 例外（`psb:`）**:PSB 远程工作区的 cwd 权威在**宿主** —— 宿主按 PSB 会话
+          // 记录里的服务端工作区 spawn cc-mgr daemon，Cindy 手里的 `/psb-remote/<目录>` 只是
+          // 本机虚拟路径（`shared/psb-remote-workspace.ts` 硬约束 3），远端根本不存在。
+          // 把它当远端 cwd 下发时，daemon 侧 SDK 会用不存在的目录 spawn `claude`：query 在
+          // 首个 turn 之前就终止（本机 SDK 复现 11ms）、daemon 发 `session/closed(reason=error)`
+          // → 本地会话被自动关闭，用户只看到 `Session <id> is closed`（2026-11-26 实报）。
+          // 因此 psb 传 `.`（daemon 自己的 cwd == 服务端工作区），与 pi（`buildPiLaunchCommand`
+          // 不写 `cd`）、codex（`$codexBridge` 不带 cwd）同一口径；`mcpr:` 的 workingDir 是
+          // MCPRouter 实例上的真实路径，保持原样。
+          const tunnelStartParams =
+            parsePsbRemoteHostId(remoteHostId) !== null
+              ? { ...(startParams as Record<string, unknown>), cwd: '.' }
+              : startParams;
+          const stream = await openRemoteTunnel(remoteHostId, 'cc-mgr');
           const { remoteQuery, dispose, detach } = await openCcManagerSession({
             stream,
             transportId: remoteHostId,
             sessionId,
-            startParams: startParams as unknown as Parameters<
+            startParams: tunnelStartParams as unknown as Parameters<
               typeof openCcManagerSession
             >[0]['startParams'],
             onApprovalRequest: onApprovalRequest as Parameters<
@@ -2112,15 +2134,14 @@ export function getMaker(): Maker {
       // 这里包一层把 RemoteHost + SshDaemonTransport 装起来。
       // 远端机器没在 pool / 未连接 → 抛错, CodexAgent 把它当 startSession 失败传上去。
       getRemoteAgentFileOps: (remoteHostId) => {
-        // WL-4.1.2 / mcpr-remote-session-routing.md §1: `mcpr:<instance.id>` 是
-        // MCPRouter 隧道的逻辑身份, 不在 SSH pool 里。resume 时 maker-core 会用本
-        // 钩子的返回值去读远端 rollout 尾巴 (teammate 指令去重), 提前返回空 reader
-        // 表示「远端不可读 ⇒ 重新投递指令」(hasCurrentTeammateInstructions 对
-        // 不可读一律返回 false, 绝不跳过), 而不是让它落到 SSH pool 报
-        // `remote SSH host "mcpr:<id>" is not connected`, 把 resume 打成启动失败。
-        // MCPRouter 的 Codex file-ops 通道不在本轮范围内 —— 缺通道只降级成
-        // 「重复投递指令」, 不改变正确性。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+        // WL-4.1.2 / mcpr-remote-session-routing.md §1: 隧道 transport 的身份(`mcpr:<id>` /
+        // `psb:<sessionId>`)不在 SSH pool 里。resume 时 maker-core 会用本钩子的返回值去读
+        // 远端 rollout 尾巴 (teammate 指令去重),提前返回空 reader 表示「远端不可读 ⇒
+        // 重新投递指令」(hasCurrentTeammateInstructions 对不可读一律返回 false,绝不跳过),
+        // 而不是让它落到 SSH pool 报 `remote SSH host "…" is not connected`,把 resume
+        // 打成启动失败。两条隧道 transport 的 Codex file-ops 通道都不在本轮范围内 —— 缺通道
+        // 只降级成「重复投递指令」,不改变正确性。
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
           // 故意返回空 reader。断言是必要的: AgentDeps 把本钩子声明成完整
           // RemoteAgentFileOps, 而空对象只满足下游真正消费的那一项
           // (hasCurrentTeammateInstructions 形参是 Pick<..., 'readFileTail'>,
@@ -2133,7 +2154,8 @@ export function getMaker(): Maker {
         return createRemotePiFileOps(remoteHost);
       },
       getRemoteCodexTransport: (remoteHostId) => {
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+        const transport = classifyRemoteSessionTransport(remoteHostId);
+        if (transport === 'mcpr') {
           const mcprInstanceId = parseMcprRemoteHostId(remoteHostId);
           if (!mcprInstanceId) {
             throw new Error(
@@ -2144,6 +2166,36 @@ export function getMaker(): Maker {
             instanceId: mcprInstanceId,
             buildHeader: () => buildRemoteCodexBridgeHeader(mcprInstanceId),
             logger: desktopMakerLogger,
+          });
+        }
+        if (transport === 'psb') {
+          // PSB 远程工作区:同一条 Codex app-server 字节协议,隧道换成 `psb:` 的
+          // `mode=codex-appserver`;spawn header 走同一个控制面步骤(`mode=cc-mgr` 隧道 →
+          // capability hello → 网关 key + capability MCP),但不带 MCPR 实例记录才有的
+          // `cwd`(PSB 的远端目录由会话决定,Cindy 的 workingDir 是虚拟路径)。
+          const psbSessionId = parsePsbRemoteHostId(remoteHostId);
+          if (!psbSessionId) {
+            throw new Error(
+              `[PSB_SESSION_INVALID] Invalid remote workspace Codex target: ${remoteHostId}`,
+            );
+          }
+          return createMcprCodexTransport({
+            instanceId: psbSessionId,
+            transportLabel: 'PSB',
+            buildHeader: () => buildTunnelRemoteCodexBridgeHeader({
+              remoteHostId,
+              openControlStream: () => openRemoteTunnel(remoteHostId, 'cc-mgr'),
+            }),
+            openStream: () => openRemoteTunnel(remoteHostId, 'codex-appserver'),
+            logger: desktopMakerLogger,
+            // PSB 会话退休 / 重绑 / 停止时，数据面 transport 会 close；控制通道（`mode=cc-mgr`）
+            // 在 `mcpr-codex-capability` 里按 `psb:<sessionId>` 缓存，只有流自己 close 才会被
+            // 清掉。不在这里显式释放，就会留下一条没人认领的长连接（PSB 侧按会话统计活动隧道，
+            // 后续 stop / commit 类动作会被它牵住）。关闭假设：PSB 在会话停止时也会关该会话的
+            // 隧道，所以这里是幂等「先自己关」；服务端若已关，end 只是空操作。
+            onClosed: () => {
+              void releaseTunnelCodexControlChannel(remoteHostId);
+            },
           });
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
@@ -2460,15 +2512,16 @@ export function getMaker(): Maker {
           hostProxyForwards,
         },
       ) => {
-        // MCPRouter:`mode=pi` 隧道承载与 SSH 完全相同的 Pi 协议 —— 先在隧道上跑 pi-manager
-        // 既有的 hello + pi/ensure(启动身份 = 同一套 cmd/env/envHash),之后同一条连接就是该
-        // session 的 pi JSONL。见 `pi-mcpr-remote.ts` 与 pi-harness.md「MCPRouter 远端(MCPR)」。
+        // 隧道 transport(`mcpr:` / `psb:`):`mode=pi` 隧道承载与 SSH 完全相同的 Pi 协议 —— 先在
+        // 隧道上跑 pi-manager 既有的 hello + pi/ensure(启动身份 = 同一套 cmd/env/envHash),
+        // 之后同一条连接就是该 session 的 pi JSONL。见 `pi-mcpr-remote.ts` 与
+        // pi-harness.md「MCPRouter 远端(MCPR)」;PSB 复用同一实现,只换隧道来源。
         // 这里**不**查 SSH pool、也**不**做 SSH 安装前置(runtime 自带 pi 运行时资产)。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
           // 远端必须用实例里的 pi 二进制:maker-core 已 resolve 并传入时直接用(接口契约
           // 「host 已 probe」),缺失才自己 resolve(与 SSH 分支同一取舍,避免两次语义分叉)。
           const remoteBinaryPath = providedRemoteBinaryPath
-            ?? (await resolveMcprPiBinaryPath(remoteHostId));
+            ?? (await resolveMcprPiBinaryPath(remoteHostId, { openTunnel: openRemoteTunnel }));
           return createMcprPiTransport({
             remoteHostId,
             remoteBinaryPath,
@@ -2477,8 +2530,9 @@ export function getMaker(): Maker {
             env,
             ...(sessionId ? { sessionId } : {}),
             logger: desktopMakerLogger,
+            openTunnel: openRemoteTunnel,
           });
-          // hostProxyForwards 有意忽略:MCPR 实例没有到控制端的反向转发,provider 转发
+          // hostProxyForwards 有意忽略:隧道形态没有到控制端的反向转发,provider 转发
           // 本身不可达(见 `resolveMcprPiAgentProxyEnv` 的说明)。
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
@@ -2587,10 +2641,10 @@ export function getMaker(): Maker {
       // `getRemoteSshPool()` 变成 `remote SSH host "mcpr:<id>" not found in pool`,把
       // 「不支持」误报成「SSH 主机没连」(2026-09-29 实测 LAZY_CREATE_FAILED 的根因)。
       getRemotePiFileOps: (remoteHostId) => {
-        // MCPRouter:file ops 走 `mode=exec`(等价 SSH 的 `remoteHost.exec`),**同一份**
+        // 隧道 transport:file ops 走 `mode=exec`(等价 SSH 的 `remoteHost.exec`),**同一份**
         // `createRemotePiFileOps` bash 脚本实现 —— 差别只是 exec 从哪条通道来。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          return createMcprPiFileOps(remoteHostId);
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          return createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel });
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -2601,8 +2655,8 @@ export function getMaker(): Maker {
         return createRemotePiFileOps(remoteHost);
       },
       getRemoteAgentFileOps: (remoteHostId) => {
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          return createMcprPiFileOps(remoteHostId);
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          return createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel });
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -2612,10 +2666,10 @@ export function getMaker(): Maker {
       },
       // 远端 pi 二进制路径:probe(远端 `pi --version`)+ cache。
       resolveRemotePiBinaryPath: async (remoteHostId) => {
-        // MCPRouter:runtime 自己物化 pi,客户端只解析它的实例内路径(优先读 runtime 注入的
+        // 隧道 transport:runtime 自己物化 pi,客户端只解析它的实例内路径(优先读 runtime 注入的
         // `CINDY_PI_AGENT_BIN`,再退 PATH / 与 SSH 同约定的布局),不查 SSH pool。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          return resolveMcprPiBinaryPath(remoteHostId);
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          return resolveMcprPiBinaryPath(remoteHostId, { openTunnel: openRemoteTunnel });
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) {
@@ -2637,7 +2691,7 @@ export function getMaker(): Maker {
       // 所以这条 transport 上**不投影** in-process bridge —— 也绝不把 loopback URL 原样
       // 交给实例(实例的 127.0.0.1 是它自己的回环)。用户显式配置的外部 HTTP MCP 仍直连。
       remotePiSkipMcpBridge: (remoteHostId) =>
-        classifyRemoteSessionTransport(remoteHostId) === 'mcpr' && shouldSkipMcprPiMcpBridge(),
+        isTunnelRemoteSessionTransport(remoteHostId) && shouldSkipMcprPiMcpBridge(),
       // 把本地 bridge 的 loopback URL(http://127.0.0.1:<localPort>/mcp/<name>)
       // 改写为远端 remote-forward 地址(http://127.0.0.1:<remotePort>/mcp/<name>)。
       //
@@ -2647,10 +2701,10 @@ export function getMaker(): Maker {
       // 的 MCP 隧道互相踩踏(R2 MCP BUG-1)。Pi 用 host.ensureRemoteForward 直接建
       // 独立 forward,远端端口从独立基数(PI_MCP_FORWARD_PORT_START)顺延。
       rewriteRemotePiMcpBridgeUrl: async (remoteHostId, localUrl) => {
-        // MCPR 分支是**纵深防御**:`remotePiSkipMcpBridge` 已让 piEnvironment 不生成
+        // 隧道 transport 分支是**纵深防御**:`remotePiSkipMcpBridge` 已让 piEnvironment 不生成
         // in-process bridge,正常情况下不会被调用;真被调用说明有人接回了 bridge,此时
         // 宁可显式失败也不能把 loopback URL 交给实例。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
           mcprPiMcpBridgeUnavailable(remoteHostId);
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
@@ -2678,10 +2732,10 @@ export function getMaker(): Maker {
       },
       // 「Agent 流量走本地 Proxy」:远端 pi 的 LLM 流量经 SSH remote-forward 走本地代理
       // (与 CC 远端同机制;pref 关闭时 getRemoteAgentProxyEnv 返回 null → 直连)。
-      // MCPR:没有反向转发,固定 null(不注入代理 env),实例按自身网络直连 —— 与 MCPR 的
-      // Claude 分支同口径;不改变 Pi 的 provider/凭证策略。
+      // 隧道 transport:没有反向转发,固定 null(不注入代理 env),实例按自身网络直连 —— 与
+      // 隧道形态的 Claude 分支同口径;不改变 Pi 的 provider/凭证策略。
       getRemotePiAgentProxyEnv: async (remoteHostId) => {
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
           return resolveMcprPiAgentProxyEnv();
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
@@ -2795,10 +2849,10 @@ export function getMaker(): Maker {
       readSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (!remoteHostId) return fs.readFile(skillPath, 'utf8');
         // 与上面 getRemotePiFileOps 同一族(Pi 远端文件原语):按 transport 分派 ——
-        // SSH 查 pool,MCPR 走 `mode=exec` 隧道。少了分类会让 `mcpr:` 报成
-        // `remote SSH host "mcpr:<id>" not found`(2026-09-29 实测)。
-        if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-          return createMcprPiFileOps(remoteHostId).readFile(skillPath);
+        // SSH 查 pool,隧道 transport(`mcpr:` / `psb:`)走 `mode=exec`。少了分类会让
+        // 隧道身份报成 `remote SSH host "…" not found`(2026-09-29 实测)。
+        if (isTunnelRemoteSessionTransport(remoteHostId)) {
+          return createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel }).readFile(skillPath);
         }
         const remoteHost = getRemoteSshPool().get(remoteHostId);
         if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
@@ -2806,8 +2860,8 @@ export function getMaker(): Maker {
       },
       fingerprintSkillSource: async ({ path: skillPath, remoteHostId }) => {
         if (remoteHostId) {
-          if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') {
-            return createMcprPiFileOps(remoteHostId).sha256File(skillPath);
+          if (isTunnelRemoteSessionTransport(remoteHostId)) {
+            return createMcprPiFileOps(remoteHostId, { openTunnel: openRemoteTunnel }).sha256File(skillPath);
           }
           const remoteHost = getRemoteSshPool().get(remoteHostId);
           if (!remoteHost) throw new Error(`remote SSH host "${remoteHostId}" not found`);
@@ -2874,6 +2928,13 @@ export function getMaker(): Maker {
       // 启动前的 Skill 共享与关闭后的清理都由 desktop host 注入。
       lifecycleHooks: {
         prepareStartOptions: async (sessionId, opts) => {
+          // PSB 远程工作区：cwd 归远端宿主（PSB 按会话记录里的工作区 spawn 引擎），Cindy 的
+          // `workingDir` 是 `/psb-remote/<目录>` 虚拟路径。**唯一判定点**就是这里：所有
+          // createSession 入口（界面 / lazy-create / resume / Goal 恢复 / IM / hook-control）
+          // 都经过此钩子；agent 侧（codex `appServerCwd` / roots / sandboxPolicy，pi 不写 `cd`）
+          // 只消费标记，不认识 transport 前缀。不要在 register.ts 的某个 funnel 上重复打标——
+          // 绕过该 funnel 的恢复路径会把虚拟 cwd 漏下发给远端。
+          if (remoteSessionHostOwnsCwd(opts.remoteHostId)) opts.remoteHostOwnsCwd = true;
           pendingBotRuntimeSnapshots.delete(sessionId);
           // Agent 在另一台电脑上运行的任务：所有入口(界面、定时任务、IM、协同等)恢复时都以任务
           // 记录为准，Agent 回到原来那台电脑。读失败按本机任务处理(本机任务的启动与原来完全一致；

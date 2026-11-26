@@ -23,40 +23,73 @@ const ccManagerClientSource = readFileSync(
   'utf8',
 ).replace(/\r\n?/g, '\n');
 
-describe('MCPRouter remote transport wiring', () => {
-  it('routes Claude through the MCPRouter tunnel before any SSH pool lookup', () => {
+describe('remote transport wiring (MCPRouter + PSB tunnels)', () => {
+  it('routes Claude through the shared tunnel dispatch before any SSH pool lookup', () => {
     const factoryStart = source.indexOf('remoteCcQueryFactory: async ({');
     const factoryEnd = source.indexOf('\n    });\n    const codexMcpProviders', factoryStart);
     const factory = source.slice(factoryStart, factoryEnd);
-    const mcprGuard = factory.indexOf("classifyRemoteSessionTransport(remoteHostId) === 'mcpr'");
-    const tunnelOpen = factory.indexOf('await openMcprTunnel(remoteHostId)', mcprGuard);
-    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', mcprGuard);
+    const tunnelGuard = factory.indexOf('isTunnelRemoteSessionTransport(remoteHostId)');
+    const tunnelOpen = factory.indexOf("await openRemoteTunnel(remoteHostId, 'cc-mgr')", tunnelGuard);
+    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', tunnelGuard);
 
     expect(factoryStart).toBeGreaterThan(-1);
     expect(factoryEnd).toBeGreaterThan(factoryStart);
-    expect(mcprGuard).toBeGreaterThan(-1);
-    expect(tunnelOpen).toBeGreaterThan(mcprGuard);
+    expect(tunnelGuard).toBeGreaterThan(-1);
+    expect(tunnelOpen).toBeGreaterThan(tunnelGuard);
     expect(sshLookup).toBeGreaterThan(tunnelOpen);
-    expect(factory.slice(mcprGuard, sshLookup)).toContain('inProcessMcpServers');
-    expect(factory.slice(mcprGuard, sshLookup)).toContain('onSubagentModelAccessRequest');
+    expect(factory.slice(tunnelGuard, sshLookup)).toContain('inProcessMcpServers');
+    expect(factory.slice(tunnelGuard, sshLookup)).toContain('onSubagentModelAccessRequest');
+    // 两条隧道 transport 共用同一条 Claude 通道:`openRemoteTunnel` 按 transport 选来源。
+    expect(factory.slice(tunnelGuard, sshLookup)).toContain('openCcManagerSession({');
   });
 
-  it('routes Codex through the MCPRouter transport before any SSH pool lookup', () => {
+  it('sends the host-owned cwd (`.`) for psb instead of the virtual /psb-remote path', () => {
+    const factoryStart = source.indexOf('remoteCcQueryFactory: async ({');
+    const factoryEnd = source.indexOf('\n    });\n    const codexMcpProviders', factoryStart);
+    const factory = source.slice(factoryStart, factoryEnd);
+    const tunnelGuard = factory.indexOf('isTunnelRemoteSessionTransport(remoteHostId)');
+    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', tunnelGuard);
+    const tunnel = factory.slice(tunnelGuard, sshLookup);
+
+    // Bug／规则依据：PSB 远程工作区的 cwd 由宿主拥有（宿主按服务端会话记录 spawn
+    // daemon，见 `docs/dev-rules/psb-remote-session-transport.md`），Cindy 手里的
+    // `/psb-remote/<目录>` 只是本机虚拟路径（`shared/psb-remote-workspace.ts` 硬约束 3）。
+    // 把它当远端 cwd 下发 → daemon 侧 SDK 用不存在的目录 spawn `claude` → query 在首个
+    // turn 前终止 → 本地会话被自动关闭（2026-11-26 实报：UI 只剩 `Session <id> is closed`）。
+    // 最小失败输入：`startParams.cwd = '/psb-remote/ws'` 原样进 openCcManagerSession。
+    expect(tunnel).toContain('parsePsbRemoteHostId(remoteHostId)');
+    expect(tunnel).toMatch(/cwd:\s*'\.'/);
+    expect(tunnel).toContain('startParams: tunnelStartParams');
+    // `mcpr:` 的 workingDir 是 MCPRouter 实例上的真实路径，不得被同一改写波及。
+    expect(tunnel).toContain(': startParams;');
+  });
+
+  it('routes Codex through the per-transport tunnel branches before any SSH pool lookup', () => {
     const factoryStart = source.indexOf('getRemoteCodexTransport: (remoteHostId) => {');
     const factoryEnd = source.indexOf(
       '\n      },\n      resolveRemoteCodexCredentialMode,',
       factoryStart,
     );
     const factory = source.slice(factoryStart, factoryEnd);
-    const mcprGuard = factory.indexOf("classifyRemoteSessionTransport(remoteHostId) === 'mcpr'");
+    const transportClass = factory.indexOf('classifyRemoteSessionTransport(remoteHostId)');
+    const mcprGuard = factory.indexOf("transport === 'mcpr'", transportClass);
     const mcprTransport = factory.indexOf('createMcprCodexTransport({', mcprGuard);
-    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', mcprGuard);
+    const psbGuard = factory.indexOf("transport === 'psb'", mcprTransport);
+    const psbTransport = factory.indexOf('createMcprCodexTransport({', psbGuard);
+    const psbTunnelOpen = factory.indexOf("openRemoteTunnel(remoteHostId, 'codex-appserver')", psbGuard);
+    const sshLookup = factory.indexOf('getRemoteSshPool().get(remoteHostId)', transportClass);
 
     expect(factoryStart).toBeGreaterThan(-1);
     expect(factoryEnd).toBeGreaterThan(factoryStart);
+    expect(transportClass).toBeGreaterThan(-1);
     expect(mcprGuard).toBeGreaterThan(-1);
     expect(mcprTransport).toBeGreaterThan(mcprGuard);
-    expect(sshLookup).toBeGreaterThan(mcprTransport);
+    // `psb:` 必须是独立的隧道分支,不得落进 SSH 默认分支(同一份 Codex transport,只换
+    // openStream/buildHeader —— 不另造协议)。
+    expect(psbGuard).toBeGreaterThan(mcprTransport);
+    expect(psbTransport).toBeGreaterThan(psbGuard);
+    expect(psbTunnelOpen).toBeGreaterThan(psbGuard);
+    expect(sshLookup).toBeGreaterThan(psbTransport);
   });
 
   it('keeps byte-stream MCP projection and v4 model access on the shared cc-manager client', () => {
@@ -64,6 +97,12 @@ describe('MCPRouter remote transport wiring', () => {
     expect(ccManagerClientSource).toContain('inProcessMcpServers?: Record<string, unknown>;');
     expect(ccManagerClientSource).toContain('SERVER_METHODS.MCP_TUNNEL_CALL');
     expect(ccManagerClientSource).toContain('SERVER_METHODS.SUBAGENT_MODEL_ACCESS');
+    // daemon 的 `session/closed.reason/detail` 必须经 onSessionClosed 落进 main 日志：
+    // 丢掉它时远端 query 一死，本地只剩通用的 `[REMOTE_DAEMON_CLOSED]`／
+    // `Session <id> is closed`（2026-11-26 PSB cc 远端失败只能跨仓对 journal）。
+    expect(ccManagerClientSource).toContain('onSessionClosed');
+    // 隧道关闭码同理：非 1000 的关闭码必须在日志里可见（PSB/MCPR 都是 WS 关闭码）。
+    expect(ccManagerClientSource).toContain("'cc-mgr transport closed'");
   });
 });
 

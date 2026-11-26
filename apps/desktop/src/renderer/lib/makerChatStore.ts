@@ -98,6 +98,7 @@ import {
 } from '@cindy/maker-shared/turn-continuation';
 import { normalizeAutoTitle } from '@cindy/maker-shared/session-title';
 import { parseToolLoopErrorDetails } from '@cindy/maker-shared/tool-loop-error';
+import { psbBannerMessageKeyForIpcCode } from '../../shared/psb-remote-workspace';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 import type { AgentMeta, MessageRole, Message, MessageAutomationOrigin } from '@/lib/ccAgent.types';
 import { toMessageAutomationOrigin } from '@/lib/messageAutomationOrigin';
@@ -385,6 +386,23 @@ export function remoteErrorI18nKey(msg: string): string | undefined {
   return parsed ? `chat.remoteError.${parsed.code}` : undefined;
 }
 
+/**
+ * PSB 远程工作区的失败码（`[PSB_*]`）→ 文案键。
+ *
+ * PSB 的失败码不在 `chat.remoteError.*` 的登记表里（那是 agent 侧码），走通用解析会原样显示
+ * `Error invoking remote method 'maker:send': Error: [PSB_…] …`。这里把它们接回已有的
+ * `remoteWorkspace.*` 文案：映射**全部来自共享契约**（`psbBannerMessageKeyForIpcCode`，
+ * 其中「被他人占用」在横幅场景用无名字兜底键——main 的 IPC message 只有 code+可能为空的名字，
+ * 不能强制插值）；不在渲染层为某个码手写 if，保证同事实只有一套映射。
+ * 未知 PSB 码不猜，交回通用兜底。
+ */
+const PSB_IPC_CODE_PATTERN = /\[(PSB_[A-Z0-9_]+)\]/;
+function psbRemoteErrorI18nKey(msg: string): string | undefined {
+  const code = PSB_IPC_CODE_PATTERN.exec(msg)?.[1];
+  if (!code) return undefined;
+  return psbBannerMessageKeyForIpcCode(code) ?? undefined;
+}
+
 export function decodeRemoteErrorMessage(msg: string): string {
   const subscriptionGuidance = localizeSubscriptionAccountError(msg, i18n.t, i18n.resolvedLanguage ?? i18n.language);
   if (subscriptionGuidance) return subscriptionGuidance;
@@ -392,6 +410,8 @@ export function decodeRemoteErrorMessage(msg: string): string {
   if (recovery) return i18n.t(`sharedTaskRecovery.reason.${recovery}`);
   const limitKey = remoteAgentLimitErrorKey(msg);
   if (limitKey) return i18n.t(limitKey);
+  const psbKey = psbRemoteErrorI18nKey(msg);
+  if (psbKey && i18n.exists(psbKey)) return i18n.t(psbKey);
   const parsed = parseAgentErrorCode(msg);
   return parsed
     ? i18n.t(`chat.remoteError.${parsed.code}`, { defaultValue: parsed.fallback })

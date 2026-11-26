@@ -113,4 +113,30 @@ describe('NewMakerDraftRoute remote first-message send', () => {
     expect(fallback).toBeGreaterThan(remoteNavigate);
     expect(fallback).toBeLessThan(remotePending);
   });
+
+  /**
+   * PSB 远程工作区（2026-11-25 产品口径）：弹窗只占用工作区，PSB 会话在首条消息发送时
+   * 按草稿当时的 harness 懒建。此处钉住路由侧的两条不变量：
+   *   ① 懒建失败**绝不**落到本地 `createSession`（否则会建出一个没有远端身份的会话行）；
+   *   ② 懒建成功必须回写 `psbTarget.sessionId`（重试/重发复用同一条，不建第二条）。
+   */
+  it('creates the PSB session lazily on the first message, and aborts before any local session on failure', () => {
+    const lazy = source.indexOf('const psbLazySession: PsbDraftSession | null = isPsbDraft');
+    const failFence = source.indexOf('if (isPsbDraft && !psbLazySession) return;', lazy);
+    const ensureDecl = source.indexOf('const ensurePsbSessionForSend = useCallback(');
+    const writeBack = source.indexOf(
+      'patchDraft({ psbTarget: { ...current, sessionId } })',
+      ensureDecl,
+    );
+    const localCreate = source.indexOf('const newSession = await createSession', failFence);
+    expect(lazy).toBeGreaterThan(-1);
+    expect(failFence).toBeGreaterThan(lazy);
+    expect(ensureDecl).toBeGreaterThan(-1);
+    // 懒建成功才回写 sessionId（onSessionCreated），重试/重发复用同一条 PSB 会话。
+    expect(writeBack).toBeGreaterThan(ensureDecl);
+    expect(localCreate).toBeGreaterThan(failFence);
+    // 懒建失败到本地建会话之间不得再有 createSession 调用（唯一的入口在 failFence 之后）。
+    expect(source.slice(failFence, localCreate)).not.toContain('createSession({');
+    expect(source.slice(lazy, failFence)).toContain('ensurePsbSessionForSend(');
+  });
 });

@@ -6673,7 +6673,10 @@ export function ChatInput({
   );
   steerSoleQueuedMessageRef.current = () => {
     // 可见推荐也是待发内容，和正文、附件、评论、语音稿一样保留原发送路径。
+    // `disabled` 必须一起看：它承载只读、远端交接准备中、以及 PSB 远程工作区被占用/终态
+    // 这类「不允许发送」的门禁；否则排队消息会被这条快捷路径绕过去直接发给远端。
     if (
+      disabled ||
       !onQueueSteer ||
       voiceBusyOnCurrentComposer ||
       showRecommendationRef.current ||

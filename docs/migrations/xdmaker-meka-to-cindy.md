@@ -8367,3 +8367,152 @@ WL-11 代码锚点与 `meka-injection-layer.md` §3.3，白名单覆盖现状是
 - **未验证**：Windows 实机点击 Meka Docs「确认任务权限」的 UI 端到端未在本次跑（需要
   真实安装与账号），登记为「未验证 + 原因」。
 - **白名单**：未新增／删除 Meka 能力，WL 清单不变。
+
+### 11.43 2026-11-25 远程工作区（PSB 远程 Agent 会话）：第三种远端 transport `psb:` 与「Meka 助理 › 远程工作区」入口（2026-11-26 联调后回填最终行为）
+
+**背景**：用户要求在 Cindy 左侧「Meka 助理」分类下新增「远程工作区」：从列出的工作区里选一个
+（或当场建一个），选定即占用该工作区，会话跑在 PSB 远端客户端机器的**工作区目录**里。工作区、
+占用（协作锁）、会话记录、字节流转发与串流中继都由 PSB 负责；Cindy 只做客户端。这是 Meka 私有
+产品线在「远程能力」上的第二个外部后端（第一个是 MCPRouter），所以它按 transport 身份接入，
+而不是按「另一种远程项目」接入。
+
+**跨仓契约（稳定引用，不再引用不入库的协调流水）**：字段级正本仍在 PSB 仓根目录
+`协作需求.md`；双方已确认的契约事实、`CINDY-RW-*` 最终结论（含已作废旧口径）与 Cindy 当前适配
+状态，统一记在[PSB 跨仓契约摘要](../collaboration/psb-remote-workspace-contract.md)（脱敏、入仓，
+是本仓文档的稳定引用锚点）。当地跨仓协调流水含本机路径与真实身份，已加入 `.gitignore` 不入库、
+也不是事实源。**任何一侧都不能单方面改形状**：先改对方正本并双侧确认，再同批改本仓客户端与文档。
+
+**本轮新增能力（Cindy 侧最终状态）**：
+
+1. **`psb:<PSB sessionId>` 是第三种远端身份**，与 `mcpr:<instanceId>`、SSH host 并列；共享契约
+   （`apps/desktop/src/shared/psb-remote-workspace.ts`）定身份前缀、PSB 路径与 DTO、IPC 通道与
+   展示纯函数。`remoteHostId` 由 PSB 会话 id 拼成、Cindy 原样保存；`workingDir` 是虚拟引用
+   （`/psb-remote/…`），不参与本机路径解析。
+2. **PSB 客户端在 main**（`apps/desktop/src/main/remote-workspace/`）：
+   - 鉴权 `psbAuth.ts`：宿主**直签** Cindy Connection JWT，与「Meka 提交 / 项目管理」同一条 OIDC
+     链路，audience 复用现网 `<orgSlug>:meka-submit`（**不新增 audience**），只有组织成员可签，
+     token 只在 main 内存缓存、不落盘、不进渲染层 / IPC / 日志；401 只重签一次。
+   - 端点 `psbEndpoint.ts`：正式 / 测试部署，**复用 Meka 提交那条启动期环境变量
+     `CINDY_MEKA_PSB_HOST`**（同一份白名单解析，不是第二个开关），HTTP / 两条 WS / 网页跳转一起
+     改道，WSS 不做明文降级，PSB 下发的网页地址按生效站点根纠正主机。
+   - HTTP 客户端 `psbClient.ts`：`/api/cindy/remote/**` 唯一出口，Bearer 只进请求头，401 只重签
+     一次，网络失败与业务失败分开，409（占用 / 离线 / 未就绪 / 终态）分别可归因，统一失败形状
+     `PsbRemoteFailure`；工作区单行 GET 在 Cindy 身份下恒 403，工作区事实只从**列表口**读。
+   - agent-tunnel `psbTunnel.ts`：与 MCPRouter `agent-tunnel` **同一份帧契约**（`mode` 四选一且
+     必须显式写，`bundleVersion` 只在 `cc-mgr` / `codex-appserver` 上且取自
+     `CC_MGR_BUNDLE_VERSION`，**URL 固定带 `readyFrame=1`** 以启用 PSB 0.1.160+ 默认不发的
+     就绪文本帧（超时兜底保留给老服务端），关闭码 `4003` / `4004`（含 JSON `cause`）与握手状态
+     分类归因），`agent-tunnel.ready` 只做控制面、不进业务字节流；系统代理经
+     `agentForUrl` 注入（与 HTTP 的 `outboundFetch` 同一份代理语义）。PSB 侧只换地址与鉴权
+     （`Authorization: Bearer` 取代 cookie session）。
+3. **IPC 面与渲染层单一入口**：共享通道常量分为两组——会话级 `PSB_REMOTE_CHANNELS`（19 条 =
+   16 invoke + 3 推送 `stream-event` / `workspace-changed` / `sessions-rebound`）与工作区级
+   `PSB_ADMIN_CHANNELS`（8 条 = 6 invoke + 2 推送 `admin-context-changed` / `admin-stream-event`），
+   合计 **22 invoke / 5 推送**。渲染层只经 `features/remote-workspace/bridge.ts` 的
+   `PsbRemoteBridge` 访问；失败跨 IPC 用 11 个 `PSB_*` 命名空间码（含
+   `PSB_WORKSPACE_NOT_READY` / `PSB_STREAM_NOT_ACTIVE`），渲染层按码翻译、不判 HTTP 状态。main 侧
+   由 `remote-workspace/index.ts` 一处装配（HTTP 走 `outboundFetch`、WS 走
+   `createOutboundHttpAgent`），推送只经 `push.ts`。
+4. **串流观看端与交互**：main 在 `streamViewer.ts` 打开观看端 WS（客户端生成 UUIDv4
+   `subscriberId`，一个观看端一个、重连复用；名额与浏览器共用、默认 4）；渲染层解析 **4 字节
+   观看端信封**（`type(1)+flags(1)+seq(2)`）并把 H.264 载荷交给 WebCodecs（配置兼容 avcC 与
+   Annex-B），用 push 式播放器画到 canvas。**串流是可交互观看**（不是只读）：指针 / 键鼠 / 滚轮经
+   **工作区级** `admin-stream-input` 发到同一条观看端 WS，全屏时键鼠捕获并让 main 抑制宿主快捷键；
+   上行只有 `{kind:'input'}`（不发 `open` / `close`，订阅 = 升级、退订 = 断开）。4004 按「结构
+   前缀 + 是否收过帧」区分未就绪与慢订阅者；「进入页面不自动启动、离开自动停止」由用户手动启动。
+5. **工作区级「远程工作区」页**：入口在会话标题行「…」之后的文字按钮，页签在插件页签同一排且
+   全局单例；页面按**工作区**工作（不依赖当前任务 PSB 会话，任务终态 / 删除 / 切换不影响），
+   单行页头（名称 → 模板 · 机器 → 占用，≤40px）+ 三分类（远程连接 / 版本控制 / 设置）+ 手动
+   启动 / 停止 / 详情浮层 / 串流信息 HUD / 极简全屏 / 停止清屏；输入仲裁改由 **PSB 0.1.172 权限
+   模型**判定（`role` / `takeover` 单控制者仲裁已取消），Cindy 默认允许交互并在失焦 / 退出全屏 /
+   断连时补发 release-all。**读状态不建会话、不占用工作区**（2026-11-26 独立审查修正）：打开
+   页签 / `adminContext` / `adminStreamStatus` 只借已有会话做只读 HTTP，没有可借会话时
+   `desktopSession` 就是未知；内部观看端复用只认本机持久化的 `viewers[workspaceId]`，**不按标题
+   认领** `listSessions` 里可能属于别人的会话。**内部「Cindy 观看端」Agent 会话是已知偏差**：
+   PSB 已要求改用工作区级 `POST /api/cindy/remote/workspaces/:id/stream/subscribe` 并删除该内部
+   会话，Cindy 尚未适配；原因 / 影响 / 迁移条件见工程契约 §11.7，本批不把它当最终设计。
+6. **发送前透明重建与占用闸门**：PSB 会话终态（`stopped` / `failed`）不锁输入；用户下一次发送时
+   主进程在同一工作区新建 PSB 会话、先落库新 `remote_host_id` 再推送 `sessions-rebound`，继续这一轮
+   （远端原生上下文不延续、文案只写「可能不会延续」）。新建会话 / 启动串流 / 每次发送前都过
+   `workspaceLock.ts` 的占用闸门（TTL 只缓存成功；被他人占用 / 离线 / 未就绪给可行动失败，不丢消息）。
+   占用无 TTL，退出登录不释放（见产品规则 §2.5）。
+7. **maker-host 的接入形状**：`remote-session-routing.ts` 新增 `'psb'` 分类与
+   `isTunnelRemoteSessionTransport`（隧道 transport 的公共门禁，不再由各钩子手写前缀判断）；
+   `maker-host/psb-agent-tunnel.ts` 是三种 Harness 共用的唯一取 token 处；
+   `maker-host/remote-tunnel-dispatch.ts` 是「transport → 字节流」的唯一分派点（本地 / SSH 是
+   编程错误，不回落 SSH pool）。三种 Harness 的客户端实现与 `remoteTransportRegistry` 零改动；
+   `psb:` 的 cwd 由 PSB 工作区决定（cc `'.'`、pi 不写 `cd`、codex `.`），不下发虚拟路径。
+   **cwd 所有权收口（2026-11-26 独立审查修正）**：判定只在 `remote-session-routing.ts` 的
+   `remoteSessionHostOwnsCwd`（内部走唯一分类器），由 maker-core `lifecycleHooks.prepareStartOptions`
+   对**所有** `createSession` 入口打标（`maker-ipc/register.ts` 不再单独打标，否则 Goal 恢复 /
+   IM / hook-control 冷启动会漏）；codex 的 `runtimeWorkspaceRoots` / named permission profile /
+   `sandboxPolicy.writableRoots` 与 pi 的 `cd` 都按该标记处理。Codex 的 `psb:<sessionId>` 控制隧道
+   在 data-plane transport 终态时经 `releaseTunnelCodexControlChannel` 释放（不再只靠流 close）。
+8. **UI**：左侧「Meka 助理 › 远程工作区」节点与会话列表（状态标签 + 锁 + 网页图标按钮）、新建会话
+   弹窗（选工作区 / 新建工作区两页签）、草稿页位置渠道 + 工作区下拉（保持原布局，引擎与模型同本地
+   任务在草稿页选）、三种外部条件的输入禁用（他人占用 / 客户端离线 / 未就绪）、会话页标题行末尾的
+   「远程工作区」文字按钮与工作区级页签；文案走 i18n `remoteWorkspace` 命名空间
+   （`SUPPORTED_LOCALES` 的全部 12 种语言）。
+9. **文档**：新增产品正本 `docs/product-rules/psb-remote-workspace-sessions.md`、工程契约
+   `docs/dev-rules/psb-remote-session-transport.md` 与脱敏协作文档
+   `docs/collaboration/psb-remote-workspace-contract.md`；根 `AGENTS.md` 两条索引、
+   `docs/dev-rules/repo-map.md` 行为导航一行、产品 / 工程规则 README、白名单 WL-30。
+   文档不再引用不入库的当地协调流水。
+
+**跨仓边界**：PSB 负责工作区与检出、协作锁、会话记录与状态、`agent-tunnel` 转发、串流中继与
+输入授权（权限模型）、网页工作区 / 会话页签、归属与审计、统一错误码；Cindy 负责 UI、选择与占用
+触发、本地会话行、三引擎隧道客户端、串流观看端与输入采集、鉴权签发与端点解析。**不恢复任何服务端
+代码到本仓**：Cindy 只是 PSB 的客户端，不实现转发、不落会话数据。
+
+**验证与证据**：文档侧 `pnpm check:dev-docs` 已实跑（本次修复后另行记录结果）；代码侧门禁
+（`typecheck`、定向 vitest、`pnpm test:unit:related`）由实现任务在各自交付中实跑并登记，本条不代写
+PASS。真机结论以产品规则 §8.2 与工程契约 §10–§12 为准（测试部署多轮：三引擎真实回合、串流首帧
+与解码、4004 归因、终态重建、可交互输入 / 全屏捕获、极简全屏 + HUD、工作区级页面）；不入库的截图
+与当地联调流水不作为引用锚点。
+
+**2026-11-26 独立审查阻断项修复（本批，实现事实）**：9 个阻断项（就绪帧 opt-in、codex 虚拟 roots、
+假阳性测试、fork 死代码、cwd 所有权旁路恢复路径、psb codex 控制隧道残留、pi 手写前缀分类、读路径
+静默占用工作区、按标题认领观看端会话）的修法、测试证据与真机复测点见工程契约 §14 与产品规则
+§2.4 / §2.6；定向 vitest（`remote-workspace/__tests__`、`maker-host/__tests__`、
+`packages/maker-core` codex 用例）与 `desktop` / `@cindy/maker-core` typecheck 由本批实现任务实跑
+（结果见对应交付说明，本条不代写 PASS）。
+
+**2026-11-26 渲染层独立审查阻断项修复（本批，实现事实）**：7 项必修 + 6 项建议全部落地 —— 工作区
+次要行「目录」前缀改 i18n（`remoteWorkspace.dialog.directorySecondary`，12 locale）、停止失败同样
+清屏并复位（手动 + 自动停止，`remoteWorkspace.session.stopFailed`）、输入边沿经 `pump.sendEdge`
+保序（先移动后按下）、`streaming` 只由首帧置位（PSB `active` 仅用于提示 / 详情，订阅成功到首帧显示
+「已连接，等待画面…」）、psb 草稿收掉「另一台电脑上的模型」与本机引用目录（不伪造 `remoteHostId`）、
+未选工作区用专用提示 key `remoteWorkspace.draft.selectWorkspaceFirst`、在途时工作区下拉整块禁用、
+侧栏交接 effect 去重键改 `location.key`（跳过也消费 state）、放弃草稿一并复位 `explicitNoProject`、
+侧栏进入草稿去掉 `replace`、`CONTEXT_CHANGED` 载荷带 `localSessionId` 供渲染层按窗口过滤、清理
+12 个未消费 i18n key 与 glossary 中已不存在的 exempt。**同日复审补 5 项**：项目 picker 的源码快照
+断言改为「条件集合」语义断言（旧字面量会红门禁）、被拒绝的 psb 换目标释放刚占用的工作区并提示
+（`remoteWorkspace.draft.actionBusy`）、交接重进同工作区沿用已懒建的 `sessionId`、Codex 模型选择的
+SSH 分支判据改 `sshRemoteHostId`（PSB 懒建 / 重试窗口不再静默丢弃）。测试证据：`vitest run
+src/renderer/features/remote-workspace`（15 files / 144 tests）与 main + renderer remote-workspace /
+草稿相关合并运行（29 files / 470 tests）通过；`pnpm --filter desktop run typecheck`、`pnpm check:i18n`、
+`pnpm check:i18n-glossary` 实跑通过。真机复测点见产品规则 §8.2 与工程契约 §12.8。
+
+**未验证 / 风险（如实登记）**：
+
+- **工作区级订阅未适配（P0，已知偏差）**：内部「Cindy 观看端」会话（仅用户显式「启动」时创建，
+  读状态不再创建）与只读 `stream/status` 探针仍在用；PSB 已交付该端点契约并要求删除。影响
+  （PSB 会话列表噪音、占 1 个观看名额、未消费 `NO_RUNNING_SESSION` / 重订语义）与迁移条件见
+  工程契约 §11.7。
+- **宿主光标形状同步**：现行口径是「**只同步形状、外观永远宿主风格**」（远端 `name` → CSS
+  关键字，只在画面区域生效，不用位图；旧「CSS 自定义位图光标」口径已作废），未真机复验（需要
+  running 桌面会话；双方已安排取证）；映射 / 未知回退 / 只在画面区域 / 停止与 `closed` 恢复有单测。
+- **「进入页面不自动启动 / 离开自动停止」新口径**：旧「进页自动出画面 / 切回自动重订」结论已作废，
+  新口径真机复验未完成（判据有单测）。
+- **多观看者输入（0.1.172 权限模型）**：未构造真机场景；`errors=frame` 未启用，`stream.control`
+  拒绝帧未消费。
+- **Windows `SendInput`**：PSB 未生产验证；**慢订阅者（收帧后 4004）**：弱网 / 积压未构造，仅单测。
+- **正式部署**：只读链路未复测（同一份代码，差异只在 `CINDY_MEKA_PSB_HOST`）。
+- **新页完整目检**：Light / Dark 颜色用模拟媒体切换验证过，窄窗口 / 全屏 / 真实鼠标走查与终态
+  轻提示的 Dark 目检未完成；F5/F11/F12 与开发者工具组合放行、退出全屏后宿主快捷键恢复只部分覆盖。
+- **既有边界**：分离侧栏窗口不暴露 `psbRemote` 桥、无「请求关键帧」通道；显式 `access/stop`
+  销毁入口未接入（产品无此入口，有意）。
+- **`pi-manager` CDN 发布与 PSB pin / vendored bundle 更新未完成**（CINDY-RW-14）：Cindy 源码已修
+  pi 子进程 cwd，发布后 PSB 才可去掉 `cd` 前缀缓解。
+- **门禁口径**：`meka/main` 是直推分支，推送前仍必须一次性跑完 `pnpm test:unit:related` 与相关
+  package `typecheck`；本条只登记文档落点与语义验收范围。

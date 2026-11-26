@@ -306,6 +306,14 @@ async function submit(options: {
     // newMakerDraftTargetCatalog.test.ts 里。
     explicitDraftProviderId: null,
     isDeviceLinkDraft: !!options.deviceId, isRemoteProjectDraft: !!options.remoteHostId,
+    // PSB 远程工作区（第三种 transport）在 send/goal 里只做一件事：本地会话建出后把占用
+    // 标记为「已被会话接手」。harness 不演 PSB 目标，提供 false 与假的懒建入口让源码沙箱与
+    // 真实运行环境同形（ReferenceError 不是行为差异）。
+    isPsbDraft: false, psbTargetCommittedRef: { current: false },
+    ensurePsbSessionForSend: async () => null,
+    // 位置渠道选了远程工作区但还没选工作区 = 无 psb 目标；harness 不演这个入口拦截，
+    // 提供 false 与打开项目下拉的假入口让源码沙箱与真实运行环境同形。
+    isPsbChannelSelected: false, setFolderPickerOpen: noop,
     isAgentDeviceDraft: !!options.agentDeviceId, remoteModelListStatus: options.remoteModelListStatus ?? 'ready', remoteDraftState: { status: 'ready' },
     effectiveRemoteHostId: options.remoteHostId, effectiveAgentDeviceId: options.agentDeviceId,
     effectiveWorkingDir: hasWorktree || options.worktree ? baseRepo : options.remoteHostId ? '/remote/project' : null,
@@ -561,6 +569,8 @@ describe('homepage submission to Main admission and first-message handoff', () =
     }).outputText;
     const derive = (agentDeviceId: string | null, modern = true) => runInNewContext(code, {
       draft: { agentDeviceId }, effectiveDeviceLinkDeviceId: 'host-b', effectiveRemoteHostId: undefined,
+      // PSB 是第三种 transport：SSH-only 入口只收真 SSH 身份，故路由另派生 `sshRemoteHostId`。
+      sshRemoteHostId: undefined,
       deviceLinkHostProviders: [], selectableDevices: [], providerShareDevices: [],
       useModelRouteDevices: () => ({ catalogHostDeviceId: modern ? 'host-b' : undefined, devices }),
       useMemo: (read: () => unknown) => read(), isSharedTaskPeer,

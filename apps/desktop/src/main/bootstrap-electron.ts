@@ -762,6 +762,9 @@ import { registerRemotePrecreatedWorktreeLedgerIpc } from './remotePrecreatedWor
 import { registerTerminalHandlers } from './maker-ipc/terminal-handlers';
 import { registerLocalThemesIpc } from './local-themes/register';
 import { registerMekaSettingsIpc } from './meka-settings/ipc';
+// PSB 远程工作区（`psb:` transport）的 IPC 面；服务是懒单例，注册期不取 token、不发请求。
+import { registerPsbRemoteIpc } from './remote-workspace/ipc';
+import { disposePsbRemoteService } from './remote-workspace/index';
 import { registerCindyFileIpc } from './cindy-files/register';
 import {
   registerRemoteSshIpc,
@@ -2301,6 +2304,10 @@ function clearAccountBoundaryAbortMark(): void {
 
 async function teardownAuthAccountBoundary(reason: string): Promise<void> {
   remoteDesktopViewerWindows.reset();
+  // 退出登录 / 切换账号：断开全部 PSB 串流观看端，释放远端的观看名额（每会话名额很少，
+  // 漏关会让下一位使用者连不上），也不把旧账号的远端画面留在 main 内存里。
+  // 服务是懒单例，边界之后的下一次动作会重新装配；teardown 中止时同样可用。
+  disposePsbRemoteService();
   const blockingFailures: unknown[] = [];
   // Goal timers can dispatch through the outgoing Maker while launch-fence
   // acquisition waits behind queued filesystem work. Invalidate them before
@@ -10675,6 +10682,9 @@ app.on('ready', async () => {
   });
   registerLocalThemesIpc();
   registerMekaSettingsIpc();
+  // 「Meka 助理 › 远程工作区」：PSB HTTP / 串流观看端 / 推送。不依赖 Maker 与 agent 二进制，
+  // 与 mekaSettings 同一批注册（renderer 首次挂载即可 invoke）。
+  registerPsbRemoteIpc();
   registerCindyFileIpc();
   registerVoiceInputIpc();
   registerGlobalVoiceInputIpc({

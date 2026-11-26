@@ -28,6 +28,7 @@ import type { RemoteHost } from '@cindy/maker-remote-ssh';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import {
+  buildPiLaunchCommand,
   createRemotePiFileOps,
   createSshPiTransport,
   killRemotePiManagerSession,
@@ -76,6 +77,40 @@ describe('pi remote transport shellQuote', () => {
   it('round-trips a path with spaces and $ signs', () => {
     const p = '/tmp/my dir/$HOME/x';
     expect(shellQuote(p)).toBe(`'/tmp/my dir/\$HOME/x'`);
+  });
+});
+
+describe('buildPiLaunchCommand — cwd 权威归属', () => {
+  // 背景（2026-11-26 联调）：PSB 远程工作区（psb:）的工作目录由宿主按服务端会话记录 spawn，
+  // Cindy 手里只有虚拟路径 `/psb-remote/<目录>`。把它拼进 `cd` 会让 `bash -c` 立即 exit 1，
+  // 表现为「pi process exited (code=null, signal=null)」。所以 psb 传 cwd=null → 不写 cd。
+  it('cwd 非空：先 cd 再 exec（本地 / SSH / MCPR 的既有语义不变）', () => {
+    const cmd = buildPiLaunchCommand({
+      cwd: '/home/me/project',
+      binaryPath: '/home/me/.xdt-server/v1/pi/pi',
+      args: ['--session-dir', '$HOME/.pi/sessions'],
+    });
+    expect(cmd.split('\n')).toEqual([
+      'cd "/home/me/project" || exit 1',
+      'exec "/home/me/.xdt-server/v1/pi/pi" \'--session-dir\' "$HOME/.pi/sessions"',
+    ]);
+  });
+
+  it('cwd=null：宿主拥有工作目录，命令里不得出现 cd（虚拟路径不能落地）', () => {
+    const cmd = buildPiLaunchCommand({
+      cwd: null,
+      binaryPath: '/srv/psb/pi/pi',
+      args: ['--no-tui'],
+    });
+    expect(cmd).not.toContain('cd ');
+    expect(cmd.startsWith('exec ')).toBe(true);
+    expect(cmd).toBe('exec "/srv/psb/pi/pi" \'--no-tui\'');
+  });
+
+  it('binaryPath 仍做注入防护（cwd=null 不是放宽转义的理由）', () => {
+    expect(() =>
+      buildPiLaunchCommand({ cwd: null, binaryPath: '/tmp/pi"; touch /tmp/x; "', args: [] }),
+    ).toThrow(/unsafe binaryPath/);
   });
 });
 

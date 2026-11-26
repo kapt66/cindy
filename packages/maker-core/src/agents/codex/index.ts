@@ -3747,6 +3747,14 @@ assertRouteCurrent();
     const sid = opts.sessionId ?? '';
     const log = this.deps.logger.child(sid ? `s:${sid}/codex` : 'codex');
     const reviewMode = opts.reviewMode === true;
+    // PSB 远程工作区：远端 cwd 归宿主（PSB 按会话记录里的工作区 spawn 引擎）。Cindy 的
+    // `workingDir` 是 `/psb-remote/<目录>` 这种本机虚拟路径，那台机器上不存在；把它当
+    // app-server 的 cwd / startParams 下发会让 exec 在不存在的目录里启动（真机报
+    // `Failed to create unified exec process: No such file or directory`）。用 `.` 交给远端
+    // 按自己的会话 cwd 解析（与 cc 的 `query/start` 同口径）；本地 / SSH / MCPR 的真实路径
+    // 不受影响。
+    const remoteHostOwnsCwd = opts.remoteHostOwnsCwd === true;
+    const appServerCwd = remoteHostOwnsCwd ? '.' : opts.workingDir;
     // 设备托管：Codex 在本机运行(本机的登录与供应商)，项目、文件与命令在任务所在电脑上。
     // 那台电脑经隧道提供 Codex 原生的 exec-server 环境，命令、读写与补丁都在那里执行；
     // Cindy 工具也经隧道。opts.workingDir 是本机影子目录。
@@ -3998,7 +4006,7 @@ assertRouteCurrent();
         data: {
           turnId,
           diff: merged.diff,
-          cwd: opts.workingDir,
+          cwd: appServerCwd,
           isComplete: merged.complete,
         },
         source: 'codex',
@@ -5150,8 +5158,12 @@ assertRouteCurrent();
     let mutablePermissionMode: PermissionMode =
       reviewMode ? 'ask' : opts.permissionMode ?? 'ask';
     let mutableLibraryRoot: string | null | undefined = opts.remoteHostId || reviewMode ? undefined : (opts[LIBRARY_READ_ROOT] ?? undefined);
-    let mutableExtraDirs = [...(opts.extraDirs ?? [])];
-    let mutableWritableDirs = [...(opts.writableDirs ?? [])];
+    // PSB 远程工作区：本机 `workingDir` 与用户附加目录（extraDirs / writableDirs）都是**本机
+    // 事实**，远端 app-server 那台机器上不存在。cwd 换成 `.` 之外，下面所有下行参数
+    //（permission profile / runtimeWorkspaceRoots / sandboxPolicy.writableRoots）都必须按同一
+    // 口径处理，否则远端仍会按本机路径执行/授权（2026-11-26 审查：只改 cwd 不够）。
+    let mutableExtraDirs = remoteHostOwnsCwd ? [] : [...(opts.extraDirs ?? [])];
+    let mutableWritableDirs = remoteHostOwnsCwd ? [] : [...(opts.writableDirs ?? [])];
     let autoReviewDirectoryGeneration = 0;
     let reviewReadGrants: Awaited<ReturnType<typeof buildReviewReadGrants>> = [];
     if (reviewMode) {
@@ -5746,7 +5758,7 @@ assertRouteCurrent();
         assertCurrentSkillDiscoveryHost();
         const { skills, errors } = await this.listSkillsForHost(
           skillDiscoveryHost,
-          opts.workingDir,
+          appServerCwd,
           false,
           CRITICAL_THREAD_RPC_TIMEOUT_MS,
         );
@@ -5916,7 +5928,7 @@ assertRouteCurrent();
     if (disabledSkillPaths.length > 0) {
       try {
         const response = await host.request<{ config?: Record<string, unknown> }>(
-          Method.ConfigRead, { cwd: opts.workingDir, includeLayers: false },
+          Method.ConfigRead, { cwd: appServerCwd, includeLayers: false },
           { timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS },
         );
         assertCurrentHost('Local Skill configuration');
@@ -5961,7 +5973,7 @@ assertRouteCurrent();
     if (!reviewMode && nativeApprovalsReviewerRouteSupported) {
       try {
         const response = await host.request<{ config?: Record<string, unknown> }>(
-          Method.ConfigRead, { cwd: opts.workingDir, includeLayers: false },
+          Method.ConfigRead, { cwd: appServerCwd, includeLayers: false },
           { timeoutMs: CRITICAL_THREAD_RPC_TIMEOUT_MS },
         );
         assertCurrentHost('Native auto-review policy');
@@ -6025,12 +6037,16 @@ assertRouteCurrent();
       ? []
       : [joinCodexHome('memories')];
     // 设备托管：工作区在任务所在电脑上，根目录用那台电脑的真实路径(随 exec-server 环境下发)。
+    // PSB（remoteHostOwnsCwd）：工作区由 PSB 按会话记录决定，本机虚拟 `workingDir` 与本机附加
+    // 目录都不下发；roots 为空，app-server 用会话自己的 cwd（见 thread/start 的门禁）。
     const runtimeWorkspaceRoots = (): string[] =>
       reviewMode
         ? [opts.workingDir]
-        : [...new Set([hosted?.workingDir ?? opts.workingDir, ...mutableExtraDirs, ...mutableWritableDirs])];
+        : remoteHostOwnsCwd
+          ? []
+          : [...new Set([hosted?.workingDir ?? opts.workingDir, ...mutableExtraDirs, ...mutableWritableDirs])];
     const runtimeWritableRoots = (): string[] =>
-      reviewMode ? [] : [...new Set([hosted?.workingDir ?? opts.workingDir, ...mutableWritableDirs])];
+      reviewMode ? [] : remoteHostOwnsCwd ? [] : [...new Set([hosted?.workingDir ?? opts.workingDir, ...mutableWritableDirs])];
     // Auto-review 传给 core 的会话平台(决定是否抹平 macOS /private firmlink)。远端会话的 host
     // process.platform 不代表远端 OS(host 可能 macOS、远端 Linux)——远端 OS 未接入前保守传 'linux'
     // 关掉抹平 → fail-closed(不把远端 /private/tmp 误当 /tmp 区内)。本地用真实 process.platform。
@@ -6719,6 +6735,9 @@ assertRouteCurrent();
       if (reviewMode) return REVIEW_PERMISSION_PROFILE;
       if (
         readonlyReferenceDirsSupported
+        // `READONLY_REFERENCES_PERMISSION_PROFILE` 的内嵌 config 以本机 `workingDir` 为键并写入
+        // 本机 writableDirs；PSB 的 cwd 归宿主，这两个键在远端都不存在，不能启用该 profile。
+        && !remoteHostOwnsCwd
         && (mutableExtraDirs.length > 0 || mutableWritableDirs.length > 0)
         && mutablePermissionMode !== 'bypassPermissions'
       ) {
@@ -6951,7 +6970,8 @@ assertRouteCurrent();
         approvalPolicy,
         ...(approvalsReviewer ? { approvalsReviewer } : {}),
         // 设备托管：工作区根随 exec-server 环境下发，本机线程不设本地根。
-        ...(readonlyReferenceDirsSupported && !hosted
+        // PSB（remoteHostOwnsCwd）：本机 workingDir / 附加目录是虚拟或本机路径，同样不下发。
+        ...(readonlyReferenceDirsSupported && !hosted && !remoteHostOwnsCwd
           ? {
               runtimeWorkspaceRoots: runtimeWorkspaceRoots(),
             }
@@ -6990,7 +7010,7 @@ assertRouteCurrent();
       const shared = {
         approvalPolicy,
         ...(approvalsReviewer ? { approvalsReviewer } : {}),
-        ...(readonlyReferenceDirsSupported && !hosted
+        ...(readonlyReferenceDirsSupported && !hosted && !remoteHostOwnsCwd
           ? { runtimeWorkspaceRoots: runtimeWorkspaceRoots() }
           : {}),
         ...(hostedEnvironmentParams()),
@@ -7014,7 +7034,9 @@ assertRouteCurrent();
         ...shared,
         sandboxPolicy: sandboxModeToPolicy(
           sandbox,
-          [...new Set([...codexExtraWritableRoots, ...mutableWritableDirs])],
+          // PSB（remoteHostOwnsCwd）：本机 writableDirs 在远端不存在，sandboxPolicy 里不得出现；
+          // codexExtraWritableRoots 是**远端** app-server 自报的 CODEX_HOME 子目录，保留。
+          [...new Set([...codexExtraWritableRoots, ...(remoteHostOwnsCwd ? [] : mutableWritableDirs)])],
         ),
       };
     }
@@ -7104,7 +7126,7 @@ assertRouteCurrent();
       if (!slash) return toAppServerInput(content, opts.workingDir);
 
       try {
-        const { skills } = await this.listSkillsForCwd(opts.workingDir, false);
+        const { skills } = await this.listSkillsForCwd(appServerCwd, false);
         // 受邀者：斜杠只解析它自己带来的技能与 Codex 自带技能，不把本机用户的技能文件交给模型。
         const skill = selectInvocableCodexSkill(
           guestSkillAllowed ? skills.filter((candidate) => guestSkillAllowed(candidate.path, candidate.scope)) : skills,
@@ -7351,7 +7373,7 @@ assertRouteCurrent();
      */
     const startFreshThread = async (): Promise<void> => {
       const params: ThreadStartParams = {
-        cwd: opts.workingDir,
+        cwd: appServerCwd,
         ...currentThreadWorkspaceConfig(),
         ...(sessionDynamicTools.length > 0 ? { dynamicTools: sessionDynamicTools } : {}),
         ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
@@ -7488,7 +7510,7 @@ assertRouteCurrent();
         threadId: opts.resumeSessionId,
         ...(preparedResumePath ? { path: preparedResumePath } : {}),
         ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
-        cwd: opts.workingDir,
+        cwd: appServerCwd,
         ...currentThreadWorkspaceConfig(),
         ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
         ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
@@ -7826,7 +7848,7 @@ assertRouteCurrent();
           signal,
           request: (options) => withMcpDiscoveryContext(() => host.request<ThreadStartResponse>(retainHistory ? Method.ThreadFork : Method.ThreadStart, {
             ...(retainHistory ? { threadId: previousThreadId, excludeTurns: true } : {}),
-            cwd: opts.workingDir,
+            cwd: appServerCwd,
             // Recovery belongs to the running send, whose catalog/window is already frozen.
             ...currentThreadWorkspaceConfig(retainHistory ? appliedContextLimit : undefined),
             // Fork inherits the source tools; only thread/start accepts their registration.
@@ -7970,7 +7992,7 @@ assertRouteCurrent();
               request: (options) => host.request<ThreadResumeResponse>(Method.ThreadResume, {
                 threadId,
                 ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
-                cwd: opts.workingDir,
+                cwd: appServerCwd,
                 ...resumeThreadWorkspaceConfig,
                 ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
                 ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
@@ -8026,7 +8048,7 @@ assertRouteCurrent();
             const resp = await requestProfileLifecycle<ThreadResumeResponse>({
               action: 'refresh', signal,
               request: (options) => host.request<ThreadResumeResponse>(Method.ThreadResume, {
-                threadId, cwd: opts.workingDir,
+                threadId, cwd: appServerCwd,
                 ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
                 ...workspaceConfig,
                 ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
@@ -14393,7 +14415,7 @@ assertRouteCurrent();
               const resumeParams: ThreadResumeParams = {
                 threadId,
                 ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
-                cwd: opts.workingDir,
+                cwd: appServerCwd,
                 ...turnThreadWorkspaceConfig,
                 ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
                 ...(resumeModel && resumeModel !== 'gpt-5' ? { model: resumeModel } : {}),
@@ -14916,7 +14938,7 @@ assertRouteCurrent();
         const compactRatio = activeTurnCompactionPct / 100;
         try {
           const response = await host.request<{ config?: Record<string, unknown> }>(
-            Method.ConfigRead, { includeLayers: false, cwd: opts.workingDir }, { timeoutMs: 5_000 },
+            Method.ConfigRead, { includeLayers: false, cwd: appServerCwd }, { timeoutMs: 5_000 },
           );
           if (!response.config) return null;
           const config = { ...response.config };
@@ -15118,6 +15140,14 @@ assertRouteCurrent();
 
       async setExtraDirs(newDirs: string[], libraryRoot?: string | null) {
         if (reviewMode) return;
+        // PSB 远程工作区（remoteHostOwnsCwd）：附加目录是本机路径，远端工作区里不存在；
+        // 收进来只会在后续 thread/turn 参数里重新漏出本机路径，因此不写进可变授权面。
+        if (remoteHostOwnsCwd) {
+          log.debug('setExtraDirs ignored: the remote host owns the working directory', {
+            count: newDirs.length,
+          });
+          return;
+        }
         // 低版本不得假授权:setExtraDirs 非空必须闸 app-server ≥0.144.6,抛错留给宿主记 not-granted。
         if (newDirs.length > 0 && !readonlyReferenceDirsSupported) {
           throw new Error(
@@ -15136,6 +15166,13 @@ assertRouteCurrent();
 
       async setWritableDirs(newDirs: string[]) {
         if (reviewMode) return;
+        // 与 setExtraDirs 同一口径：PSB 的工作目录归宿主，本机可写目录授权不适用。
+        if (remoteHostOwnsCwd) {
+          log.debug('setWritableDirs ignored: the remote host owns the working directory', {
+            count: newDirs.length,
+          });
+          return;
+        }
         if (newDirs.length > 0 && !readonlyReferenceDirsSupported) {
           throw new Error(
             `Codex writable directories require app-server 0.144.6 or newer (current: ${initResp.userAgent ?? 'unknown'})`,
@@ -15343,7 +15380,7 @@ assertRouteCurrent();
             threadId,
             lastTurnId,
             ...(rollbackMethodRemoved || supportsCodexForkExcludeTurns(initResp.userAgent) ? { excludeTurns: true } : {}),
-            ...(opts.workingDir ? { cwd: opts.workingDir } : {}),
+            ...(appServerCwd ? { cwd: appServerCwd } : {}),
             // Native fork reloads the host defaults rather than inheriting the
             // source thread's overrides. Reapply the task's execution environment,
             // MCP routes and capability isolation before the new runtime starts.
@@ -15646,6 +15683,12 @@ assertRouteCurrent();
     const nativeSubscriptionAccount = opts[NATIVE_SUBSCRIPTION_ACCOUNT];
     nativeSubscriptionAccount?.assertCurrent();
     const log = this.deps.logger.child('codex/fork');
+    // 远端（`psb:` / SSH / `mcpr:`）会话的 fork 由宿主层在进入本方法之前就拒绝
+    //（`apps/desktop/src/main/maker-orchestration/fork.ts` 对 `source.remoteHostId` 抛
+    // `REMOTE_NOT_SUPPORTED`；strip-fork 路径同样拒绝）。因此这里拿到的 `workingDir` 一定是
+    // 本机真实路径；**不再**为 PSB 的虚拟 `/psb-remote/...` 做 `remoteHostOwnsCwd` 转换
+    //（旧分支没有生产调用方传入该字段，是死代码）。若将来开放远端 fork，必须在同一处把
+    // cwd / roots 的宿主所有权重新带进来，而不是在这里猜前缀。
     const tailTurnsToDrop = normalizeTailTurnsToDrop(opts.tailTurnsToDrop);
     let lastTurnId = normalizeNativeForkTurnId(opts.lastTurnId);
     const forkAccountId = this.deps.isCodexAccountProvider?.(opts.providerId) ? opts.providerId! : undefined;

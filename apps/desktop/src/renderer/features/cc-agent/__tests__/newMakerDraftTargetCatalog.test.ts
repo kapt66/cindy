@@ -181,6 +181,8 @@ function harness(options: {
     wtBranchSyncRef: { current: null }, wtBranchPreferenceErrorRef: { current: false },
     wtPreferenceWriteSeqRef: { current: 0 }, wtPreferenceSavingRef: { current: false },
     stripProjectRelativeMentions: vi.fn(),
+    // 目标转移里的渠道 UI 状态（远程工作区 = 并列位置渠道）：harness 只需要一个可调用的 setter。
+    setPsbChannelSelected: vi.fn(),
     evictDeviceCapabilities: vi.fn(), evictDeviceProviders: vi.fn(), evictDeviceGitSafetySettings: vi.fn(),
     prefetchDeviceCapabilities: vi.fn(), prefetchDeviceProviders: vi.fn(), prefetchDeviceGitSafetySettings: vi.fn(),
     setWtBranchPreferenceSaving: vi.fn(), setWtBranchSync: vi.fn(), setWtBranchPreferenceError: vi.fn(),
@@ -1667,5 +1669,119 @@ describe('MCPRouter remote target display name', () => {
       remoteProjectName: 'SAGA2服务器',
       remoteInstanceName: 'zhouwenkang/saga2-server',
     }));
+  });
+});
+
+/**
+ * PSB 远程工作区目标的两条守卫（2026-11-26 复审补充）：
+ *   ① picker 已经占用成功、但这次选择因为发送 / 目录恢复在途进不了草稿时，必须把刚占用的
+ *      工作区**还回去**（占用无 TTL，不还会挡住别人）；重选当前工作区不能误释放。
+ *   ② 侧栏交接重进**同一个**工作区时沿用已懒建的 `sessionId`，不把草稿覆盖成 sessionId=null
+ *      （否则旧 PSB 会话变孤儿、下次发送再建第二条）。
+ */
+describe('PSB draft target guards', () => {
+  function psbSelectionHarness(options: {
+    inFlight?: boolean;
+    current?: { workspaceId: string; sessionId: string | null } | null;
+  }) {
+    const releaseWorkspace = vi.fn(async () => ({ workspace: {} }));
+    const toastWarning = vi.fn();
+    const applyDraftTarget = vi.fn();
+    const select = callback<(created: { workspaceId: string }) => void>('selectPsbWorkspace', {
+      sendInFlightRef: { current: options.inFlight === true },
+      directoryRecoveryRef: { current: null },
+      psbTarget: options.current ?? null,
+      t: (key: string) => key,
+      toast: { warning: toastWarning },
+      log: { warn: vi.fn() },
+      tryGetPsbRemoteBridge: () => ({ releaseWorkspace }),
+      buildPsbDraftTarget: (created: { workspaceId: string }) => ({
+        workspaceId: created.workspaceId,
+        clientId: 'client-1',
+        clientName: 'Machine',
+        workspaceTitle: 'Workspace',
+        directoryName: 'dir',
+        sessionId: null,
+      }),
+      setPsbChannelSelected: vi.fn(),
+      applyPsbDraftTarget: applyDraftTarget,
+    });
+    return { select, releaseWorkspace, toastWarning, applyDraftTarget };
+  }
+
+  it('releases a freshly occupied workspace when an in-flight send rejects the switch', () => {
+    const h = psbSelectionHarness({ inFlight: true });
+    h.select({ workspaceId: 'ws-new' });
+    expect(h.releaseWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-new' });
+    // 不换目标（那次发送仍按旧目标建会话），但必须给出为什么没切换。
+    expect(h.applyDraftTarget).not.toHaveBeenCalled();
+    expect(h.toastWarning).toHaveBeenCalledWith('remoteWorkspace.draft.actionBusy');
+  });
+
+  it('does not release the workspace the draft is already using', () => {
+    const h = psbSelectionHarness({
+      inFlight: true,
+      current: { workspaceId: 'ws-current', sessionId: 'psb-1' },
+    });
+    h.select({ workspaceId: 'ws-current' });
+    expect(h.releaseWorkspace).not.toHaveBeenCalled();
+    expect(h.applyDraftTarget).not.toHaveBeenCalled();
+  });
+
+  it('keeps the lazily created session id when re-selecting the same workspace', () => {
+    const h = psbSelectionHarness({
+      current: { workspaceId: 'ws-current', sessionId: 'psb-1' },
+    });
+    h.select({ workspaceId: 'ws-current' });
+    expect(h.applyDraftTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-current', sessionId: 'psb-1' }),
+    );
+  });
+
+  function layoutEffect(marker: string, bindings: Record<string, unknown>): () => void {
+    return compile<() => void>(
+      marker,
+      (node) =>
+        ts.isCallExpression(node) &&
+        node.expression.getText(source) === 'useLayoutEffect' &&
+        node.getText(source).includes(marker)
+          ? node.arguments[0]
+          : undefined,
+      bindings,
+    );
+  }
+
+  it('handover keeps the session id when it re-enters the same workspace', () => {
+    const applyDraftTarget = vi.fn();
+    const navigate = vi.fn();
+    const effect = layoutEffect('已有一次性交接', {
+      psbRouteTarget: {
+        workspaceId: 'ws-a',
+        clientId: 'client-1',
+        clientName: 'Machine',
+        workspaceTitle: 'Workspace',
+        directoryName: 'dir',
+      },
+      dataOwnerId: 'owner-1',
+      location: { key: 'k1', pathname: '/cc-agent/new', search: '', hash: '', state: { psbTarget: {} } },
+      navigate,
+      applyPsbDraftTarget: applyDraftTarget,
+      handledPsbRouteTargetRef: { current: null },
+      buildPsbDraftTarget: (created: { workspaceId: string }) => ({
+        workspaceId: created.workspaceId,
+        sessionId: null,
+      }),
+      consumePsbDraftRouteTarget: () => ({}),
+      getDraft: () => ({ psbTarget: { workspaceId: 'ws-a', sessionId: 'psb-1' } }),
+    });
+    effect();
+    expect(applyDraftTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-a', sessionId: 'psb-1' }),
+    );
+    // 一次性交接仍然消费掉：state 被移除、走 replace，避免后退时重放。
+    expect(navigate).toHaveBeenCalledWith(
+      '/cc-agent/new',
+      expect.objectContaining({ replace: true }),
+    );
   });
 });

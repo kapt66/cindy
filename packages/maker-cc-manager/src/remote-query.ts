@@ -60,6 +60,19 @@ export interface CreateRemoteQueryOptions extends RemoteQueryOptions {
   /** Called when the manager reports that ring-buffer replay lost events
    *  (mid-turn reattach 超出内存 buffer 容量)。jsonl recovery 会兜底, 仅用于日志。 */
   onReplayLossy?: (result: SessionAttachResult) => void;
+  /**
+   * daemon 主动结束会话时的原始原因（`session/closed` 的 `reason` / `detail`）。
+   *
+   * 为什么必须回调而不是只让 iterator 结束：daemon 侧 consume loop 抛错时会发
+   * `session/closed({reason:'error', detail:<错误原文>})`（session-registry.ts
+   * 的 `session consume loop threw`），这是**唯一**能拿到远端 query 失败原因的地方；
+   * 只 end 队列会让上层只剩一句通用的 `[REMOTE_DAEMON_CLOSED]`，真实原因
+   * （例如 cwd 不存在导致 SDK spawn 失败）被完全吞掉。
+   */
+  onSessionClosed?: (info: {
+    reason: SessionClosedNotification['reason'];
+    detail?: string;
+  }) => void;
 }
 
 export interface RemoteQuery extends AsyncIterable<unknown> {
@@ -125,6 +138,16 @@ export async function createRemoteQuery(opts: CreateRemoteQueryOptions): Promise
       if (evt.sessionId === opts.sessionId) {
         if (!closed) {
           closed = true;
+          // 先把 daemon 的原文交给调用方再 end 队列:end 之后上层只剩「流结束」这一条
+          // 通用信号,失败原因会彻底丢失(见 onSessionClosed 文档)。
+          try {
+            opts.onSessionClosed?.({
+              reason: evt.reason,
+              ...(evt.detail !== undefined ? { detail: evt.detail } : {}),
+            });
+          } catch {
+            /* 诊断回调不得影响会话收尾 */
+          }
           messageQueue.end();
         }
       }

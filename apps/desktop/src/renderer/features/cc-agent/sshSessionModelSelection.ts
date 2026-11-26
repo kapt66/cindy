@@ -34,9 +34,10 @@ export async function loadSshSessionModelSelection(
   },
 ): Promise<ReturnType<typeof resolveSshSessionModelSelection>> {
   if (args.agentKind !== 'codex') return resolveSshSessionModelSelection(args);
-  // 只有真正的 SSH 执行主机才有「按主机读远端 Codex 清单」这条探针。`mcpr:<instance.id>`
-  // 是隧道身份（不在 SSH pool 里），它的 Codex 走本机 AI Gateway，模型面就是本机目录 ——
-  // 喂给探针只会得到 `SSH_EXEC_FAILED`，并把「无法读取远程设备模型」当成事实。
+  // 只有真正的 SSH 执行主机才有「按主机读远端 Codex 清单」这条探针。隧道 transport
+  // （`mcpr:<instance.id>` / `psb:<sessionId>`）不在 SSH pool 里，Codex 走本机 AI Gateway，
+  // 模型面就是本机目录 —— 喂给探针只会得到 `SSH_EXEC_FAILED`，并把「无法读取远程设备模型」
+  // 当成事实。判据收在 `lib/remoteCodexModelHost.ts`，这里不重复手写前缀判断。
   if (resolveRemoteCodexModelHostId({ remoteHostId: hostId, agentKind: args.agentKind }) === null) {
     return resolveSshSessionModelSelection(args);
   }

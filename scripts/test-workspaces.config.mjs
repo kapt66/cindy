@@ -185,6 +185,9 @@ const desktopGuardInclude = [
   'src/main/localDb/ipc/__tests__/sessionCreatedBroadcast.test.ts',
   'src/renderer/__tests__/promptRecommendationBadge.test.ts',
   'src/renderer/__tests__/sessionHeaderMenuParity.test.ts',
+  // 远程工作区入口位置（标题行「…」之后，不再在窗口右上角）是跨 SessionContentHeader /
+  // MainLayout 的接线契约，没有单模块运行时能断言「它不在窗口角」。
+  'src/renderer/features/remote-workspace/admin/__tests__/remoteWorkspaceAdminPlacement.guard.test.ts',
   'src/renderer/__tests__/typographyDiscipline.test.ts',
   'src/renderer/__tests__/designEffectsDiscipline.test.ts',
   'src/renderer/__tests__/motionDiscipline.test.ts',
@@ -325,6 +328,9 @@ const desktopGuardInclude = [
   'src/renderer/__tests__/toastZIndex.test.ts',
   'src/renderer/__tests__/unsupportedTextPreview.test.ts',
   'src/renderer/hooks/__tests__/useCCAgentChatHiddenFreeze.test.tsx',
+  // PSB 远程工作区 IPC 面：共享通道常量 ↔ main handler ↔ preload 桥 ↔ 渲染层窄入口的
+  // 跨文件接线（缺一处就是 invoke 无 handler / 桥缺方法的硬故障），运行期入口只在 Electron 里。
+  'src/main/remote-workspace/__tests__/psbRemoteIpcWiring.guard.test.ts',
 ];
 
 export function desktopUnitWorkerCount(

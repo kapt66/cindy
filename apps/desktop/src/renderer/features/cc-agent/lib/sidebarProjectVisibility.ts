@@ -1,7 +1,10 @@
 import { teammateFolderName, teammateFolderOfProjectPath } from '@cindy/maker-shared/teammate-project';
 
 import type { Session } from '@/lib/ccAgent.types';
-import { isMekaAssistantSession } from '../../../../shared/mekaAssistantSession';
+import {
+  isMekaAssistantSession,
+  isRemoteWorkspaceSession,
+} from '../../../../shared/mekaAssistantSession';
 
 import {
   projectIdentityKeyForSession,
@@ -184,11 +187,13 @@ export function sidebarSessionsWithHiddenProjectsAsDialogues(
   return sessions.map((session) =>
     // Meka 会话的身份是持久化绑定而不是工作区归属：即便其目录命中被隐藏项目，
     // 也不能被改写成 dialogue —— 否则会掉进普通项目/对话分组并从 Meka 段消失。
+    // 远程工作区会话同理：身份是 `psb:<PSB sessionId>`，虚拟工作目录只是显示引用，
+    // 被改写成 dialogue 会让它离开「远程工作区」节点（产品正本 §2.1：只有一个归属位置）。
     isSessionInHiddenProjectComparisonSet(
       session,
       hiddenProjectComparisonKeys,
       localPlatform,
-    ) && !isMekaAssistantSession(session)
+    ) && !isMekaAssistantSession(session) && !isRemoteWorkspaceSession(session)
       ? { ...session, workspaceKind: 'dialogue',
           ...(session.companion ? { companion: { ...session.companion, taskProjectDir: undefined } } : {}) }
       : session,

@@ -28,6 +28,12 @@ describe('isMekaAssistantSession', () => {
     ['ordinary task', { workspaceKind: 'project', mekaProjectId: null, mekaRoleId: null, mekaRole: null }, false],
     ['half binding (project only)', { workspaceKind: 'project', mekaProjectId: 'p', mekaRoleId: null }, false],
     ['half binding (role only)', { workspaceKind: 'project', mekaProjectId: null, mekaRoleId: 'r' }, false],
+    // 远程工作区（`psb:`）会话是普通任务，只是跑在 PSB 远端工作区；即便带着旧
+    // workspaceKind='meka' / mekaRole 历史字段也不算 Meka 助理会话
+    // （docs/product-rules/psb-remote-workspace-sessions.md §2.1）。
+    ['remote workspace session with legacy meka kind', { workspaceKind: 'meka', remoteHostId: 'psb:abc', mekaProjectId: null, mekaRoleId: null }, false],
+    ['remote workspace session with legacy role marker', { workspaceKind: null, remoteHostId: 'psb:abc', mekaRole: 'planner' }, false],
+    ['malformed psb identity', { workspaceKind: 'meka', remoteHostId: 'psb:', mekaProjectId: null, mekaRoleId: null }, true],
     ['missing session', null, false],
   ] as const)('classifies %s as Meka assistant', (_name, session, expected) => {
     expect(isMekaAssistantSession(session)).toBe(expected);

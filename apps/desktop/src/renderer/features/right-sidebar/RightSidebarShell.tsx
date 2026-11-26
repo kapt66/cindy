@@ -529,7 +529,9 @@ export function RightSidebarShell({
   // 面板收束后不再注册的历史页签在 hydration 后静默关闭，避免显示死页签。
   // `ghost:*`、`bot-delegations`、`bot-artifacts`、`bot-workbench`(伙伴工作台已并入聊天头部
   // 的近况浮层)和 `routines`(V1 伙伴例行工作已改为项目自动化)只作为数据库历史值保留。
-  // 这些 kind 已无渲染方,
+  // `remote-workspace-stream` 是「远程工作区」页签的前身(开发期形态,只按会话分桶存过)：
+  // 页签改成全局页签后不再有该 kind，遗留行在这里静默关掉，用户重新从标题栏按钮 /
+  // 「+」菜单打开新的「远程工作区」页。这些 kind 已无渲染方,
   // 留着只会落到 PlaceholderBody 变成"敬请期待"的死页签。
   useEffect(() => {
     if (soloMode || !isPrimaryGroup || !bucket.hydrated || !sessionId) return;
@@ -538,7 +540,8 @@ export function RightSidebarShell({
       tab.kind === ('bot-delegations' as TabKindId) ||
       tab.kind === ('bot-artifacts' as TabKindId) ||
       tab.kind === ('bot-workbench' as TabKindId) ||
-      tab.kind === ('routines' as TabKindId),
+      tab.kind === ('routines' as TabKindId) ||
+      tab.kind === ('remote-workspace-stream' as TabKindId),
     );
     if (legacyGhostTabs.length === 0) return;
     void (async () => {

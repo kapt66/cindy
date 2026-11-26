@@ -30,6 +30,15 @@ describe('resolveRemoteCodexModelHostId', () => {
     ).toBeNull();
   });
 
+  it('PSB 远程工作区身份同样永不进入 SSH 探针（同一份 gateway-key 口径）', () => {
+    expect(
+      resolveRemoteCodexModelHostId({
+        remoteHostId: 'psb:9d8b8f6e-0f3a-4d6b-8a1d-2f6c3a4b5c6d',
+        agentKind: 'codex',
+      }),
+    ).toBeNull();
+  });
+
   it('非 Codex 引擎不走这条探针', () => {
     expect(
       resolveRemoteCodexModelHostId({ remoteHostId: 'builder', agentKind: 'claude-code' }),
@@ -60,6 +69,12 @@ describe('resolveRemoteCodexModelHostId', () => {
       resolveRemoteCodexModelHostId({ remoteHostId: 'mcpr:', agentKind: 'codex' }),
     ).toBeNull();
   });
+
+  it('畸形 psb 值留在 PSB 路径上，不被误判成 SSH 主机', () => {
+    expect(
+      resolveRemoteCodexModelHostId({ remoteHostId: 'psb:', agentKind: 'codex' }),
+    ).toBeNull();
+  });
 });
 
 /**
@@ -79,12 +94,22 @@ describe('asSshRemoteHostId', () => {
     expect(asSshRemoteHostId('mcpr: id with space')).toBeNull();
   });
 
+  it('PSB 远程工作区身份（含畸形 psb: 与带空格的会话值）一律不是 SSH 主机', () => {
+    expect(asSshRemoteHostId('psb:')).toBeNull();
+    expect(asSshRemoteHostId('psb:9d8b8f6e-0f3a-4d6b-8a1d-2f6c3a4b5c6d')).toBeNull();
+    expect(asSshRemoteHostId('psb: id with space')).toBeNull();
+  });
+
   it('普通 host id 原样返回，大小写按主进程口径处理', () => {
     expect(asSshRemoteHostId('builder')).toBe('builder');
     expect(asSshRemoteHostId('host-with-dash.example')).toBe('host-with-dash.example');
-    // 主进程只认小写 `mcpr:` 前缀，`MCPr:` 因此是 SSH 主机；两侧必须一致（见下方矩阵）。
+    // 主进程只认小写 `mcpr:` / `psb:` 前缀，`MCPr:` / `PSB:` 因此是 SSH 主机；
+    // 两侧必须一致（见下方矩阵）。
     expect(asSshRemoteHostId('MCPr:upper-case-is-an-ssh-host')).toBe(
       'MCPr:upper-case-is-an-ssh-host',
+    );
+    expect(asSshRemoteHostId('PSB:upper-case-is-an-ssh-host')).toBe(
+      'PSB:upper-case-is-an-ssh-host',
     );
   });
 });
@@ -101,6 +126,15 @@ describe('resolveSshCodexCatalogHostId', () => {
         remoteHostId: 'mcpr:f235de4c-bed5-4486-a83e-71baa3f22a46',
       }),
     ).toBeNull();
+  });
+
+  it('PSB 远程工作区目标不建 SSH Codex 目录（模型面就是本机目录）', () => {
+    expect(
+      resolveSshCodexCatalogHostId({
+        remoteHostId: 'psb:9d8b8f6e-0f3a-4d6b-8a1d-2f6c3a4b5c6d',
+      }),
+    ).toBeNull();
+    expect(resolveSshCodexCatalogHostId({ remoteHostId: 'psb:' })).toBeNull();
   });
 
   it('真 SSH 目标照旧按需读取远端 Codex 清单', () => {
@@ -137,6 +171,11 @@ describe('渲染层判据与主进程 transport 分类器保持一致', () => {
     'mcpr:',
     'mcpr: id with space',
     'MCPr:upper-case-is-an-ssh-host',
+    // 第三种 transport（PSB 远程工作区）：与 mcpr 同口径，含畸形值与大小写边界。
+    'psb:9d8b8f6e-0f3a-4d6b-8a1d-2f6c3a4b5c6d',
+    'psb:',
+    'psb: id with space',
+    'PSB:upper-case-is-an-ssh-host',
   ];
 
   it('SSH-only 判据对同一批输入与 classifyRemoteSessionTransport 逐字一致', () => {
@@ -148,7 +187,7 @@ describe('渲染层判据与主进程 transport 分类器保持一致', () => {
     }
   });
 
-  it('两个入口判据都不会把 mcpr 当 SSH 主机', () => {
+  it('两个入口判据都不会把隧道身份（mcpr / psb）当 SSH 主机', () => {
     for (const remoteHostId of cases) {
       const mainSaysSsh = classifyRemoteSessionTransport(remoteHostId) === 'ssh';
       expect(

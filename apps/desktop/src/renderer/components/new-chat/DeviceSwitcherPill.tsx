@@ -16,7 +16,7 @@
  *     少一次换行。只有一台对端时不收(名字短,信息更重要)。
  */
 
-import { Check, ChevronDown, Cloud, Laptop } from 'lucide-react';
+import { Check, ChevronDown, Cloud, Laptop, Server } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -37,6 +37,12 @@ interface Props {
   /** Selected when the draft is waiting for an MCPRouter project choice. */
   mcprSelected?: boolean;
   onMcpRemoteSelect?: () => void;
+  /**
+   * 远程工作区渠道（PSB，第三种 transport）。与 MCPR 一样是并列的位置渠道：选中后右侧项目
+   * 胶囊变成工作区下拉；渠道本身不依赖是否已选过工作区（未选时显示「选择工作区」）。
+   */
+  psbSelected?: boolean;
+  onPsbRemoteSelect?: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** 窄屏(pill 排进正常流)时收成图标 + 状态点。 */
@@ -68,6 +74,8 @@ export function DeviceSwitcherPill({
   mcprConfigured = false,
   mcprSelected = false,
   onMcpRemoteSelect,
+  psbSelected = false,
+  onPsbRemoteSelect,
   open,
   onOpenChange,
   compact = false,
@@ -76,10 +84,17 @@ export function DeviceSwitcherPill({
   const { t } = useTranslation();
 
   const localLabel = t('ccAgent.sidebar.machineSwitcher.localMachine');
-  const label = mcprSelected
-    ? t('newChat.deviceSwitcher.mcprRemoteLabel')
-    : resolveDeviceLabel(devices, value, localLabel);
-  const current = mcprSelected ? null : value == null ? null : devices.find((d) => d.deviceId === value);
+  // 三个渠道互斥（本机 / MCPR远程 / 远程工作区）；远程工作区优先显示自己的渠道名。
+  const label = psbSelected
+    ? t('remoteWorkspace.sidebar.title')
+    : mcprSelected
+      ? t('newChat.deviceSwitcher.mcprRemoteLabel')
+      : resolveDeviceLabel(devices, value, localLabel);
+  const current = mcprSelected || psbSelected
+    ? null
+    : value == null
+      ? null
+      : devices.find((d) => d.deviceId === value);
   // 本机不画状态点(它永远在线,画了只是噪音)。
   const showDot = current != null;
   // 当前值必须进 aria-label:compact 模式下按钮只剩图标 + 状态点、不渲染设备名文本,只报
@@ -112,7 +127,9 @@ export function DeviceSwitcherPill({
             compact ? 'px-2.5' : 'min-w-20 max-w-[200px] px-3',
           )}
         >
-          {mcprSelected ? (
+          {psbSelected ? (
+            <Server size={12} strokeWidth={2} className="shrink-0 text-[var(--create-agent-control-icon)]" />
+          ) : mcprSelected ? (
             <Cloud size={12} strokeWidth={2} className="shrink-0 text-[var(--create-agent-control-icon)]" />
           ) : (
             <Laptop
@@ -165,7 +182,7 @@ export function DeviceSwitcherPill({
           icon={<Laptop size={20} strokeWidth={2} className="shrink-0 text-[var(--folder-item-icon)]" />}
           name={localLabel}
           hint={t('newChat.deviceSwitcher.localHint')}
-          selected={!mcprSelected && value == null}
+          selected={!mcprSelected && !psbSelected && value == null}
           onSelect={() => select(null, null)}
         />
 
@@ -179,9 +196,20 @@ export function DeviceSwitcherPill({
               ? t('newChat.deviceSwitcher.mcprRemoteHint')
               : t('newChat.deviceSwitcher.mcprRemoteDisconnectedHint')
           }
-          selected={mcprSelected}
+          selected={mcprSelected && !psbSelected}
           onSelect={() => {
             onMcpRemoteSelect?.();
+            onOpenChange(false);
+          }}
+        />
+
+        <DeviceRow
+          icon={<Server size={20} strokeWidth={2} className="shrink-0 text-[var(--folder-item-icon)]" />}
+          name={t('remoteWorkspace.sidebar.title')}
+          hint={t('remoteWorkspace.dialog.subtitle')}
+          selected={psbSelected}
+          onSelect={() => {
+            onPsbRemoteSelect?.();
             onOpenChange(false);
           }}
         />
@@ -204,7 +232,7 @@ export function DeviceSwitcherPill({
               online={device.online}
               // 离线设备点不动:隧道调用一定失败,不如在这里就说清楚。
               disabled={!device.online}
-              selected={!mcprSelected && value === device.deviceId}
+              selected={!mcprSelected && !psbSelected && value === device.deviceId}
               onSelect={() => select(device.deviceId, device.name)}
             />
           ))}

@@ -137,8 +137,12 @@ describe('NewMakerDraftRoute Orca worker create order', () => {
     );
     expect(sessionViewSource).toContain('if (sessionHandoffPreparing) return false;');
     expect(sessionViewSource).not.toContain('if (worktreePreparing) return false;');
-    expect(sessionViewSource).toContain(
-      "disabled={readOnly || remoteHandoffPreparing || session?.source === 'review'}",
+    // 不变量：composer 在**整段**远端交接期间保持禁用（不只是在协等待里）。
+    // 断言从「逐字表达式」放宽为「按顺序包含三个原始条件、允许追加其它门禁」：
+    // 2026-11-26 新增了 PSB 远程工作区的输入门禁（`psbInputBlocked`），它是在同一表达式里追加的
+    // 第四个条件；多一个合法门禁不应该让这条不变量消失，也不应该每次加门禁就逐字改测试。
+    expect(sessionViewSource).toMatch(
+      /disabled=\{\s*readOnly \|\|\s*remoteHandoffPreparing \|\|\s*session\?\.source === 'review'(?:\s*\|\|[^}]*)?\}/,
     );
   });
 

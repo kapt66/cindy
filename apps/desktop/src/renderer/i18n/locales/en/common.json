@@ -4630,8 +4630,7 @@
     },
     "experimental": {
       "title": "Experimental",
-      "toggleAria": "Toggle experimental feature: {{title}}",
-      "features": {}
+      "toggleAria": "Toggle experimental feature: {{title}}"
     },
     "lspMode": {
       "cell": {
@@ -13787,7 +13786,6 @@
       }
     }
   },
-  "markdown": {},
   "diffPanel": {
     "shell": {
       "resizeHandleAria": "Resize panel width",
@@ -22508,6 +22506,145 @@
       "network": "Connection lost, retrying…",
       "timeout": "Connection timed out, retrying…",
       "server": "Server busy, retrying…"
+    }
+  },
+  "remoteWorkspace": {
+    "sidebar": {
+      "title": "Remote workspaces",
+      "newSession": "New task",
+      "empty": "No remote workspace tasks yet",
+      "emptyHint": "Select or create a workspace with the + button.",
+      "loadFailed": "Could not load remote workspaces."
+    },
+    "admin": {
+      "title": "Remote workspace",
+      "loading": "Reading the remote workspace…",
+      "occupancyValue": "In use: {{value}}",
+      "occupancyFree": "Nobody",
+      "occupancyMine": "You",
+      "occupancyTakenByOther": "Someone else",
+      "categories": {
+        "connection": "Remote connection",
+        "versionControl": "Version control",
+        "settings": "Settings"
+      },
+      "emptyNoWorkspaceTitle": "No remote workspace yet",
+      "emptyNoWorkspaceHint": "Open a remote workspace task first, or open a workspace on the PSB website.",
+      "emptyUnavailableTitle": "This version does not support remote workspaces",
+      "emptyUnavailableHint": "Update Cindy to view and control remote workspaces here.",
+      "emptyLoadFailedTitle": "Couldn’t read the remote workspace",
+      "emptyLoadFailedHint": "Check your network and retry. Open tasks are not affected.",
+      "placeholderComingSoon": "Coming in a later version.",
+      "streamNotStarted": "Streaming is not started",
+      "streamStartHint": "Start it to watch the remote screen here; it keeps working after the task ends.",
+      "streamReasonNoDesktop": "This workspace has no running desktop yet. Start it on the PSB website’s Remote Control page first.",
+      "streamReasonCaptureNotReady": "The desktop is starting. Wait a moment, then start streaming again.",
+      "streamReasonNoStreaming": "Streaming is off on that computer. Update the PSB client there first.",
+      "actionOccupy": "Occupy",
+      "actionRelease": "Release",
+      "actionOpenWeb": "Open on web",
+      "actionOccupyDone": "Workspace occupied",
+      "actionReleaseDone": "Workspace released",
+      "enterFullscreen": "Full screen",
+      "exitFullscreen": "Exit full screen",
+      "inputInteractive": "Remote control on",
+      "inputCaptured": "Full-screen control",
+      "inputReadOnly": "View only",
+      "inputInteractiveHint": "Mouse and keyboard now go to the remote computer. Click the picture to type.",
+      "inputCapturedHint": "Full screen: every key and click goes to the remote computer, except F5 / F11 / F12 and Ctrl+Shift+I, J, C. Esc exits full screen.",
+      "inputReadOnlyHint": "View only: this version has no remote input channel, so the picture can be watched but not operated.",
+      "detailLastError": "Last error",
+      "detailReasonCode": "Reason code",
+      "detailDesktopSession": "Desktop state",
+      "desktopSessionNone": "No desktop",
+      "desktopSessionStarting": "Starting",
+      "desktopSessionRunning": "Running",
+      "streamInfo": "Stream info",
+      "streamInfoClose": "Close stream info",
+      "streamInfoCodec": "Codec",
+      "streamInfoBitrate": "Bitrate",
+      "streamInfoDecodeTime": "Decode time",
+      "streamInfoDropped": "Dropped frames",
+      "streamInfoQueue": "Queue",
+      "streamInfoConnection": "Connection",
+      "exitFullscreenEsc": "Exit full screen (Esc)",
+      "openWebGone": "This remote workspace no longer exists",
+      "occupancySelfValue": "{{name}} (you)"
+    },
+    "badge": {
+      "online": "Online",
+      "offline": "Offline",
+      "occupied": "In use",
+      "pending": "Preparing",
+      "failed": "Failed",
+      "agentUnsupported": "No agent"
+    },
+    "dialog": {
+      "title": "New remote workspace task",
+      "subtitle": "Pick a workspace to start a task. Selecting it reserves the workspace for you.",
+      "tabExisting": "Pick workspace",
+      "tabCreate": "Create workspace",
+      "directorySecondary": "Folder: {{directory}}",
+      "workspaceListLoading": "Loading workspaces…",
+      "workspaceListEmpty": "No workspaces are available.",
+      "refresh": "Refresh",
+      "client": "Machine",
+      "clientPlaceholder": "Select a machine",
+      "template": "Project template",
+      "templatePlaceholder": "Select a project template",
+      "titleLabel": "Title (optional)",
+      "titlePlaceholder": "For example: fix the checkout script",
+      "createWorkspace": "Create workspace",
+      "creatingWorkspace": "Creating workspace…",
+      "select": "Start task",
+      "cancel": "Cancel",
+      "clientOffline": "Machine is offline",
+      "working": "Working…"
+    },
+    "draft": {
+      "location": "Remote workspace",
+      "selectWorkspaceFirst": "Choose or create a remote workspace first.",
+      "actionBusy": "A send is in progress. Wait for it to finish, then choose a workspace."
+    },
+    "session": {
+      "stream": "Stream",
+      "start": "Start",
+      "stop": "Stop",
+      "details": "Details",
+      "streamIdle": "Streaming is off.",
+      "streamConnecting": "Connecting to the stream…",
+      "streamWaiting": "Connected, waiting for the screen…",
+      "streamLive": "Streaming",
+      "streamUnsupported": "This machine cannot stream.",
+      "streamFailed": "Streaming failed: {{message}}",
+      "stopFailed": "Could not reach the remote computer to stop streaming. The picture was cleared here, but streaming may still be running there.",
+      "reboundNotice": "The remote Agent session reconnected. This turn may not carry over its earlier context.",
+      "reboundNoticeDismiss": "Dismiss",
+      "openWorkspace": "Open workspace in browser",
+      "detailResolution": "Resolution",
+      "detailCodec": "Codec",
+      "detailFps": "Frame rate"
+    },
+    "input": {
+      "occupiedByOther": "This workspace is in use by someone else, so messages cannot be sent right now. Ask them to release it, or clear the lock on the PSB website and try again.",
+      "clientOffline": "The remote machine is offline, so messages cannot be sent right now.",
+      "workspaceNotReady": "The remote workspace is not ready yet."
+    },
+    "error": {
+      "auth": "Sign in with your Cindy organization account to use remote workspaces.",
+      "authExpired": "Your sign-in expired. Sign in again.",
+      "orgRequired": "Remote workspaces are available to organization members only.",
+      "identityNotLinked": "Your Cindy identity is not linked to a person in PSB yet. Ask your administrator to link it.",
+      "unreachable": "Could not reach PSB. Check your network and try again.",
+      "occupiedByOther": "This workspace is occupied by {{name}}. Ask them to release it, or clear the lock on the PSB website and try again.",
+      "workspaceOccupied": "This workspace is locked by someone else, so nothing can be sent or started right now. Ask them to release it, or clear the lock on the PSB website and try again.",
+      "clientOffline": "The remote machine is offline.",
+      "notFound": "The workspace or task does not exist, or you have no access to it.",
+      "unknown": "The action failed. Try again later."
+    },
+    "status": {
+      "needLogin": "Not signed in",
+      "needOrg": "Organization account required"
     }
   }
 }

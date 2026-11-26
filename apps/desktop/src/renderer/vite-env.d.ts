@@ -1954,6 +1954,13 @@ interface ElectronAPI {
     };
   };
 
+  /**
+   * PSB 远程工作区（`psb:` transport）的唯一 preload 桥。
+   * 组件不直接解构它：统一经 `features/remote-workspace/bridge.ts` 的
+   * `getPsbRemoteBridge()` / `tryGetPsbRemoteBridge()` 取用。
+   */
+  psbRemote: import('./features/remote-workspace/bridge').PsbRemoteBridge;
+
   pluginContributions: import('../shared/pluginContributions').PluginContributionsApi;
   pluginPublisher: {
     start: (filePath: string) => Promise<{ transferId: string; uploadId: string | null }>;

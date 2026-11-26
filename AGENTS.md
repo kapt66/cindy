@@ -105,6 +105,11 @@ Cindy 面向大众用户，让人以简单高效的方式用 AI 完成工作。�
   `docs/product-rules/meka-skills.md`。**Meka 私有产品线**的专属产品规则还包括
   `docs/product-rules/meka-capability-layers.md`（能力分层）与
   `docs/product-rules/mcpr-remote-project-sessions.md`（MCPRouter 远程项目会话）。
+- 新增或修改左侧「Meka 助理 › 远程工作区」入口、新建远程工作区会话弹窗、工作区占用（协作锁）、
+  远程会话输入禁用或串流观看面板，或调整 PSB 鉴权口径与端点切换前，必须先读
+  `docs/product-rules/psb-remote-workspace-sessions.md`：会话跑在 PSB 远端机器的工作区里，
+  Cindy 只做客户端；鉴权复用 Meka 提交那条 Connection JWT（不新增 audience），端点只用
+  `CINDY_MEKA_PSB_HOST` 在正式／测试部署间切换。
 - 新增或修改 Meka 项目的元数据发现清单（`AGENTS.md` / `CLAUDE.md` / `SKILL.md` /
   `rule` / `.mcp.json`，含面板里的「发现元数据」与 `enabled` 勾选），或处理别名文件、
   重复条目、条目描述与 `notes` 前，必须先读
@@ -305,6 +310,10 @@ Cindy 面向大众用户，让人以简单高效的方式用 AI 完成工作。�
 - 新增或修改 MCPRouter 远程任务启动、恢复、SSH preflight 或 `remoteHostId` 路由前，
   必须先读 `docs/dev-rules/mcpr-remote-session-routing.md`；`mcpr:<instanceId>` 与 SSH
   host 是不同 transport，不能共享 SSH pool 前置。
+- 新增或修改 PSB 远程工作区会话（`psb:` transport）的启动、恢复、agent-tunnel、HTTP 客户端、
+  IPC 面或串流观看端，或改动 `remoteHostId` 的 transport 分类前，必须先读
+  `docs/dev-rules/psb-remote-session-transport.md`；`psb:` 与 `mcpr:`、SSH 是三种并列的
+  transport，`psb:` 不得进入 SSH pool 或任何 SSH-only 探针。
 - 在 Cindy 内嵌 worktree 会话里工作、准备提交或直推、或做 code review 前，必须先读
   `docs/dev-rules/development-workflow.md`。
 - 把上游 `origin/main` 同步进 `meka/main` 前，必须先读
@@ -357,8 +366,17 @@ Cindy 面向大众用户，让人以简单高效的方式用 AI 完成工作。�
    唯一例外是**为决策取证**：某个实现方向依赖尚未确定的运行时行为、不实测就无法决定怎么写
    时，可跑最小定向检查（单个测试文件或一个最小复现脚本），诊断完即停，并在汇报里说明它是
    取证而不是门禁。用户明确要求“跑门禁／验证一下／看下测试”时按用户指定范围立即执行。
+6.1 **禁止重复跑长门禁（2026-11-26 维护者明确要求；单次 `test:unit:related` 约 40 分钟）**：
+   - 一次交付内，长门禁（`test:unit:related` / `test:unit` / `test:all`）**只在最终提交前
+     跑一次**；需求连续追加时先攒批，最后一轮再跑，**不得每轮收尾都跑**。
+   - 迭代期只允许：受影响单文件/目录的定向 `vitest run`、受影响 package 的 `typecheck`、
+     快检查（`check:i18n` / `check:i18n-glossary` / `check:dev-docs` / `check:test-hygiene`）。
+   - 长门禁已在本轮交付中全绿、之后只做局部小修时，提交前**只重跑受影响定向测试**，并在
+     提交说明/汇报中如实写「长门禁已通过，其后仅局部改动并定向复验」；**不要**为了形式再跑
+     一整轮。例外：局部小修触及测试调度、依赖清单、workspace/Vitest 配置时仍须重跑长门禁。
+   - 不要用「多跑几遍更保险」代替定向验证；每次运行前先确认它能提供新的证据。
 7. **「交付」的判据（不得用措辞绕过门禁）**：只要出现以下任一情形，就已经进入交付，必须
-   先按第 6 条**一次性跑完整门禁再对外声称完成**——准备 commit／push／提 PR；向用户宣称
+   先按第 6 / 6.1 条**跑完门禁再对外声称完成**——准备 commit／push／提 PR；向用户宣称
    “已完成／改好了／可以验收了”；把改动当作最终结果汇报或结束任务。**不允许**以“用户没说
    要 commit”“我只是报告一下”为由跳过门禁：第 9 项的如实报告是**兜底**，不是替代品。反之，
    纯阶段性进展同步（“已改到 X，还没跑门禁”）不属于交付，不必先跑门禁，但必须写明门禁未跑。

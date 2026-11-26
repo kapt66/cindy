@@ -44,3 +44,4 @@
 | 新电脑迁移插件、技能、设置与经确认的密钥 | [迁移助理](new-device-setup-migration.md) |
 | 首次登录后的综合引导：认识 Cindy、迁移、连接模型、导入本机已有内容 | [开始引导](first-run-guide.md) |
 | Meka 助理会话：它是什么、Meka 项目目录的隐式规则、对外仍是普通会话的边界 | [Meka 助理会话](meka-assistant-session.md) |
+| 远程工作区：左侧入口、选／建工作区与占用（协作锁）、远端 Agent 运行、串流观看 | [远程工作区](psb-remote-workspace-sessions.md) |

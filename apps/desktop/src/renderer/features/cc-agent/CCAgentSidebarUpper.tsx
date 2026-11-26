@@ -207,6 +207,8 @@ import { MekaFormalIssueModal, type PreparedMekaFormalDraft } from './MekaFormal
 import { NEW_MAKER_DRAFT_KEY } from './newMakerDraftKeys';
 import type { MekaProject } from '../../../shared/meka-projects';
 import { isMekaAssistantSession } from '../../../shared/mekaAssistantSession';
+import { isRemoteWorkspaceSession } from '@/features/remote-workspace/sidebar/isRemoteWorkspaceSession';
+import type { RemoteWorkspacePickerCreated } from '@/features/remote-workspace/dialog/RemoteWorkspacePickerDialog';
 // 上游 cd3921a43c「单机范围下保留按设备分组」把 Meka 侧原先消费的
 // `onlineDeviceSectionIds(...)` 换成了 `hasSettledOnlineDeviceSection(...)`
 // (同一模块;旧符号已无引用,故随上游一并去掉,避免留下未使用的 import)。
@@ -1661,12 +1663,21 @@ function ExpandedView({
   // **全部**派生(含 allProjectGroups / groupsWithPinnedProjects / projectUniverse)
   // 都必须走 nonMeka*,否则 Meka 会话会重复出现在普通项目分组里。身份按持久化绑定
   // 判定(isMekaAssistantSession),新会话的 workspaceKind 是普通值。
+  // 远程工作区(`psb:`)会话同理:它只属于「Meka 助理 › 远程工作区」节点(产品正本
+  // psb-remote-workspace-sessions.md §2.1「同一个会话只有一个归属位置」),所以这三个
+  // 排除点必须同时排除它 —— 漏一处就会在普通项目/对话段重复出现。
   const nonMekaSidebarSessions = useMemo(
-    () => sidebarSessions.filter((session) => !isMekaAssistantSession(session)),
+    () =>
+      sidebarSessions.filter(
+        (session) => !isMekaAssistantSession(session) && !isRemoteWorkspaceSession(session),
+      ),
     [sidebarSessions],
   );
   const nonMekaActivitySessions = useMemo(
-    () => activityFilteredSessions.filter((session) => !isMekaAssistantSession(session)),
+    () =>
+      activityFilteredSessions.filter(
+        (session) => !isMekaAssistantSession(session) && !isRemoteWorkspaceSession(session),
+      ),
     [activityFilteredSessions],
   );
   const allGroups = useProjectGroups(
@@ -1733,7 +1744,10 @@ function ExpandedView({
   const unfilteredProjectSessions = useMemo(
     () =>
       [...sessions, ...remoteProjectSessions].filter(
-        (session) => !isMekaAssistantSession(session) && passesOrcaAndStatus(session),
+        (session) =>
+          !isMekaAssistantSession(session) &&
+          !isRemoteWorkspaceSession(session) &&
+          passesOrcaAndStatus(session),
       ),
     [sessions, remoteProjectSessions, passesOrcaAndStatus],
   );
@@ -2038,6 +2052,14 @@ function ExpandedView({
   const visibleMekaSessions = useMemo(() => {
     const mekaSessions = activityFilteredSessions.filter(isMekaAssistantSession);
     return vendorPredicate ? mekaSessions.filter(vendorPredicate) : mekaSessions;
+  }, [activityFilteredSessions, vendorPredicate]);
+
+  // 远程工作区(`psb:`)会话:与 visibleMekaSessions 同一份来源(local-db:sessions:list)、
+  // 同一套筛选(最近活跃 / 创建者 / Agent),只是身份判据不同。它不进 Meka 项目分组,
+  // 由 MekaAssistantSection 内的 RemoteWorkspaceSection 单独渲染。
+  const visibleRemoteWorkspaceSessions = useMemo(() => {
+    const remoteSessions = activityFilteredSessions.filter(isRemoteWorkspaceSession);
+    return vendorPredicate ? remoteSessions.filter(vendorPredicate) : remoteSessions;
   }, [activityFilteredSessions, vendorPredicate]);
 
   // 对话段排序状态提升到此处:DialogueSection(展开态)受控消费,rail 对话
@@ -2931,6 +2953,36 @@ function ExpandedView({
     if (project.workflowType !== 'jira' && project.workflowType !== 'gitlab') return;
     setFormalMekaProject(project);
   }, []);
+
+  /**
+   * 远程工作区弹窗**选定工作区** → 进草稿页。
+   *
+   * 弹窗（`features/remote-workspace/dialog/`）只做「选 / 新建工作区 + 占用协作锁」，不创建
+   * PSB 会话；引擎与模型在草稿页选，`psb:<id>` 身份在首条消息时才生成。这里只把工作区级载荷
+   * 放进 route state 的 `psbTarget`（侧栏不写草稿字段、也不查客户端/工作区标题）。
+   * `workspacePrompt: 'generic'` 必须带 —— 否则草稿页的「对话」默认目录会覆盖远端目标
+   * （与 Meka / 设备渠道的既有口径一致）。
+   */
+  const handleRemoteWorkspaceTargetSelected = useCallback(
+    (target: RemoteWorkspacePickerCreated) => {
+      handleClearSelection();
+      // 不 replace：这是用户发起的「打开一个新草稿」，与其它新建入口一样留一条历史记录，
+      // 浏览器/应用内后退能回到点之前的位置（独立审查：replace 会把用户原来的页面顶掉）。
+      navigate('/cc-agent/new', {
+        state: {
+          ...makeNewMakerRouteState('generic'),
+          psbTarget: {
+            workspaceId: target.workspaceId,
+            clientId: target.clientId,
+            clientName: target.clientName,
+            workspaceTitle: target.workspaceTitle,
+            directoryName: target.directoryName,
+          },
+        },
+      });
+    },
+    [handleClearSelection, navigate],
+  );
 
   const handlePreparedFormalMeka = useCallback(
     (prepared: PreparedMekaFormalDraft) => {
@@ -3986,6 +4038,9 @@ function ExpandedView({
                   allKnownProjects={visibleProjectUniverse}
                   dialogueCount={allGroups.dialogues.length}
                   hasRemoteDevices={deviceGroupingAvailable}
+                  // 远程工作区(`psb:`)会话:独立节点,与 Meka 项目分组平级(不进项目分组)。
+                  remoteWorkspaceSessions={visibleRemoteWorkspaceSessions}
+                  onRemoteWorkspaceTargetSelected={handleRemoteWorkspaceTargetSelected}
                 />
                 {remoteSessionBootstrapFailures.length > 0 && (
                   <RemoteSidebarLoadNotice

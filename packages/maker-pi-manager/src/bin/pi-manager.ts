@@ -340,6 +340,11 @@ async function runDaemon(
   idleTimeoutSeconds?: number,
 ): Promise<void> {
   installCrashGuards();
+  // daemon 的**启动 cwd**：宿主（PSB agent-tunnel host / SSH 登入 shell）用它的会话工作区
+  // spawn 本 daemon；`chdir('/')` 只该让 daemon 自己脱离 SSH 挂载点，不能把「pi 子进程该在
+  // 哪个目录跑」一起丢掉。在 chdir 之前抓下来交给 registry 显式作为 spawn cwd。
+  let launchCwd: string | undefined;
+  try { launchCwd = process.cwd(); } catch { /* 已失效: 退回旧行为 */ }
   // daemon 化后脱离 SSH 会话 CWD(轮 4 LOW #3):防持有临时挂载点引用
   // (如 /tmp/ssh-xxx 独立挂载, 阻止 umount)。失败(如 Windows)忽略。
   try { process.chdir('/'); } catch { /* non-posix, ignore */ }
@@ -358,6 +363,8 @@ async function runDaemon(
   const registry = new PiSessionRegistry({
     sockDir,
     envDir,
+    // pi 子进程的 cwd 显式钉在 daemon 启动 cwd 上（宿主用它把会话工作区传进来；见上）。
+    ...(launchCwd !== undefined ? { defaultChildCwd: launchCwd } : {}),
     // 空闲回收超时可配置(秒):默认 1800s, 缩短便于真机验证(自审轮 10 B-1)。
     ...(idleTimeoutSeconds !== undefined
       ? { idleTimeoutMs: idleTimeoutSeconds * 1000 }

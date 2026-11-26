@@ -817,15 +817,25 @@ const MAX_LIMIT = 1000;
  * 失败 swallow 返 null 而非抛 —— 调用方应当把 null 视作 NOT_FOUND, 由业务自己决定 fallback。
  */
 /**
- * sessionId → remoteHostId 的进程内缓存 reader:session 的 remoteHostId 创建后
- * 不变,lazy resume 路径每次 send 都经过 ensureRemoteReadyForSessionStart,避免
- * 重复查库。查询成功(含行不存在)才缓存;DB 异常返回 null 但**不缓存** ——
- * 一次瞬时 DB 失败不该永久关闭该 session 的 remote ensure 兜底(否则远端
- * session 会被按本地会话处理远端 workingDir)。
+ * sessionId → remoteHostId 的进程内缓存 reader:remoteHostId 在会话生命周期内一般不变,
+ * lazy resume 路径每次 send 都经过 ensureRemoteReadyForSessionStart,避免重复查库。
+ * 查询成功(含行不存在)才缓存;DB 异常返回 null 但**不缓存** —— 一次瞬时 DB 失败不该
+ * 永久关闭该 session 的 remote ensure 兜底(否则远端 session 会被按本地会话处理远端
+ * workingDir)。
+ *
+ * **例外:`psb:` 会话会被重绑。** PSB 旧会话终态时,Cindy 在发送前同工作区新建一条
+ * PSB 会话并把 `remote_host_id` 改写成新身份(见 `main/remote-workspace/sessionRebind.ts`)。
+ * 改写必须同时调 `invalidate(sessionId)`,否则这里会一直返回旧身份,把后续 lazy-resume
+ * 引到一条已终态的 PSB 会话上。
  */
-export function createSessionRemoteHostIdReader(): (sessionId: string) => Promise<string | null> {
+export type SessionRemoteHostIdReader = ((sessionId: string) => Promise<string | null>) & {
+  /** 该会话的 remoteHostId 被改写后调用（psb 重绑）。 */
+  invalidate(sessionId: string): void;
+};
+
+export function createSessionRemoteHostIdReader(): SessionRemoteHostIdReader {
   const cache = new Map<string, string | null>();
-  return async (sessionId) => {
+  const read = async (sessionId: string): Promise<string | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null;
     }
@@ -844,6 +854,10 @@ export function createSessionRemoteHostIdReader(): (sessionId: string) => Promis
     cache.set(sessionId, value);
     return value;
   };
+  read.invalidate = (sessionId: string): void => {
+    cache.delete(sessionId);
+  };
+  return read;
 }
 
 export { getSessionRowSnapshot, getSessionRowSnapshotStrict, type SessionRowSnapshot } from '../sessionDispatchSnapshot.js';

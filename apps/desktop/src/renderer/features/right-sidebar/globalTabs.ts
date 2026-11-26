@@ -2,8 +2,13 @@
  * globalTabs —— 右侧栏「不跟对话」的全局页签。
  *
  * 右侧栏的页签分两类:任务页签(store.ts,按任务分桶、切任务跟着换)与全局页签
- * (本模块,全局一份、切任务留在原位)。全局页签今天只有一种内容:插件视图
- * (kind `plugin-view`,承载插件的 `mainView` 或 `panel` 页面)。
+ * (本模块,全局一份、切任务留在原位)。全局页签有两种内容:
+ *  - 插件视图(kind `plugin-view`,承载插件的 `mainView` 或 `panel` 页面);
+ *  - 远程工作区页(kind `remote-workspace-admin`):内容是**按工作区**的远程连接管理页
+ *    (产品正本 `docs/product-rules/psb-remote-workspace-sessions.md` §2.4)。工作区由主进程
+ *    解析(当前任务的 psb 会话任何状态 → 本机最近使用的工作区),页面不依赖任务是否结束;
+ *    所以它不能按任务分桶 —— 切任务后同一个页签继续可用,没有可用工作区时显示空态。
+ *    它不绑定任何插件实例,固定 id、全局至多一个。
  *
  * 持久化:renderer 自有的 localStorage(按数据所有者分键,重启保留,不经 main),
  * 与旧停靠面板的最小化状态同一条路;`storage` 事件做跨窗口同步(主窗 / 副窗 /
@@ -29,7 +34,13 @@ import { getDataOwnerGeneration } from '@/contexts/dataOwnerGeneration';
 import { createLogger } from '@/lib/logger';
 import { isSidebarTabWindow } from '@/lib/sidebarTabWindow';
 import { isTabPoppedOut } from '@/lib/sidebarTabWindowState';
-import { clearTabGroup, getTabGroupAssignments, setTabGroup, type TabGroupId } from './tabGroups';
+import {
+  clearTabGroup,
+  getTabGroupAssignments,
+  setTabGroup,
+  tabGroupOf,
+  type TabGroupId,
+} from './tabGroups';
 import type { TabState } from './types';
 
 const log = createLogger('rightSidebar.globalTabs');
@@ -43,6 +54,22 @@ const MAX_GLOBAL_TABS = 500;
 
 /** 页签承载插件的哪个页面:停靠面板(panel.html)或主视图(mainView.html)。 */
 export type PluginViewKind = 'panel' | 'main';
+
+/**
+ * 远程工作区页签。
+ *
+ * 固定 kind / id:全局至多一个,不跟任务、不跟插件实例。页签本身的 state 是空的 ——
+ * 它显示哪个远程工作区由主进程的 `adminContext` 决定(当前任务 psb 会话 → 最近使用工作区),
+ * 不落盘(见 `TabBody` 的 `RemoteWorkspaceAdminPanel`)。关闭时不需要记 dismissed
+ * (它不是插件,不会自动加回)。
+ */
+export const REMOTE_WORKSPACE_ADMIN_TAB_KIND = 'remote-workspace-admin' as const;
+export const REMOTE_WORKSPACE_ADMIN_TAB_ID = 'g_remote-workspace-admin';
+
+/** 是不是「远程工作区」全局页签(kind 级判定;id 由本模块固定,外部只认 kind)。 */
+export function isRemoteWorkspaceAdminKind(kind: string): boolean {
+  return kind === REMOTE_WORKSPACE_ADMIN_TAB_KIND;
+}
 
 export interface PluginViewTabState {
   /** 插件物理实例 id(storage part)。 */
@@ -126,10 +153,19 @@ export function sanitizeGlobalTabsSnapshot(raw: unknown): GlobalTabsSnapshot {
   if (!isPlainObject(raw)) return EMPTY;
   const tabs: TabState[] = [];
   const seen = new Set<string>();
+  let adminTaken = false;
   if (Array.isArray(raw.tabs)) {
     for (const entry of raw.tabs) {
       if (!isPlainObject(entry)) continue;
       if (typeof entry.id !== 'string' || !entry.id || seen.has(entry.id)) continue;
+      // 「远程工作区」页:固定 id / 空 state,全局至多一个。重复条目按第一条保留。
+      if (entry.kind === REMOTE_WORKSPACE_ADMIN_TAB_KIND) {
+        if (adminTaken) continue;
+        adminTaken = true;
+        seen.add(REMOTE_WORKSPACE_ADMIN_TAB_ID);
+        tabs.push({ id: REMOTE_WORKSPACE_ADMIN_TAB_ID, kind: REMOTE_WORKSPACE_ADMIN_TAB_KIND, state: {} });
+        continue;
+      }
       if (entry.kind !== 'plugin-view') continue;
       if (!isPlainObject(entry.state) || typeof entry.state.instanceId !== 'string') continue;
       seen.add(entry.id);
@@ -320,13 +356,60 @@ export function addGlobalPluginTab(
   return tab;
 }
 
+/**
+ * 「远程工作区」页签:已打开则返回现有的一条,否则加入(全局至多一个,幂等)。
+ * 页面内容跟随当前会话,所以 state 恒为空对象;没有打开会话时也可以先打开它(显示提示态)。
+ */
+export function addRemoteWorkspaceAdminTab(opts?: { groupId?: TabGroupId }): TabState | null {
+  const current = freshSnapshot();
+  const existing = current.tabs.find((tab) => isRemoteWorkspaceAdminKind(tab.kind));
+  if (existing) {
+    // 从「+」菜单加且带了组:把页签挪到当前网格的组里(与插件全局页签同款语义)。
+    if (opts?.groupId) setTabGroup(existing.id, opts.groupId);
+    return existing;
+  }
+  if (current.tabs.length >= MAX_GLOBAL_TABS) {
+    log.warn('global tab limit reached', { kind: REMOTE_WORKSPACE_ADMIN_TAB_KIND });
+    return null;
+  }
+  const tab: TabState = {
+    id: REMOTE_WORKSPACE_ADMIN_TAB_ID,
+    kind: REMOTE_WORKSPACE_ADMIN_TAB_KIND,
+    state: {},
+  };
+  if (opts?.groupId) setTabGroup(tab.id, opts.groupId);
+  persist({ ...current, tabs: [...current.tabs, tab] });
+  return tab;
+}
+
+/** 已打开的「远程工作区」页签;没有返回 null。 */
+export function findRemoteWorkspaceAdminTab(): TabState | null {
+  return getGlobalTabs().find((tab) => isRemoteWorkspaceAdminKind(tab.kind)) ?? null;
+}
+
+/**
+ * 「远程工作区」页签应该落在哪个页签组:**跟插件页签同一排**。
+ *
+ * 用户口径是「像插件窗口一样在左侧那排标签里新增一页」,而插件窗口落在哪个组取决于插件自己
+ * 的声明与用户的拖放(可能是 left / top / bottom),所以这里跟随插件页签而不是硬编码「左侧」;
+ * 一个插件页签都没有时退回停靠面板插件的缺省边 `left`(与 `defaultGroupForGhost` 一致)。
+ */
+export function preferredRemoteWorkspaceAdminGroup(): TabGroupId {
+  const pluginTab = getGlobalTabs().find((tab) => tab.kind === 'plugin-view');
+  return pluginTab ? tabGroupOf(getTabGroupAssignments(), pluginTab.id) : 'left';
+}
+
 /** 用户关闭全局页签:全局动作,同时记 dismissed,插件不再自动加回。 */
 export function removeGlobalTab(tabId: string): void {
   const current = freshSnapshot();
   const tab = current.tabs.find((candidate) => candidate.id === tabId);
   if (!tab) return;
-  const instanceId = (tab.state as PluginViewTabState).instanceId;
-  const dismissed = current.dismissedInstanceIds.includes(instanceId)
+  // 只有插件页签记 dismissed(「不再自动加回」);「远程工作区」页签由用户显式打开,
+  // 没有自动加回逻辑,关掉就是关掉,不留持久记账。
+  const instanceId = isRemoteWorkspaceAdminKind(tab.kind)
+    ? null
+    : (tab.state as PluginViewTabState).instanceId;
+  const dismissed = !instanceId || current.dismissedInstanceIds.includes(instanceId)
     ? current.dismissedInstanceIds
     : [...current.dismissedInstanceIds, instanceId];
   if (activeGlobalTabId === tabId) activeGlobalTabId = null;
@@ -489,7 +572,9 @@ function legacyPanelEdge(instanceId: string): TabGroupId | null {
 export function reconcileGlobalPluginTabs(ghosts: readonly InstalledGhost[]): void {
   const current = freshSnapshot();
   const installed = new Map(ghosts.map((ghost) => [installedGhostStoragePart(ghost), ghost]));
+  // 非插件来源的全局页签(「远程工作区」)不参与插件清单对齐,原地保留。
   let tabs = current.tabs.filter((tab) =>
+    isRemoteWorkspaceAdminKind(tab.kind) ||
     installed.has((tab.state as PluginViewTabState).instanceId),
   );
   let dismissed = current.dismissedInstanceIds.filter((id) => installed.has(id));

@@ -929,7 +929,10 @@ import {
   probeRemoteWorkingDirectory,
 } from '../remote-ssh/index.js';
 import { getMekaP4SettingsService, getMekaRouterService } from '../meka-settings/ipc.js';
-import { classifyRemoteSessionTransport } from '../maker-host/remote-session-routing.js';
+import {
+  classifyRemoteSessionTransport,
+  isTunnelRemoteSessionTransport,
+} from '../maker-host/remote-session-routing.js';
 import { createMekaWorkerTargetResolver } from './mekaWorkerTarget.js';
 import { applyMekaRuntimeConfig } from '../meka-injection/index.js';
 import { ensurePersistedMekaSessionBinding } from '../meka-injection/persistedBinding.js';
@@ -1014,6 +1017,14 @@ import {
   runPiPackageMutationIpcBoundary,
 } from './piPackageMutationIpc.js';
 import { dbToMakerAgentKind, makerToDbAgentKind } from '../../shared/agentKindConversion.js';
+import {
+  createPsbSessionRebindCoordinator,
+  type PsbSessionRebindDeps,
+} from '../remote-workspace/sessionRebind.js';
+import { getPsbRemoteService } from '../remote-workspace/index.js';
+import { broadcastPsbSessionsRebound } from '../remote-workspace/push.js';
+import { PsbClientError, toPsbRemoteFailure } from '../remote-workspace/psbClient.js';
+import { parsePsbRemoteHostId } from '../../shared/psb-remote-workspace.js';
 import { normalizeSessionContextWindowBoundsRoute } from '../../shared/sessionContextWindowBounds.js';
 import { readWorkflowProgressForSession } from '../workflow-progress/reader.js';
 import { readSessionBackgroundTaskOutputTail } from '../background-task-output/reader.js';
@@ -9284,6 +9295,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     creationSignal?.addEventListener('abort', closeCancelled, { once: true });
     try {
     assertAccess?.();
+    // PSB 远程工作区的「cwd 归远端宿主」判定**不在这里**：它在 maker-core 的
+    // `lifecycleHooks.prepareStartOptions` 里统一打标（`maker-host/index.ts`）。这个 funnel 只
+    // 覆盖经桌面的 create/lazy-create/resume，绕过它的恢复路径（Goal 恢复 / IM / hook-control）
+    // 会把虚拟 cwd 漏下发给远端；判定下沉到所有 createSession 都必经的钩子后，这里不再重复。
     await applyPersistedCindyMakeMarker(o, readSessionSource);
     assertAccess?.();
     // 协同远端 Worker 的代理任务行只承接计槽与回报，真实任务在运行设备上，绝不在本机起 Agent。
@@ -10522,16 +10537,17 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
     }
 
-    // MCPRouter 会话的 transport 身份是 `mcpr:<instance.id>`，永远不是 SSH pool key。
+    // 隧道 transport 的身份(`mcpr:<instance.id>` / `psb:<sessionId>`)永远不是 SSH pool key。
     // 上游把 ensureRemoteHostReady 提到 ensureAgentKind 之前，因此 transport 分类守卫
-    // 也随之前置 —— WL-4.1.2 要求 MCPRouter guard 严格早于任何 SSH preflight。
+    // 也随之前置 —— WL-4.1.2 要求 MCPRouter guard 严格早于任何 SSH preflight
+    // （PSB 远程工作区是同一类逻辑隧道身份，见 `docs/dev-rules/psb-remote-session-transport.md` §1）。
     //
-    // 三个引擎(claude-code / codex / pi)在 `mcpr:` 上一律**早返回**:MCPRouter 侧自带
+    // 三个引擎(claude-code / codex / pi)在两种隧道 transport 上一律**早返回**:远端自带
     // 运行时物化与 pi-manager 会话管理(隧道实现见 `maker-host/pi-mcpr-remote.ts`),
     // 二进制安装 / daemon 预上传 / SSH pool 前置都不适用于这条 transport。
     // 2026-09-29~10-09 这里曾对 `pi` 抛 `MCPR_AGENT_UNSUPPORTED`;那是一个引擎级静态门禁,
     // 已随 `mode=pi` 隧道落地撤除(见 `docs/dev-rules/pi-harness.md`「MCPRouter 远端(MCPR)」)。
-    if (classifyRemoteSessionTransport(remoteHostIdToEnsure) === 'mcpr') {
+    if (isTunnelRemoteSessionTransport(remoteHostIdToEnsure)) {
       return;
     }
 
@@ -10744,7 +10760,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     const session = maker.getSession(sessionId);
     const remoteHostId = session?.remoteHostId;
     if (!remoteHostId) return;
-    if (classifyRemoteSessionTransport(remoteHostId) === 'mcpr') return;
+    // 隧道 transport(`mcpr:` / `psb:`)没有 SSH 反向转发,也没有需要在这里补刀的
+    // daemon MCP 配置;把隧道身份喂进 SSH pool 只会得到「host 未就绪」的误导归因。
+    if (isTunnelRemoteSessionTransport(remoteHostId)) return;
     const host = getRemoteSshPool().get(remoteHostId);
     const hostReady = host?.getStatus() === 'ready';
     // agent-proxy 的 live-turn defer 在这里补刀 — codex 与 CC 的 turn 收口
@@ -18862,6 +18880,107 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     return readRuntimePluginSettings(sessionId) ?? {};
   });
 
+  /**
+   * psb: 远程工作区会话的**发送前透明重建**协调器（决策与幂等收在
+   * `main/remote-workspace/sessionRebind.ts`，这里只注入主进程副作用）。
+   *
+   * 旧 PSB 会话终态/已不存在时，在同一工作区新建一条 PSB 会话并把本地会话行重绑过去，
+   * 然后由发送事务关掉仍持旧身份的空闲 runtime、用新身份继续这一轮。
+   */
+  const psbSessionRebind = createPsbSessionRebindCoordinator({
+    log,
+    readSessionRow: async (sessionId) => {
+      let row:
+        | {
+            remoteHostId: string | null;
+            agentKind: string;
+            title: string | null;
+            sdkSessionId: string | null;
+          }
+        | undefined;
+      try {
+        [row] = await getDbClient()
+          .drizzle
+          .select({
+            remoteHostId: sessions.remoteHostId,
+            agentKind: sessions.agentKind,
+            title: sessions.title,
+            sdkSessionId: sessions.sdkSessionId,
+          })
+          .from(sessions)
+          .where(eq(sessions.id, sessionId))
+          .limit(1);
+      } catch (error) {
+        // 读库失败不能把本次发送整条挡掉（这个钩子对每个带 createOpts 的发送都会跑）：
+        // 当作「不是 psb 会话」继续走既有链路，下一次发送再判断。
+        log.warn('psb rebind: reading the session row failed (treating as non-psb)', {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+      if (!row) return null;
+      // workspaceId 由旧 PSB 会话行读取（PSB 是权威来源，重启后同样成立）；本地不存这一列，
+      // 见 docs/dev-rules/psb-remote-session-transport.md §6.1「工作区身份的来源」。
+      return { ...row, workspaceId: null };
+    },
+    isTurnRunning: (sessionId) => maker.getSession(sessionId)?.isTurnRunning() === true,
+    readRemoteSession: async (psbSessionId) => {
+      try {
+        return { kind: 'found', result: await getPsbRemoteService().sessionStatus(psbSessionId) };
+      } catch (error) {
+        // 404/403 = PSB 明确说这条会话记录不存在/不可见：这是终态之外唯一还需要重建的
+        // 触发条件。其余失败原样上抛（网络 / 鉴权 / 协议错），不做任何重绑。
+        if (error instanceof PsbClientError && (error.status === 404 || error.status === 403)) {
+          return { kind: 'missing' };
+        }
+        return { kind: 'failed', failure: toPsbRemoteFailure(error) };
+      }
+    },
+    listWorkspaces: async () => {
+      try {
+        return { kind: 'listed', workspaces: await getPsbRemoteService().listWorkspaces() };
+      } catch (error) {
+        return { kind: 'failed', failure: toPsbRemoteFailure(error) };
+      }
+    },
+    createRemoteSession: async (input) => {
+      try {
+        return { kind: 'created', result: await getPsbRemoteService().createSession(input) };
+      } catch (error) {
+        return { kind: 'failed', failure: toPsbRemoteFailure(error) };
+      }
+    },
+    persistRebind: async (input) => {
+      const written = await getDbClient()
+        .drizzle
+        .update(sessions)
+        .set({
+          remoteHostId: input.remoteHostId,
+          // 新 PSB 会话是全新的远端引擎会话：旧的原生会话 id 在新会话里不存在，
+          // 留着只会让 lazy-create 去 resume 一个没有的会话而拒绝启动。
+          ...(input.clearNativeSession ? { sdkSessionId: null } : {}),
+          updatedAt: Date.now(),
+        })
+        .where(and(
+          eq(sessions.id, input.sessionId),
+          eq(sessions.remoteHostId, input.previousRemoteHostId),
+        ))
+        .returning({ id: sessions.id });
+      if (written.length === 0) return 'conflict';
+      // 进程内 remoteHostId 缓存假设「创建后不变」，重绑必须显式让它失效，
+      // 否则后续 lazy-resume 仍会拿到已终态的旧 PSB 身份。
+      readSessionRemoteHostIdCached.invalidate(input.sessionId);
+      broadcastSessionPatched(input.sessionId, { remoteHostId: input.remoteHostId });
+      return 'persisted';
+    },
+    stopRemoteSession: async (psbSessionId) => {
+      await getPsbRemoteService().stopSession(psbSessionId);
+    },
+    emitRebound: (event) => broadcastPsbSessionsRebound(event),
+    createRequestId: () => randomUUID(),
+  } satisfies PsbSessionRebindDeps);
+
   const {
     sendToAgentAccepted: sendToAgentAcceptedUnlocked,
     prewarmSession: prewarmSessionRuntime,
@@ -19138,6 +19257,18 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
     prepareUnhealthySession: (sessionId) =>
       prepareUnhealthySessionForSend(sessionId),
+    // psb: 远程工作区的旧 PSB 会话终态/已不存在时，发送前在同一工作区重建会话并重绑，
+    // 用户不需要重试（见 main/remote-workspace/sessionRebind.ts）。
+    preparePsbRemoteRebind: (sessionId) => psbSessionRebind.prepareForSend(sessionId),
+    // psb: 发送前的占用闸门（PSB 服务端拒绝未锁定者的写入）。非 psb 会话在这里直接返回，
+    // 不发任何请求；psb 会话按「缓存 + 足够新的 PSB 会话快照」控制请求次数。
+    preparePsbWorkspaceLock: async (sessionId) => {
+      const remoteHostId = maker.getSession(sessionId)?.remoteHostId
+        ?? (await readSessionRemoteHostIdCached(sessionId));
+      const psbSessionId = parsePsbRemoteHostId(remoteHostId ?? null);
+      if (!psbSessionId) return;
+      await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId);
+    },
     workdirDiagnostics: workdirLog,
     log,
   });

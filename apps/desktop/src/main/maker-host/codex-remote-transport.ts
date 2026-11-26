@@ -616,15 +616,36 @@ export interface McprCodexTransportOptions {
   logger: Logger;
   openStream?: (instanceId: string) => Promise<ExecStreamHandle>;
   handshakeTimeoutMs?: number;
+  /**
+   * 关闭/日志归因用的 transport 标签（默认 `'MCPRouter'`）。
+   *
+   * 这条 transport 现在被两种隧道 transport 复用（`mcpr:` 与 `psb:`），字节协议一字未变；
+   * 区别只在"隧道属于谁"。标签只影响**错误归因文案**，不改变任何行为——PSB 会话上报
+   * 「MCPRouter tunnel closed」会把运维指向错误的系统。
+   */
+  transportLabel?: string;
+  /**
+   * transport 进入**终态**时调用一次（主动 close / 隧道断开 / 握手失败都会触发）。
+   *
+   * PSB 用它释放同会话的控制通道（`mode=cc-mgr` 那条长连接）：那条通道在
+   * `mcpr-codex-capability` 里按 `psb:<sessionId>` 缓存，只靠「流自己 close」清不掉，
+   * 会话退休后会留下一条没人认领的隧道。回调里的异常不会影响 close 的其它订阅者。
+   */
+  onClosed?: () => void;
 }
 
 /**
  * Run Codex app-server behind MCPRouter's `codex-appserver` byte tunnel.
  * The first line is a spawn header consumed by the remote cc-mgr bridge; all
  * following bytes are the ordinary Codex app-server NDJSON protocol.
+ *
+ * PSB remote-workspace sessions reuse this transport unchanged: the caller injects
+ * `openStream` (PSB `mode=codex-appserver` tunnel) and a PSB-specific `buildHeader`, so no
+ * second Codex protocol implementation exists (`docs/dev-rules/psb-remote-session-transport.md` §2).
  */
 export function createMcprCodexTransport(opts: McprCodexTransportOptions): Transport {
   const logger = opts.logger.child('codex-mcpr-transport');
+  const transportLabel = opts.transportLabel ?? 'MCPRouter';
   const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
   const openStream = opts.openStream
     ?? ((instanceId: string) => openMcprTunnel(
@@ -655,7 +676,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
       clearTimeout(handshakeTimer);
       handshakeTimer = null;
     }
-    const error = new Error(`McprCodexTransport closed: ${reason}`);
+    const error = new Error(`${transportLabel} Codex transport closed: ${reason}`);
     for (const pending of pendingWrites.splice(0)) pending.reject(error);
     try {
       stream?.kill();
@@ -671,6 +692,11 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
         // A close subscriber must not prevent the remaining subscribers.
       }
     }
+    try {
+      opts.onClosed?.();
+    } catch {
+      // Terminal-state cleanup must never mask the close reason.
+    }
   };
 
   const fireLine = (line: string): void => {
@@ -683,7 +709,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
 
   const writeRaw = (data: string): Promise<void> => {
     if (!stream || state !== 'open') {
-      return Promise.reject(new Error(`McprCodexTransport.writeLine: state=${state}`));
+      return Promise.reject(new Error(`${transportLabel} Codex transport writeLine: state=${state}`));
     }
     try {
       stream.write(data);
@@ -720,10 +746,10 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
     });
     handle.onClose((info) => {
       const detail = info.signal ?? (info.code !== null ? `code=${info.code}` : 'unknown');
-      fireClose(`MCPRouter tunnel closed (${detail})`);
+      fireClose(`${transportLabel} tunnel closed (${detail})`);
     });
     handle.onError((error) => {
-      fireClose(`MCPRouter tunnel error: ${error.message}`);
+      fireClose(`${transportLabel} tunnel error: ${error.message}`);
     });
 
     handle.write(`${JSON.stringify({ [CODEX_BRIDGE_HEADER_KEY]: header })}\n`);
@@ -735,7 +761,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
     for (const pending of pendingWrites.splice(0)) {
       writeRaw(`${pending.line}\n`).then(pending.resolve, pending.reject);
     }
-    logger.info('MCPRouter Codex transport open', { instanceId: opts.instanceId });
+    logger.info(`${transportLabel} Codex transport open`, { instanceId: opts.instanceId });
   };
 
   handshakeTimer = setTimeout(() => {
@@ -753,7 +779,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
   return {
     writeLine(line: string): Promise<void> {
       if (state === 'closed') {
-        return Promise.reject(new Error('McprCodexTransport.writeLine after close'));
+        return Promise.reject(new Error(`${transportLabel} Codex transport writeLine after close`));
       }
       if (state === 'connecting') {
         return new Promise<void>((resolve, reject) => {
@@ -787,7 +813,7 @@ export function createMcprCodexTransport(opts: McprCodexTransportOptions): Trans
       };
     },
 
-    async close(reason = 'McprCodexTransport.close()'): Promise<void> {
+    async close(reason = `${transportLabel} Codex transport close()`): Promise<void> {
       if (state === 'closed') return;
       try {
         stream?.end();
