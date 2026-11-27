@@ -8,6 +8,11 @@ import Text from '@tiptap/extension-text';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useComposerSendFocusRestore } from '../useComposerSendFocusRestore';
+import {
+  __resetConfirmDialogKeyboardGuardForTests,
+  noteConfirmDialogOpened,
+  noteConfirmDialogSettled,
+} from '@/lib/confirmDialogKeyboardGuard';
 
 interface HarnessProps {
   sendDispatchInFlight: boolean;
@@ -317,6 +322,44 @@ describe('useComposerSendFocusRestore', () => {
       sendDispatchInFlight: true,
       allowTypeDuringSend: true,
       voiceLocked: false,
+    });
+    flushAnimationFrames();
+
+    expect(document.activeElement).toBe(editor.view.dom);
+    expect(editor.state.selection.from).toBe(2);
+    expect(editor.state.selection.to).toBe(6);
+  });
+
+  // 2026-11-27 复测：PSB 发送前占用预检会在发送途中异步弹确认框。解锁那一拍焦点在确认框里，
+  // 不能当成「用户已经去了别处」把待恢复的意图丢掉；确认框彻底关闭后焦点要回到 composer。
+  it('defers the restore while a confirm dialog opened by the send owns focus', () => {
+    const editor = createEditor();
+    const hook = renderRestoreHook(editor);
+
+    focusComposerSelection(editor);
+    act(() => {
+      hook.result.current();
+    });
+    hook.rerender({
+      sendDispatchInFlight: true,
+      allowTypeDuringSend: false,
+      voiceLocked: false,
+    });
+    act(() => editor.view.dom.blur());
+
+    act(() => {
+      noteConfirmDialogOpened();
+    });
+    hook.rerender({
+      sendDispatchInFlight: false,
+      allowTypeDuringSend: false,
+      voiceLocked: false,
+    });
+    flushAnimationFrames();
+    expect(document.activeElement).not.toBe(editor.view.dom);
+
+    act(() => {
+      noteConfirmDialogSettled();
     });
     flushAnimationFrames();
 

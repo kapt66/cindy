@@ -27,6 +27,7 @@ import type {
   PsbRemoteSession,
   PsbRemoteWorkspace,
   PsbSessionStreamStatus,
+  PsbWorkspaceAccessStartResult,
   PsbWorkspaceAccessState,
   PsbWorkspaceStreamSubscription,
   PsbFailureFields,
@@ -41,17 +42,20 @@ import {
   PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
   PSB_LOCAL_DIAGNOSTIC_CODES,
   PSB_NO_RUNNING_SESSION_CODE,
-  PSB_WEB_ROUTES,
   isPsbWorkspaceAccessState,
   parsePsbProjectTemplate,
   parsePsbRemoteClient,
   parsePsbRemoteSession,
   parsePsbRemoteWorkspace,
   parsePsbSessionStreamStatus,
+  parsePsbWorkspaceAccessStartResult,
   parsePsbWorkspaceStreamSubscription,
   psbFailureMessageKeyForPsbCode,
+  psbNoRunningSessionIpcCode,
   psbNoRunningSessionMessageKey,
   readPsbFailureFields,
+  readPsbWorkspaceAccessState,
+  resolvePsbFailureCode,
 } from '../../shared/psb-remote-workspace.js';
 import { parseWorkspaceVcsNotice, readAdvisoryWorkspaceVcs } from '../../shared/psb-workspace-vcs.js';
 import type { WorkspaceVcsNotice } from '../../shared/psb-workspace-vcs.js';
@@ -94,20 +98,12 @@ export interface PsbApiDeps {
   logger: Logger;
   timeoutMs?: number;
   /**
-   * 「拉起桌面访问」用的路径构造器。**生产不要传**（用共享契约的
-   * `PSB_WEB_ROUTES.workspaceAccessStart`）；只在 PSB 改路由时由装配点覆盖一次，
-   * 或单测里钉住路径。除此之外**不允许**在别处拼这条 URL。
-   */
-  workspaceAccessStartPath?: (workspaceId: string) => string;
-  /**
-   * `ensureWorkspaceAccess` 轮询 `GET …/access` 到 `running` 的预算。
+   * `ensureWorkspaceAccess` 轮询 `GET …/access` 到 `running` 的预算（CINDY-RW-17）。
    *
    * **总预算是 deadline 语义**（`totalMs`），不是「次数 × 单次超时」：每次请求的超时会被压到
-   * 「剩余预算」以内，所以最坏等待时间恒为 `totalMs`（旧实现 attempts=6 + 每次 20s 时最坏
-   * 可等 ~120s，用户点一次启动会卡两分钟）。
-   *
-   * 生产默认 {@link PSB_ACCESS_POLL_DEFAULT}（约 5s）；单测注入 `intervalMs: 0` 避免真实等待
-   * （测试卫生要求不做 ≥100ms 真实等待）。
+   * 「剩余预算」以内，所以最坏等待时间恒为 `totalMs`。生产默认
+   * {@link PSB_ACCESS_POLL_DEFAULT}（90s，覆盖 Unity / 虚拟桌面的冷启动）；单测注入
+   * `intervalMs: 0` 与短 `totalMs` 避免真实等待（测试卫生要求不做 ≥100ms 真实等待）。
    */
   accessPoll?: { attempts?: number; intervalMs?: number; totalMs?: number };
 }
@@ -204,17 +200,22 @@ function psbFailureFromResponse(input: {
     const noRunning = readNoRunningSessionFailure(input);
     if (noRunning) return noRunning;
   }
+  // CINDY-RW-17：业务码可能只出现在 `details.code`（外层是泛化的 FORBIDDEN / CONFLICT）。
+  // 提升判据在共享契约（命中失败单表才算），两边只读这一份。
+  const code = resolvePsbFailureCode(input) ?? input.code;
   const occupiedName = readOccupiedByName(input.details);
-  const messageKey = psbMessageKeyForErrorCode(input.code);
+  const messageKey = psbMessageKeyForErrorCode(code);
   const vcs = readWorkspaceVcsNotice(input.details);
   return {
-    code: input.code,
+    code,
     messageKey,
     // 占用失败的 `message` **只放占用人名**（拿不到就空串）：IPC 只能跨进程带 code+message，
     // 渲染层据此回填 `{{name}}`；混进 PSB 的中文原文会让「人名」变成一整句话。
     //
     // 版本控制检查失败相反：`details.vcs.messageZh` 才是给用户看的事实（「工作区有未提交
     // 修改：2 个检出」），PSB 的 `error.message` 常常是空的，所以这里用它兜底。
+    // 其它可行动失败（如 WORKSPACE_NOT_OCCUPIED / TOO_MANY_TUNNELS）的 `error.message` 是
+    // PSB 的可读中文原话，保留为兜底 / 诊断行。
     message:
       messageKey === PSB_FAILURE_DESCRIPTORS.PSB_WORKSPACE_OCCUPIED_BY_OTHER.messageKey
         ? (occupiedName ?? '')
@@ -399,25 +400,45 @@ export interface PsbApi {
    * `error.details.code='NO_RUNNING_SESSION'` + `details.state`（none/starting/stopping/
    * stopped/failed）与可行动中文；本函数把它解析成
    * `failure.code='PSB_STREAM_NO_RUNNING_SESSION'` + `failure.streamAccessState`，调用方据此
-   * 选文案与是否重试（见 `readNoRunningSessionFailure`）。**不要**在这里自动拉访问——Cindy
-   * 现在还没有被放行的拉起入口（`ensureWorkspaceAccess` 是可选增强）。
+   * 选文案与是否重试（见 `readNoRunningSessionFailure`）。**不要**在这里自动拉访问：CINDY-RW-17
+   * 起拉起访问是启动串流的**必经步骤**，由调用方先调 `ensureWorkspaceAccess`（失败带码）。
    */
   subscribeWorkspaceStream(workspaceId: string): Promise<PsbWorkspaceStreamSubscription>;
   /**
-   * **尽力**拉起该工作区的桌面访问（可选增强；失败一律非致命）。
+   * **幂等 ensure** 该工作区的桌面访问（CINDY-RW-17，PSB 0.1.183）。
    *
-   * 语义（PSB 0.1.180）：`POST /api/remote/workspaces/:id/access/start` 是**幂等 ensure**
-   * （200/202/409）；成功后轮询 `GET /api/cindy/remote/workspaces/:id/access` 直到 `running`
-   * 或超时。它是 PSB 网页「远程控制 › 启动访问」那条链的机器形态。
+   * `POST /api/cindy/remote/workspaces/:id/access/start`：工作区空闲未占用 → 403
+   * `WORKSPACE_NOT_OCCUPIED`（用户确认占用后重试）；被他人占用 → 409
+   * `WORKSPACE_OCCUPIED_BY_OTHER`；成功 202（开始启动）/ 200（已在 starting 或 running，
+   * `attached:true`）。解析见 {@link PsbWorkspaceAccessStartResult}。
+   */
+  startWorkspaceAccess(workspaceId: string): Promise<PsbWorkspaceAccessStartResult>;
+  /**
+   * 读该工作区桌面访问的当前状态（`GET …/access` 的 `data.access.state`）。
    *
-   * ## 为什么是「尽力」而不是闸门
+   * `null` = PSB 没给 / 给了 Cindy 不认识的词（不猜成某个已知状态）。
+   */
+  readWorkspaceAccess(workspaceId: string): Promise<PsbWorkspaceAccessState | null>;
+  /**
+   * **网页同款状态机**确保桌面访问到 `running`：读 access → 终态（none/stopped/failed）
+   * 才 `POST access/start` → 轮询 `GET access` 到 running。
    *
-   * PSB 的 Cindy Bearer 白名单目前**没有放行** `/api/remote/**`（恒 403），PSB 台账记的是
-   * 「Cindy 入口下一轮加」。所以本函数把 403/404/405/`UNSUPPORTED` 收敛成
-   * `reason:'cindy-entry-not-open'` 的**非致命**结果，调用方继续走原有错误路径（订阅 409 会
-   * 给出可行动文案）。**不抛异常**：一条未放行的增强接口不能把「启动串流」变成失败。
+   * - `running` → 直接返回，**不 POST**；
+   * - `starting` → 只轮询（不重复 POST，重复 POST 在 PSB 是幂等 attach，但没必要）；
+   * - `stopping` → 先等它落定，再 POST start，再轮询；
+   * - `none` / `stopped` / `failed` / 未知词 → POST start（幂等）→ 轮询到 running。
    *
-   * 结果形状见 {@link PsbWorkspaceAccessEnsureOutcome}。
+   * ## fatal 语义（调用方决定是否致命）
+   *
+   * 本函数**不抛异常**，把失败收敛成可行动的失败码：403 `WORKSPACE_NOT_OCCUPIED` →
+   * `reason:'not-occupied'`；409 `WORKSPACE_OCCUPIED_BY_OTHER` → `reason:'occupied-by-other'`；
+   * 404/405/`UNIMPLEMENTED`（旧 PSB）→ `reason:'unsupported'`（调用方退回直接订阅）；
+   * 预算用尽 → `reason:'timeout'`（`failure` 带 `PSB_STREAM_ACCESS_STARTING` 等可行动码）。
+   * 调用方（`adminService.streamStart`）在启动串流这条路径上把它当**闸门**：除 `unsupported`
+   * 外一律带码抛出。
+   *
+   * 轮询预算默认 {@link PSB_ACCESS_POLL_DEFAULT}（90s，覆盖 Unity / 虚拟桌面冷启动），
+   * 单次请求超时被压到剩余预算内（总预算 = deadline）。
    */
   ensureWorkspaceAccess(workspaceId: string): Promise<PsbWorkspaceAccessEnsureOutcome>;
   stopSession(sessionId: string): Promise<void>;
@@ -425,26 +446,33 @@ export interface PsbApi {
 }
 
 /**
- * 「尽力拉起桌面访问」的结果。
+ * `ensureWorkspaceAccess` 失败时的可归因分类（**调用方决定是否致命**）。
  *
- * 全是数据、没有异常：调用方只按 `ok` / `reason` 记日志，然后继续原来的启动流程。
- * `failure` 只在能归因时带上（`cindy-entry-not-open` 也带，便于把 403 与「真失败」分开写日志）。
+ * - `unsupported`：旧 PSB 没有这条路由（404/405/`UNIMPLEMENTED`）→ **不致命**，退回直接订阅
+ *   （订阅的 409 会给出可行动文案）；
+ * - `not-occupied`：工作区空闲未占用（403 `WORKSPACE_NOT_OCCUPIED`）→ 由用户确认占用后重试；
+ * - `occupied-by-other`：被他人占用（409）→ 等待 / 换工作区；
+ * - `timeout`：预算内没到 `running`（`failure` 带按最后观察状态的 wait 文案码）；
+ * - `failed`：其它业务 / 网络 / 协议失败（`failure` 为可归因形状或本地诊断码）。
  */
+export type PsbWorkspaceAccessEnsureReason =
+  | 'unsupported'
+  | 'not-occupied'
+  | 'occupied-by-other'
+  | 'timeout'
+  | 'failed';
+
 export type PsbWorkspaceAccessEnsureOutcome =
   | {
       readonly ok: true;
       readonly state: 'running';
-      /** `true` = 是这次调用把它从非 running 拉到 running（轮询期间观察到的）。 */
+      /** `true` = 是这次调用把它从非 running 拉到 running（发出了 start 或等待它落定）。 */
       readonly startedByThisCall: boolean;
     }
   | {
       readonly ok: false;
-      /**
-       * - `cindy-entry-not-open`：Cindy 身份没被放行（403）/ 路由不存在（404/405/旧 PSB）；
-       * - `timeout`：接口受理了，但轮询预算内没到 `running`（例如 Unity 还没就绪）；
-       * - `failed`：其它业务 / 网络 / 协议失败（同样不阻断订阅）。
-       */
-      readonly reason: 'cindy-entry-not-open' | 'timeout' | 'failed';
+      readonly reason: PsbWorkspaceAccessEnsureReason;
+      /** `unsupported` 时为 `null`；其余原因带可归因失败（跨 IPC 前由调用方 `PsbClientError` 抛出）。 */
       readonly failure: PsbRemoteFailure | null;
     };
 
@@ -459,55 +487,48 @@ export interface PsbWorkspaceOperationOutcome {
 }
 
 /**
- * `ensureWorkspaceAccess` 的**总预算**（生产默认）。
+ * `ensureWorkspaceAccess` 的**总预算**（生产默认，CINDY-RW-17）。
  *
- * `totalMs` 是硬 deadline：无论轮询次数与单次请求超时怎么配，整条「拉起桌面访问」最多占用
- * 这么久。`attempts` / `intervalMs` 只是节奏（短预算时提前结束）。约 5s：够 Unity / 虚拟桌面
- * 走完常见启动，又不至于让用户点「启动」后长时间没有结果——超时不是错误，调用方继续走
- * 原有订阅路径（订阅 409 会带 `starting`，界面侧还有一次自动重试）。
+ * `totalMs` 是硬 deadline：无论轮询次数与单次请求超时怎么配，整条「启动访问」最多占用这么久。
+ * 90s 覆盖 Unity / 虚拟桌面的冷启动（旧值 5s 在真机上几乎必然超时，那时它还只是可选增强）；
+ * `attempts` / `intervalMs` 只是节奏上限（短预算时提前结束）。
  */
 export const PSB_ACCESS_POLL_DEFAULT = {
-  attempts: 6,
+  attempts: 180,
   intervalMs: 500,
-  totalMs: 5_000,
+  totalMs: 90_000,
 } as const;
 
 /**
- * 从 `GET …/access`（或 `POST …/access/start`）的响应里读桌面访问状态。
+ * 「拉起访问」失败的归因：哪些算「旧 PSB 没有这条路由」（非致命、退回直接订阅）。
  *
- * **响应形状 PSB 还没给最终示例**（跟进项登记在
- * `docs/collaboration/psb-remote-workspace-contract.md`），所以只认三种同义字段
- * （`state` / `desktopSession` / 嵌套 `access.state`），都是「访问实例自身状态」这一个概念；
- * 读不到 / 未知值一律 `null`，由调用方按「没拿到」处理，**不猜**。
- */
-export function readWorkspaceAccessState(value: unknown): PsbWorkspaceAccessState | null {
-  if (!isRecord(value)) return null;
-  const nestedAccess = isRecord(value['access']) ? value['access']['state'] : undefined;
-  for (const candidate of [value['state'], value['desktopSession'], nestedAccess]) {
-    if (isPsbWorkspaceAccessState(candidate)) return candidate;
-  }
-  return null;
-}
-
-/**
- * 「拉起访问」失败的归因：哪些算「Cindy 入口还没开放」（非致命、不记 warn）。
- *
- * 403 = 白名单不放行（真机现状）；404/405 = 旧 PSB 没有这条路由；`UNSUPPORTED` /
- * `NOT_IMPLEMENTED` / `ROUTE_NOT_FOUND` 是 PSB 旧版本的等价回答。
+ * 只有 404 / 405 与它们的等价业务码。**403 不再算**：CINDY-RW-17 起 Cindy Bearer 已放行，
+ * 403 是 PSB 的业务守卫（`WORKSPACE_NOT_OCCUPIED`）或真实鉴权失败，必须原样交给上层。
  */
 function isAccessEnsureRouteUnavailable(error: unknown): boolean {
   if (!(error instanceof PsbClientError)) return false;
-  if (error.status === 403 || error.status === 404 || error.status === 405) return true;
+  if (error.status === 404 || error.status === 405) return true;
   switch (error.failure.code) {
-    case PSB_ERROR_CODES.forbidden:
     case PSB_ERROR_CODES.notFound:
     case 'UNSUPPORTED':
     case 'NOT_IMPLEMENTED':
     case 'ROUTE_NOT_FOUND':
+    case 'HTTP_404':
+    case 'HTTP_405':
       return true;
     default:
       return false;
   }
+}
+
+/** 预算用尽 / access 落回非 running 时的可行动失败（复用「没有 running 访问」三档单表）。 */
+function accessStateFailure(state: PsbWorkspaceAccessState | null): PsbRemoteFailure {
+  return {
+    code: psbNoRunningSessionIpcCode(state),
+    messageKey: psbNoRunningSessionMessageKey(state),
+    message: null,
+    streamAccessState: state,
+  };
 }
 
 /** 轮询间隔（尊重 `unref`：主进程退出时不该被一条等待拖住）。 */
@@ -528,17 +549,13 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       body?: unknown;
       token: string;
       timeoutMs?: number;
-      /** 仅「拉起桌面访问」的 `POST /api/remote/…/access/start` 打开（见 `resolvePsbUrl`）。 */
-      allowPsbWebNamespace?: boolean;
     },
   ): Promise<{ response: Response; text: string }> {
     // URL 解析与越界判定只走 `resolvePsbUrl`（origin / 归一化 pathname / 命名空间三道）：
     // 外部下发的路径（VCS actions）不能靠字符串白名单拦，归一化会把 `%2e%2e` 变成 `..`。
     let url: string;
     try {
-      url = resolvePsbUrl(path, {
-        ...(init.allowPsbWebNamespace === true ? { allowPsbWebNamespace: true } : {}),
-      });
+      url = resolvePsbUrl(path);
     } catch (error) {
       if (error instanceof PsbUrlRejectedError) {
         deps.logger.warn('psb request path was rejected before sending', {
@@ -606,16 +623,6 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       body?: unknown;
       parse: (data: unknown) => T | null;
       allowEmptyResult?: boolean;
-      /**
-       * 允许**没有 `{ data }` 外壳**的成功响应（返回 `undefined`，不判协议错）。
-       *
-       * 只给「尽力拉起桌面访问」这两条**可选增强**接口用：PSB 0.1.180 的 access 路由还没有
-       * 给最终响应示例（跟进项登记在 `docs/collaboration/psb-remote-workspace-contract.md`），
-       * 202/200 可能是空对象或平铺对象。这里拿不到
-       * `state` 只意味着「没观察到状态」，不该把一次 202 判成契约违约——调用方继续轮询 / 继续
-       * 走原来的订阅路径。Cindy 命名空间的常规接口**不**开这个口子（外壳缺失必须响亮失败）。
-       */
-      allowMissingDataEnvelope?: boolean;
       /** 订阅串流专用：把 409「没有 running 桌面访问」解析成结构化失败（见 `call` 的调用点）。 */
       mapNoRunningSession?: boolean;
       /**
@@ -623,8 +630,6 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
        * **总预算**，不能让每次请求各自吃满 20s（见 `ensureWorkspaceAccess`）。
        */
       timeoutMs?: number;
-      /** 只给「拉起桌面访问」的 `POST /api/remote/…/access/start`（见 `resolvePsbUrl`）。 */
-      allowPsbWebNamespace?: boolean;
     },
   ): Promise<T> {
     const method = options.method ?? 'GET';
@@ -642,7 +647,6 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
           ...(options.body === undefined ? {} : { body: options.body }),
           token: auth.token,
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-          ...(options.allowPsbWebNamespace === true ? { allowPsbWebNamespace: true } : {}),
         });
       } catch (error) {
         // 已经是可归因失败（例如 URL 越界被判协议违约）：原样上抛，不再包成网络失败。
@@ -723,9 +727,7 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       // 2026-11-26 的联调就撞过这个坑——`stream/status` 少包一层 `data` 时，宽松的解析器把
       // `undefined` 静默回落成默认值（`capability:false` + 空错误），HTTP 200 却看不出任何异常，
       // 只能靠人肉比对 `/clients` 才发现。这里把「没有 data 键」当协议错抛出，同类问题不再被掩盖。
-      // 例外只有显式开启 `allowMissingDataEnvelope` 的可选增强接口（见该选项的说明）。
       if (envelope === null || !('data' in envelope)) {
-        if (options.allowMissingDataEnvelope === true) return undefined as T;
         deps.logger.warn('psb response is missing the data envelope', { label, status });
         throw new PsbClientError(
           {
@@ -966,18 +968,39 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
         },
       );
     },
+    async startWorkspaceAccess(workspaceId) {
+      // CINDY-RW-17 幂等 ensure 的写入口（Cindy 命名空间，Bearer 已放行）。
+      // 202 = 开始启动；200 = 已 starting / running（`attached:true`）。业务失败
+      // （403 WORKSPACE_NOT_OCCUPIED / 409 WORKSPACE_OCCUPIED_BY_OTHER）由调用方按可行动失败处理。
+      return call('workspace-access-start', PSB_CINDY_ROUTES.accessStart(workspaceId), {
+        method: 'POST',
+        parse: parsePsbWorkspaceAccessStartResult,
+      });
+    },
+    async readWorkspaceAccess(workspaceId) {
+      const read = await call<{ state: PsbWorkspaceAccessState | null }>(
+        'workspace-access-status',
+        PSB_CINDY_ROUTES.workspaceAccess(workspaceId),
+        { parse: (data) => ({ state: readPsbWorkspaceAccessState(data) }) },
+      );
+      return read.state;
+    },
     /**
-     * 尽力拉起桌面访问（幂等 ensure + 轮询到 running）。**永不抛异常**。
+     * 网页同款「启动访问」状态机（CINDY-RW-17）。**永不抛异常**，失败收敛成可行动结果。
      *
-     * 顺序刻意固定：先 POST 通用网页接口（PSB 侧网页链同一条），200/202 视为受理，然后轮询
-     * Cindy 命名空间的 `GET …/access`。403/404/405（Cindy 白名单未放行 / 旧 PSB）→ 非致命
-     * `cindy-entry-not-open`；轮询预算用尽 → `timeout`；其它 → `failed`。
+     * 顺序刻意固定（与 Cindy 网页接入口径一致）：
+     *   读 `GET …/access` → `running` 直接返回（不 POST）；`starting` 只轮询（不重复 POST）；
+     *   `stopping` 等落定再 POST；`none` / `stopped` / `failed` / 未知词 POST `access/start`
+     *   （幂等 ensure）→ 轮询到 `running`。
      *
-     * 这里**不**做失败缓存 / 熔断：它只在用户点「启动」且需要重新订阅时调用一次，频率与人工
-     * 点击同阶，删掉复杂度比省一次 403 更值。
+     * 请求数：running / starting 只读；终态 = 1 次 POST + N 次读。所有请求的超时都被压到
+     * 「剩余总预算」以内（见 {@link PSB_ACCESS_POLL_DEFAULT}，生产 90s 覆盖 Unity 冷启动）。
      */
     async ensureWorkspaceAccess(workspaceId) {
-      const pollAttempts = Math.max(1, deps.accessPoll?.attempts ?? PSB_ACCESS_POLL_DEFAULT.attempts);
+      const pollAttempts = Math.max(
+        1,
+        deps.accessPoll?.attempts ?? PSB_ACCESS_POLL_DEFAULT.attempts,
+      );
       const pollIntervalMs = Math.max(
         0,
         deps.accessPoll?.intervalMs ?? PSB_ACCESS_POLL_DEFAULT.intervalMs,
@@ -986,101 +1009,183 @@ export function createPsbApi(deps: PsbApiDeps): PsbApi {
       const deadline = Date.now() + totalMs;
       /** 剩余预算；每次请求的超时都压到它以内，保证整条流程不越过 deadline。 */
       const remainingBudgetMs = (): number => Math.max(1, deadline - Date.now());
-      const startPath =
-        deps.workspaceAccessStartPath?.(workspaceId) ??
-        PSB_WEB_ROUTES.workspaceAccessStart(workspaceId);
+      /** 最后一次观察到的状态（预算用尽时据它选「等启动 / 等结束」文案）。 */
+      let lastState: PsbWorkspaceAccessState | null = null;
 
-      let startedState: PsbWorkspaceAccessState | null = null;
-      try {
-        const accepted = await call<{ state: PsbWorkspaceAccessState | null }>(
-          'workspace-access-start',
-          startPath,
-          {
-            method: 'POST',
-            allowEmptyResult: true,
-            allowMissingDataEnvelope: true,
-            timeoutMs: remainingBudgetMs(),
-            allowPsbWebNamespace: true,
-            parse: (data) => ({ state: readWorkspaceAccessState(data) }),
-          },
-        );
-        startedState = accepted?.state ?? null;
-      } catch (error) {
+      /** 一次 access 相关请求的结果。 */
+      type AccessStep =
+        | { readonly kind: 'state'; readonly state: PsbWorkspaceAccessState | null }
+        | { readonly kind: 'unsupported' }
+        | {
+            readonly kind: 'blocked';
+            readonly reason: 'not-occupied' | 'occupied-by-other';
+            readonly failure: PsbRemoteFailure;
+          }
+        | { readonly kind: 'error'; readonly failure: PsbRemoteFailure };
+
+      function classify(error: unknown): AccessStep {
+        const failure = toPsbRemoteFailure(error);
         const unavailable = isAccessEnsureRouteUnavailable(error);
-        deps.logger.info('psb workspace access ensure is not available; continuing without it', {
+        deps.logger.info('psb workspace access request failed', {
           workspaceId,
           unavailable,
-          code: error instanceof PsbClientError ? error.failure.code : 'UNKNOWN',
+          code: failure.code,
           status: error instanceof PsbClientError ? error.status : null,
         });
-        return {
-          ok: false,
-          reason: unavailable ? 'cindy-entry-not-open' : 'failed',
-          failure: error instanceof PsbClientError ? error.failure : null,
-        };
-      }
-
-      if (startedState === 'running') {
-        return { ok: true, state: 'running', startedByThisCall: false };
-      }
-      if (
-        startedState === 'none' ||
-        startedState === 'stopped' ||
-        startedState === 'failed'
-      ) {
-        // 幂等 ensure 回答「没有 running 也没有在启动」：PSB 的网页链可能要求人的确认，Cindy
-        // 不在这里反复重试。继续走 subscribe，让它的 409 给用户可行动文案。
-        deps.logger.info('psb workspace access ensure did not start the access', {
-          workspaceId,
-          state: startedState,
-        });
-        return { ok: false, reason: 'failed', failure: null };
-      }
-
-      for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
-        if (Date.now() >= deadline) break;
-        if (attempt > 0 && pollIntervalMs > 0) {
-          await waitForAccessPoll(Math.min(pollIntervalMs, remainingBudgetMs()));
+        if (unavailable) return { kind: 'unsupported' };
+        // PSB 的守卫契约：空闲未占用 / 被他人占用是两个不同下一步（确认占用 / 等对方释放）。
+        if (failure.code === PSB_ERROR_CODES.workspaceNotOccupied) {
+          return { kind: 'blocked', reason: 'not-occupied', failure };
         }
-        if (Date.now() >= deadline) break;
-        let state: PsbWorkspaceAccessState | null;
+        if (failure.code === PSB_ERROR_CODES.occupiedByOther) {
+          return { kind: 'blocked', reason: 'occupied-by-other', failure };
+        }
+        return { kind: 'error', failure };
+      }
+
+      /** 非 state 步骤 → 最终结果（state 步骤返回 `null`，由调用方继续状态机）。 */
+      function settle(step: AccessStep): PsbWorkspaceAccessEnsureOutcome | null {
+        if (step.kind === 'unsupported') return { ok: false, reason: 'unsupported', failure: null };
+        if (step.kind === 'blocked') {
+          return { ok: false, reason: step.reason, failure: step.failure };
+        }
+        if (step.kind === 'error') return { ok: false, reason: 'failed', failure: step.failure };
+        return null;
+      }
+
+      async function readState(): Promise<AccessStep> {
         try {
           const read = await call<{ state: PsbWorkspaceAccessState | null }>(
             'workspace-access-status',
             PSB_CINDY_ROUTES.workspaceAccess(workspaceId),
             {
-              allowMissingDataEnvelope: true,
               timeoutMs: remainingBudgetMs(),
-              parse: (data) => ({ state: readWorkspaceAccessState(data) }),
+              parse: (data) => ({ state: readPsbWorkspaceAccessState(data) }),
             },
           );
-          state = read?.state ?? null;
+          if (read.state !== null) lastState = read.state;
+          return { kind: 'state', state: read.state };
         } catch (error) {
-          const unavailable = isAccessEnsureRouteUnavailable(error);
-          deps.logger.info('psb workspace access status is not readable; continuing without it', {
-            workspaceId,
-            unavailable,
-            code: error instanceof PsbClientError ? error.failure.code : 'UNKNOWN',
-            status: error instanceof PsbClientError ? error.status : null,
-          });
-          return {
-            ok: false,
-            reason: unavailable ? 'cindy-entry-not-open' : 'failed',
-            failure: error instanceof PsbClientError ? error.failure : null,
-          };
+          return classify(error);
         }
-        if (state === 'running') {
-          return { ok: true, state: 'running', startedByThisCall: true };
-        }
-        if (state === 'none' || state === 'stopped' || state === 'failed') break;
       }
 
-      deps.logger.info('psb workspace access did not reach running within the poll budget', {
-        workspaceId,
-        attempts: pollAttempts,
-        lastState: startedState,
-      });
-      return { ok: false, reason: 'timeout', failure: null };
+      async function startAccess(): Promise<AccessStep> {
+        try {
+          const result = await call<PsbWorkspaceAccessStartResult>(
+            'workspace-access-start',
+            PSB_CINDY_ROUTES.accessStart(workspaceId),
+            {
+              method: 'POST',
+              timeoutMs: remainingBudgetMs(),
+              parse: parsePsbWorkspaceAccessStartResult,
+            },
+          );
+          const state = result.state ?? result.access?.state ?? null;
+          if (state !== null) lastState = state;
+          return { kind: 'state', state };
+        } catch (error) {
+          return classify(error);
+        }
+      }
+
+      /** 在预算内按节奏等待；返回 `false` = 预算已用尽。 */
+      async function sleepWithinBudget(): Promise<boolean> {
+        if (Date.now() >= deadline) return false;
+        if (pollIntervalMs > 0) {
+          await waitForAccessPoll(Math.min(pollIntervalMs, remainingBudgetMs()));
+        }
+        return Date.now() < deadline;
+      }
+
+      /** 轮询到 running；终态 / 超时给可行动失败（不会在终态上继续空转到预算用尽）。 */
+      async function pollToRunning(
+        startedByThisCall: boolean,
+      ): Promise<PsbWorkspaceAccessEnsureOutcome> {
+        for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
+          if (attempt > 0) {
+            if (!(await sleepWithinBudget())) break;
+          } else if (Date.now() >= deadline) {
+            break;
+          }
+          const step = await readState();
+          const settled = settle(step);
+          if (settled) return settled;
+          if (step.kind !== 'state') continue;
+          if (step.state === 'running') {
+            return { ok: true, state: 'running', startedByThisCall };
+          }
+          if (step.state === 'starting' || step.state === 'stopping' || step.state === null) {
+            continue;
+          }
+          // none / stopped / failed：start 没有生效（访问被回收 / 启动失败），继续等不会变好。
+          deps.logger.info('psb workspace access left the running path while polling', {
+            workspaceId,
+            state: step.state,
+          });
+          return { ok: false, reason: 'failed', failure: accessStateFailure(step.state) };
+        }
+        deps.logger.info('psb workspace access did not reach running within the poll budget', {
+          workspaceId,
+          attempts: pollAttempts,
+          lastState,
+        });
+        return { ok: false, reason: 'timeout', failure: accessStateFailure(lastState) };
+      }
+
+      /**
+       * 等 `stopping` 落定：running → 直接可用；落定到终态 → `null`（由调用方 POST start）；
+       * 预算内没落定 → 可行动「正在结束」失败（不笼统报失败，也不重复 POST）。
+       */
+      async function waitUntilSettled(): Promise<PsbWorkspaceAccessEnsureOutcome | null> {
+        for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
+          if (!(await sleepWithinBudget())) break;
+          const step = await readState();
+          const settled = settle(step);
+          if (settled) return settled;
+          if (step.kind !== 'state') continue;
+          if (step.state === 'stopping' || step.state === null) continue;
+          if (step.state === 'running') {
+            return { ok: true, state: 'running', startedByThisCall: false };
+          }
+          return null;
+        }
+        deps.logger.info('psb workspace access was still stopping when the poll budget ran out', {
+          workspaceId,
+          lastState,
+        });
+        return { ok: false, reason: 'timeout', failure: accessStateFailure(lastState ?? 'stopping') };
+      }
+
+      // ── 1) 先读 access（Cindy 口径：只有终态才 POST start）──
+      const initial = await readState();
+      const initialSettled = settle(initial);
+      if (initialSettled) return initialSettled;
+      if (initial.kind === 'state') {
+        if (initial.state === 'running') {
+          return { ok: true, state: 'running', startedByThisCall: false };
+        }
+        if (initial.state === 'starting') return pollToRunning(false);
+        if (initial.state === 'stopping') {
+          const waited = await waitUntilSettled();
+          if (waited) return waited;
+        }
+      }
+
+      // ── 2) 终态 / 未知状态词：幂等 start，再轮询到 running ──
+      const started = await startAccess();
+      const startedSettled = settle(started);
+      if (startedSettled) return startedSettled;
+      const startedState = started.kind === 'state' ? started.state : null;
+      if (startedState === 'running') {
+        return { ok: true, state: 'running', startedByThisCall: true };
+      }
+      if (startedState === 'stopping') {
+        // start 撞上另一条正在停止的访问（PSB 幂等 ensure 只调用一次，不在这里重试 start）。
+        const waited = await waitUntilSettled();
+        if (waited) return waited;
+      }
+      return pollToRunning(true);
     },
     async getSession(sessionId) {
       const session = await call('get-session', PSB_CINDY_ROUTES.session(sessionId), {

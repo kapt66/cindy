@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import { isInteractiveFocusedElement } from './composerBlankPointerFocus';
+import {
+  isConfirmDialogOpen,
+  subscribeConfirmDialogSettled,
+} from '@/lib/confirmDialogKeyboardGuard';
 
 export interface ComposerFocusEditor {
   readonly isDestroyed: boolean;
   readonly isEditable: boolean;
   readonly isFocused: boolean;
   readonly view: { readonly dom: HTMLElement };
-  readonly commands: { focus: () => unknown };
+  readonly commands: {
+    focus: (
+      position: null,
+      options?: { scrollIntoView?: boolean },
+    ) => unknown;
+  };
 }
 
 interface PendingComposerFocusRestore {
@@ -76,8 +85,12 @@ export function useComposerSendFocusRestore(
       return;
     }
 
-    const frame = window.requestAnimationFrame(() => {
-      if (pendingRestoreRef.current !== pendingRestore) return;
+    let cancelled = false;
+    let frame = 0;
+    let unsubscribeSettled: (() => void) | undefined;
+
+    const attemptRestore = () => {
+      if (cancelled || pendingRestoreRef.current !== pendingRestore) return;
       if (editor.isDestroyed) {
         pendingRestoreRef.current = null;
         return;
@@ -89,6 +102,16 @@ export function useComposerSendFocusRestore(
         pendingRestoreRef.current = null;
         return;
       }
+      // 发送前占用预检（PSB）会在发送途中异步弹确认框。焦点在确认框里时不能按
+      // 「焦点已经去了别的控件」处理：等确认框队列彻底关闭后再归还焦点，否则取消确认后
+      // composer 拿不回焦点（用户以为在输入框里回车/输入，实际没有落点）。
+      if (isConfirmDialogOpen()) {
+        unsubscribeSettled?.();
+        unsubscribeSettled = subscribeConfirmDialogSettled(scheduleRestore);
+        return;
+      }
+      unsubscribeSettled?.();
+      unsubscribeSettled = undefined;
       if (
         hasFocusMovedToInteractiveElement(pendingRestore.focusAnchor, editor.view.dom) ||
         hasNonCollapsedSelectionOutsideComposer(editor.view.dom)
@@ -98,10 +121,23 @@ export function useComposerSendFocusRestore(
       }
 
       pendingRestoreRef.current = null;
-      editor.commands.focus();
-    });
+      // 只归还焦点，不强制滚动：发送后的恢复/确认框关闭时，输入框本来就在视口里；
+      // 强制滚动会在关闭模态的同一拍里把视口顶走。
+      editor.commands.focus(null, { scrollIntoView: false });
+    };
 
-    return () => window.cancelAnimationFrame(frame);
+    const scheduleRestore = () => {
+      if (cancelled) return;
+      frame = window.requestAnimationFrame(attemptRestore);
+    };
+
+    scheduleRestore();
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      unsubscribeSettled?.();
+    };
   }, [composerTypingLocked, editor]);
 
   return useCallback(() => {

@@ -22900,6 +22900,7 @@
       "workspaceOccupied": "Otra persona está usando este espacio de trabajo. Quita el bloqueo en el sitio web de PSB y vuelve a intentarlo.",
       "occupyRequired": "Aún no has ocupado este espacio de trabajo. Ocúpalo primero.",
       "agentSessionActive": "Todavía hay una tarea en ejecución en este espacio de trabajo. Termínala o detenla antes de liberarlo.",
+"tooManyTunnels": "Esta sesión remota ha agotado los cupos de túnel/visualización (4 por defecto). Cierra o detén otras sesiones remotas y vuelve a intentarlo.",
       "clientOffline": "Ese equipo está sin conexión. Inténtalo más tarde.",
       "unknown": "La acción falló. Inténtalo de nuevo más tarde."
     },

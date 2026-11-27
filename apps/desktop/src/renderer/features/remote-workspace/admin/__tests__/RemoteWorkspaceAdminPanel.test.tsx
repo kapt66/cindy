@@ -1489,8 +1489,70 @@ it('surfaces a manual start failure without auto-retrying', async () => {
   await act(async () => {});
   expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
   // 已知错误码显示可行动文案（网络问题 →「检查网络后重试」），不是通用「操作失败」。
-  expect(screen.getByRole('alert').textContent).toContain(
-    i18n.t('remoteWorkspace.error.unreachable'),
+  // 且呈现方式是**不占布局**的 toast：布局里没有错误条（2026-11-27 用户口径）。
+  expect(toast.error).toHaveBeenCalledWith(
+    expect.stringContaining(i18n.t('remoteWorkspace.error.unreachable')),
+  );
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+  // 持久状态仍在布局里：回到「串流未启动」。
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamIdle'),
+  );
+});
+
+/* ============ 等待桌面访问启动：显示「正在启动桌面访问…」（CINDY-RW-17） ============ */
+
+it('shows the access-starting copy while PSB is bringing the desktop access up', async () => {
+  // CINDY-RW-17：main 的启动串流会先 ensure 桌面访问（读 access → 终态才 start → 轮询到
+  // running，预算 90s 覆盖 Unity 冷启动）。等待期不能显示「正在连接串流」——那会让用户以为
+  // 本端连接卡住并反复点「启动」。
+  let resolveStart: ((value: unknown) => void) | null = null;
+  bridge.adminStreamStart.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveStart = resolve;
+      }),
+  );
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.admin.streamAccessStarting'),
+  );
+
+  await act(async () => {
+    resolveStart?.({ status: STREAM_ACTIVE, workspaceId: 'ws-a', viewerSessionId: 'viewer-a' });
+  });
+  // 启动落定后回到原有的「已连接，等待画面…」。
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamWaiting'),
+  );
+});
+
+it('shows the actionable tunnel-capacity copy instead of a generic failure', async () => {
+  // TOO_MANY_TUNNELS（PSB-RW-17）：隧道 / 观看名额已满。文案必须说清下一步（关闭或停止其它
+  // 远程会话后重试），而不是一句「操作失败」；也不该给「在网页启动访问」这种无效降级入口。
+  bridge.adminStreamStart.mockRejectedValue(new Error('[PSB_TOO_MANY_TUNNELS] 隧道数量已达上限。'));
+  await renderPanel();
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  // 临时失败只经 toast 呈现（不占布局）；文案说明下一步，不是泛泛「操作失败」。
+  expect(toast.error).toHaveBeenCalledWith(
+    expect.stringContaining(i18n.t('remoteWorkspace.error.tooManyTunnels')),
+  );
+  expect(toast.error).not.toHaveBeenCalledWith(
+    expect.stringContaining(i18n.t('remoteWorkspace.error.unknown')),
+  );
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+  expect(screen.queryByTestId('remote-workspace-admin-stream-open-web')).toBeNull();
+  // 持久状态仍在布局里。
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamIdle'),
   );
 });
 
@@ -1519,8 +1581,9 @@ it('启动串流遇到「需要先占用」→ 用户确认后占用一次并重
   expect(bridge.occupyWorkspace).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws-a' });
   expect(bridge.adminStreamStart).toHaveBeenCalledTimes(2);
   expect(bridge.adminStreamStart).toHaveBeenLastCalledWith({ workspaceId: 'ws-a' });
-  // 重试成功 = 进入已连接等待画面，不是错误条。
+  // 重试成功 = 进入已连接等待画面；期间没有内联错误条（失败呈现走 toast，且这一轮成功）。
   expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
   expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
     i18n.t('remoteWorkspace.session.streamWaiting'),
   );
@@ -1538,9 +1601,13 @@ it('启动串流遇到「需要先占用」→ 用户取消：不占用、不重
   expect(confirmDialogMock.confirm).toHaveBeenCalledOnce();
   expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
   expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
-  // 取消 ≠ 通用失败：正文是「需要先占用」的可行动原因。
-  expect(screen.getByRole('alert').textContent).toContain(
-    i18n.t('remoteWorkspace.error.occupyRequired'),
+  // 取消是用户自己的决定，不是失败：**不留常驻提示**（没有内联错误条 / toast 错误），
+  // 也不把画面顶下去；布局里的持久状态回到「串流未启动」。
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+  expect(toast.error).not.toHaveBeenCalled();
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamIdle'),
   );
 });
 
@@ -1550,7 +1617,7 @@ it('启动串流遇到「需要先占用」→ 用户取消：不占用、不重
  * 真机：访问未运行时点「启动串流」只显示「串流失败：操作失败，请稍后重试。」。
  * main 现在把 PSB 409 `details.code/state` 翻成三条 IPC 码；这里验证文案、诊断行与动作。
  */
-it('shows an actionable banner when the workspace access is not running, plus a web-start entry', async () => {
+it('shows an actionable toast (not an inline bar) when the workspace access is not running, plus a web-start action', async () => {
   bridge.adminStreamStart.mockRejectedValue(
     new Error(
       '[PSB_STREAM_NO_RUNNING_SESSION] 该工作区还没有运行中的桌面访问会话，请先在 PSB 网页启动远程桌面。',
@@ -1561,20 +1628,20 @@ it('shows an actionable banner when the workspace access is not running, plus a 
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
   });
 
-  const alert = screen.getByRole('alert');
-  expect(alert.getAttribute('data-access-state')).toBe('none');
+  // 临时失败走 toast：不占布局，没有内联条。
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+  const call = vi.mocked(toast.error).mock.calls.at(-1);
+  const [message, options] = call ?? [''];
   // 正文是本地化的可行动文案，不是通用「操作失败，请稍后重试。」。
-  expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessNone'));
-  expect(alert.textContent).not.toContain(i18n.t('remoteWorkspace.error.unknown'));
-  // PSB 中文原话保留为诊断行（可对照 / 报障）。
-  expect(
-    screen.getByTestId('remote-workspace-admin-stream-failure-detail').textContent,
-  ).toContain('请先在 PSB 网页启动远程桌面');
+  expect(message).toContain(i18n.t('remoteWorkspace.admin.streamAccessNone'));
+  expect(message).not.toContain(i18n.t('remoteWorkspace.error.unknown'));
+  // PSB 中文原话保留为第二行诊断（可对照 / 报障）。
+  expect(message).toContain('请先在 PSB 网页启动远程桌面');
 
-  // 「在网页启动访问」复用既有「在网页打开」能力（main 解析 webUrl → 系统浏览器）。
-  const openWeb = screen.getByTestId('remote-workspace-admin-stream-open-web');
+  // 「在网页启动访问」作为 toast 上的动作按钮（复用既有「在网页打开」能力）。
+  expect(options?.action?.label).toBe(i18n.t('remoteWorkspace.admin.streamAccessOpenWeb'));
   await act(async () => {
-    fireEvent.click(openWeb);
+    options?.action?.onClick();
   });
   expect(bridge.openWebWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
 });
@@ -1588,12 +1655,13 @@ it('reports the real reason when the in-web start entry cannot be opened', async
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
   });
+  const call = vi.mocked(toast.error).mock.calls.at(-1);
   await act(async () => {
-    fireEvent.click(screen.getByTestId('remote-workspace-admin-stream-open-web'));
+    call?.[1]?.action?.onClick();
   });
-  // 打不开网页时显示真实原因，不假装什么都没发生，也不留旧的可行动文案。
-  expect(screen.getByRole('alert').textContent).toContain(
-    i18n.t('remoteWorkspace.admin.staleMissingTitle'),
+  // 打不开网页时给出真实原因（toast），不假装什么都没发生。
+  expect(toast.error).toHaveBeenCalledWith(
+    expect.stringContaining(i18n.t('remoteWorkspace.admin.staleMissingTitle')),
   );
 });
 
@@ -1611,11 +1679,11 @@ it('auto-retries once (~2s) while the workspace access is still starting, then s
       );
     });
 
-    const alert = screen.getByRole('alert');
-    expect(alert.getAttribute('data-access-state')).toBe('starting');
-    expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessStarting'));
-    // 这一档的正确动作是等一会儿，不提供「在网页启动访问」。
-    expect(screen.queryByTestId('remote-workspace-admin-stream-open-web')).toBeNull();
+    // 临时失败只经不占布局的 toast 呈现；这一档此处正确动作是等一会儿，不给「在网页启动访问」。
+    expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining(i18n.t('remoteWorkspace.admin.streamAccessStarting')),
+    );
     expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
 
     // 约 2s 后自动重试一次（Unity / 虚拟桌面就绪的竞态）。
@@ -1629,7 +1697,8 @@ it('auto-retries once (~2s) while the workspace access is still starting, then s
       await vi.advanceTimersByTimeAsync(6_000);
     });
     expect(bridge.adminStreamStart).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('alert').getAttribute('data-access-state')).toBe('starting');
+    // 仍没有内联条：第二次失败同样只更新 toast，不把画面往下推。
+    expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
   } finally {
     vi.useRealTimers();
   }
@@ -1644,11 +1713,11 @@ it('shows a wait banner while the workspace access is stopping (no auto retry, n
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
   });
 
-  const alert = screen.getByRole('alert');
-  expect(alert.getAttribute('data-access-state')).toBe('stopping');
-  expect(alert.textContent).toContain(i18n.t('remoteWorkspace.admin.streamAccessStopping'));
-  expect(screen.queryByTestId('remote-workspace-admin-stream-open-web')).toBeNull();
-  // 「正在结束」不是「正在启动」：不自动重试（重试只会再撞一次 409）。
+  // 临时失败只经 toast（不占布局）；「正在结束」不是「正在启动」：不自动重试。
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
+  expect(toast.error).toHaveBeenCalledWith(
+    expect.stringContaining(i18n.t('remoteWorkspace.admin.streamAccessStopping')),
+  );
   await act(async () => {});
   await act(async () => {});
   expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
@@ -1889,10 +1958,9 @@ it('clears the picture and resets to not-started even when stopping is rejected'
   expect(
     screen.queryByRole('button', { name: i18n.t('remoteWorkspace.session.stop') }),
   ).toBeNull();
-  // 失败给的是中性、可行动的一句，而不是沉默或把原始英文/中文报错直接甩给用户。
-  expect(screen.getByRole('alert').textContent).toBe(
-    i18n.t('remoteWorkspace.session.stopFailed'),
-  );
+  // 失败给的是中性、可行动的一句（toast，不占布局），而不是沉默或把原始报错甩给用户。
+  expect(toast.error).toHaveBeenCalledWith(i18n.t('remoteWorkspace.session.stopFailed'));
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
 });
 
 it('clears the picture when the automatic stop on hide is rejected', async () => {
@@ -1919,9 +1987,7 @@ it('clears the picture when the automatic stop on hide is rejected', async () =>
   expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
     i18n.t('remoteWorkspace.session.streamIdle'),
   );
-  expect(screen.getByRole('alert').textContent).toBe(
-    i18n.t('remoteWorkspace.session.stopFailed'),
-  );
+  expect(toast.error).toHaveBeenCalledWith(i18n.t('remoteWorkspace.session.stopFailed'));
 });
 
 /**
@@ -1937,9 +2003,10 @@ it('explains why starting did nothing when PSB says streaming is not capable', a
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
   });
   expect(bridge.adminStreamStart).not.toHaveBeenCalled();
-  expect(screen.getByRole('alert').textContent).toBe(
+  expect(toast.error).toHaveBeenCalledWith(
     i18n.t('remoteWorkspace.session.streamUnsupported'),
   );
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
 });
 
 it('ignores context pushes resolved for another window’s task', async () => {
@@ -2046,11 +2113,10 @@ it('gives an actionable reason instead of a generic failure when starting a stal
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
   });
-  // 不再发一次注定失败的 PSB 写请求；错误条是可行动的中文（工作区不可见 / 连不上）。
+  // 不再发一次注定失败的 PSB 写请求；可行动原因走 toast（不占布局），不是内联错误条。
   expect(bridge.adminStreamStart).not.toHaveBeenCalled();
-  expect(screen.getByRole('alert').textContent).toBe(
-    i18n.t('remoteWorkspace.admin.staleUnavailableAction'),
-  );
+  expect(toast.error).toHaveBeenCalledWith(i18n.t('remoteWorkspace.admin.staleUnavailableAction'));
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
 });
 
 it('gives an actionable reason instead of a generic failure when occupying a stale workspace', async () => {
@@ -2114,9 +2180,9 @@ it('returns to idle when the viewer is closed by another window (closed 补发)'
   expect(
     screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }),
   ).toBeTruthy();
-  expect(screen.getByTestId('remote-workspace-admin-stream-closed-note').textContent).toContain(
-    '已在别处停止',
-  );
+  // 中性关闭说明也不占布局：走 info toast（没有内联条）。
+  expect(screen.queryByTestId('remote-workspace-admin-stream-closed-note')).toBeNull();
+  expect(toast.info).toHaveBeenCalledWith('已在别处停止');
 });
 
 it('keeps the picture when the viewer connection is superseded (replaced, same session keeps streaming)', async () => {
@@ -2152,7 +2218,7 @@ it('keeps the picture when the viewer connection is superseded (replaced, same s
   );
   // 仍然是「停止」按钮（没有回到未启动），也没有被关闭的中性说明。
   expect(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.stop') })).toBeTruthy();
-  expect(screen.queryByTestId('remote-workspace-admin-stream-closed-note')).toBeNull();
+  expect(toast.info).not.toHaveBeenCalled();
   // 这是同一条观看的延续，不是本端离开：不能顺手把 owner 释放掉。
   expect(bridge.adminStreamStop).not.toHaveBeenCalled();
 });
@@ -2200,7 +2266,9 @@ it('releases the main-process owner when the stream ends without the user stoppi
     });
   });
   expect(bridge.adminStreamStop).toHaveBeenCalledTimes(1);
-  expect(screen.getByTestId('remote-workspace-admin-stream-failure')).toBeTruthy();
+  // 错误断开同样只经 toast（不占布局），布局里没有错误条。
+  expect(toast.error).toHaveBeenCalled();
+  expect(screen.queryByTestId('remote-workspace-admin-stream-failure')).toBeNull();
 });
 
 it('releases the viewer when the panel unmounts while starting (start still in flight)', async () => {

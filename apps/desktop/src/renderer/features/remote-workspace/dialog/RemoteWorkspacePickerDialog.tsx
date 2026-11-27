@@ -90,6 +90,14 @@ export interface RemoteWorkspacePickerDialogProps {
 
 type DialogTab = 'existing' | 'create';
 
+/**
+ * 「新建工作区」页签总开关（2026-11-27 用户要求：**暂时不提供新建工作区功能**）。
+ *
+ * 只隐藏页签切换控件与入口，保留代码与既有测试夹具；恢复时把常量改回 `true`，
+ * 并同步产品文档与 `RemoteWorkspacePickerDialog.test.tsx` 的页签用例。
+ */
+const CREATE_WORKSPACE_TAB_ENABLED = false;
+
 const SECTION_LABEL_CLASS = 'mb-1.5 block text-12 font-medium text-[var(--text-secondary)]';
 /** 客户端 / 模板行与工作区行同一材质（2026-11-26 审查：两个入口的「行」曾各有一套底色/圆角）。 */
 const PICK_ROW_CLASS = cn(
@@ -108,7 +116,9 @@ export function RemoteWorkspacePickerDialog({
 }: RemoteWorkspacePickerDialogProps) {
   const { t } = useTranslation();
   const { confirm } = useConfirmDialog();
-  const [tab, setTab] = useState<DialogTab>(initialTab);
+  const [tab, setTab] = useState<DialogTab>(
+    CREATE_WORKSPACE_TAB_ENABLED ? initialTab : 'existing',
+  );
   const [status, setStatus] = useState<PsbRemoteStatus | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [clients, setClients] = useState<readonly PsbRemoteClient[]>([]);
@@ -160,7 +170,7 @@ export function RemoteWorkspacePickerDialog({
   // 不跨打开保留）；在途占用由 hook 的 open/unmount 清理保证不留无名占用。
   useEffect(() => {
     if (!open) return;
-    setTab(initialTab);
+    setTab(CREATE_WORKSPACE_TAB_ENABLED ? initialTab : 'existing');
     setSelectedWorkspaceId(null);
     setCreateDataError(null);
     setCreateDataLoaded(false);
@@ -358,24 +368,26 @@ export function RemoteWorkspacePickerDialog({
             <p className="mt-1 shrink-0 text-11 text-[var(--text-tertiary)]">{status.host}</p>
           ) : null}
 
-          <div className="mt-3 shrink-0">
-            <SegmentedControl<DialogTab>
-              aria-label={t('remoteWorkspace.dialog.title')}
-              role="tablist"
-              value={tab}
-              disabled={busy}
-              fullWidth
-              options={[
-                { value: 'existing', label: t('remoteWorkspace.dialog.tabExisting') },
-                { value: 'create', label: t('remoteWorkspace.dialog.tabCreate') },
-              ]}
-              onValueChange={(next) => {
-                if (busy) return;
-                setTab(next);
-                selection.dismissError();
-              }}
-            />
-          </div>
+          {CREATE_WORKSPACE_TAB_ENABLED ? (
+            <div className="mt-3 shrink-0">
+              <SegmentedControl<DialogTab>
+                aria-label={t('remoteWorkspace.dialog.title')}
+                role="tablist"
+                value={tab}
+                disabled={busy}
+                fullWidth
+                options={[
+                  { value: 'existing', label: t('remoteWorkspace.dialog.tabExisting') },
+                  { value: 'create', label: t('remoteWorkspace.dialog.tabCreate') },
+                ]}
+                onValueChange={(next) => {
+                  if (busy) return;
+                  setTab(next);
+                  selection.dismissError();
+                }}
+              />
+            </div>
+          ) : null}
 
           {statusReason ? (
             <div className="mt-3 shrink-0">

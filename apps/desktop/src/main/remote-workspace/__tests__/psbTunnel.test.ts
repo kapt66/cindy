@@ -113,6 +113,46 @@ describe('openPsbTunnel — 握手拒绝与就绪帧', () => {
     ).rejects.toThrow(/\[PSB_TUNNEL_UNREACHABLE\] handshake failed \(400\): .*mode 必须是/);
   });
 
+  it.each([
+    {
+      status: 403,
+      body: '{"error":{"code":"FORBIDDEN","message":"先占用工作区再启动访问。","details":{"code":"WORKSPACE_NOT_OCCUPIED","workspaceId":"ws-1","action":"access-start"}}}',
+      ipcCode: 'PSB_WORKSPACE_NOT_OCCUPIED',
+      businessCode: 'WORKSPACE_NOT_OCCUPIED',
+    },
+    {
+      status: 409,
+      body: '{"error":{"code":"CONFLICT","message":"工作区已被李四占用。","details":{"code":"WORKSPACE_OCCUPIED_BY_OTHER","occupiedByName":"李四"}}}',
+      ipcCode: 'PSB_WORKSPACE_OCCUPIED_BY_OTHER',
+      businessCode: 'WORKSPACE_OCCUPIED_BY_OTHER',
+    },
+    {
+      status: 409,
+      body: '{"error":{"code":"CONFLICT","message":"隧道数量已达上限。","details":{"code":"TOO_MANY_TUNNELS"}}}',
+      ipcCode: 'PSB_TOO_MANY_TUNNELS',
+      businessCode: 'TOO_MANY_TUNNELS',
+    },
+  ])(
+    'Upgrade $status 的外层 FORBIDDEN/CONFLICT 被 details.code 提升为业务码（不显示泛化码）',
+    async ({ status, body, ipcCode, businessCode }) => {
+      // CINDY-RW-17：PSB 的 agent-tunnel Upgrade 拒绝外层是通用码，业务原因在
+      // error.details.code。提升后错误串里的 `[PSB_*]` 是业务码，渲染层按单表给出可行动文案
+      // （确认占用后重试 / 被他人占用 / 关掉其它远程会话腾名额），而不是一句泛泛的 FORBIDDEN。
+      const socket = new FakeSocket();
+      const error = await openPsbTunnel(
+        'psb:session-1',
+        baseDeps(socket, { reject: { status, body } }),
+      ).catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(PsbTunnelError);
+      expect((error as PsbTunnelError).code).toBe(ipcCode);
+      expect((error as PsbTunnelError).failure?.code).toBe(businessCode);
+      expect((error as PsbTunnelError).message.startsWith(`[${ipcCode}]`)).toBe(true);
+      // PSB 的可读中文原话保留在错误正文里（用户看到的诊断行）。
+      expect((error as PsbTunnelError).message).toMatch(/工作区|隧道/);
+    },
+  );
+
   it('没有 body 时按状态码分类（不造出空冒号）', async () => {
     const socket = new FakeSocket();
     await expect(

@@ -143,15 +143,19 @@
   `state` / `session` / `stream`；`POST …/access/stop` 显式销毁（需
   `{"confirm":"destroy-unsaved-content"}`，缺参数 400、幂等 200 `requested:false`、真正下发 202
   `requested:true`）。
-- **跟进项（Cindy → PSB，2026-11-26）：放行 Cindy 的 `access/start` 入口**。PSB 拉起桌面访问的
-  机器接口是**通用网页**路由 `POST /api/remote/workspaces/:id/access/start`（幂等 ensure，200/202/
-  409），但 Cindy 的 Bearer 白名单是精确形状（只放行 `/api/cindy/remote/**`），这条对 Cindy 恒
-  **403**（PSB 台账记「Cindy 入口下一轮加」）。Cindy 已预埋 `ensureWorkspaceAccess`（`POST …/access/start`
-  + 轮询 `GET …/access` 到 running；按能力位编排：只有 `open` 前台等待，`unknown` / `failed` /
-  `timeout` 后台预热、不阻塞订阅，403/404/超时一律**非致命**），**等 PSB
-  放行或提供
-  `/api/cindy/remote/**` 命名空间下的等价入口即可生效，无需改 UI**。同时请给该接口的**最终 409
-  示例**（当前 `details` 形状按 `none`/`starting`/… 推断；该请求已并入本节跟进项）。
+- **启动访问（CINDY-RW-17，PSB 0.1.183，2026-11-27 测试环境已上线）已放行并给出最终契约**：
+  `POST /api/cindy/remote/workspaces/:workspaceId/access/start`（Cindy Bearer 已放行；幂等 ensure，
+  **不自动占用**；空闲未占用 → `403 WORKSPACE_NOT_OCCUPIED`，需 Cindy 先弹窗确认占用再 occupy
+  再重试；被他人占用 → `409 WORKSPACE_OCCUPIED_BY_OTHER`）。成功响应（真实序列化）：
+  - 202（从「没在运行」开始启动）：
+    `{"data":{"access":{"state":"starting","session":{"id":"<sessionId>","state":"starting","display":90}},"state":"starting","sessionId":"<sessionId>","attached":false}}`；
+  - 200（重复调用 / 已在 starting，或 running）：`attached:true`；running 时
+    `{"data":{"access":{"state":"running","session":{"id":"…","state":"running"}},"state":"running","sessionId":"…","attached":true}}`。
+  失败外壳是 `{error:{code,message,details}}`，**可读中文在 `error.message`**（不是 `messageZh`）；
+  `GET /api/cindy/remote/workspaces/:id/access` 返回 `data.access.state`
+  （`none/starting/running/stopping/stopped/failed`）。Cindy 已按此实现网页同款状态机（读 access →
+  终态才 start → 轮询到 running → 订阅），**不需要用户再去网页**；此前借用的通用网页
+  `/api/remote/**` 例外已从 `resolvePsbUrl` 删除。详见工程契约 §11.8。
 
 ## 2. 跨仓确认项（稳定编号 `CINDY-RW-*`）
 
@@ -174,6 +178,7 @@
 | CINDY-RW-14 | `pi-manager.mjs` 纳入 CDN | 仍未发布（维护者待办）；PSB 暂时内联产物并校验 sha256。Cindy 源码已修 pi 子进程 cwd，需 PSB 更新 vendored bundle / pin 后生效，期间 PSB 侧用 `cd` 前缀缓解 | 源码已修，发布待办 |
 | CINDY-RW-15 | 会话消息推给 PSB | **已作废**：PSB 从自己的会话链路取内容，不要求 Cindy 额外上报转录 | 无需实现 |
 | CINDY-RW-16 | 串流停止 ≠ 销毁；显式销毁接口 | 停止观看不影响桌面会话；销毁走 `access/stop`（`confirm` 必须，二次确认文案要写明未保存内容会丢失） | 停止语义已实现；显式销毁入口未接入（产品无此入口，有意） |
+| CINDY-RW-17 | 启动桌面访问的 Cindy 入口与最终响应形状 | PSB 0.1.183（测试环境 0.1.183 / 提交 0b7f6a3）起在 Cindy 命名空间放行 `POST …/workspaces/:id/access/start`（幂等 ensure，**不自动占用**：空闲 403 `WORKSPACE_NOT_OCCUPIED` / 他人占用 409 `WORKSPACE_OCCUPIED_BY_OTHER`）；202 = 开始启动、200 = 已 starting 或 running（`attached:true`）；`GET …/access` 返回 `data.access.state`；错误外壳 `{error:{code,message,details}}`、可读中文在 `error.message`。占用守卫同码同形（创建/继续 Agent 会话空闲 403 / 他人占用 409），**agent-tunnel 建连外层码是 `FORBIDDEN`/`CONFLICT`、业务码在 `error.details.code`**，释放占用时有会话输出 409 `AGENT_SESSION_ACTIVE`，还有 `TOO_MANY_TUNNELS`（隧道容量）需要可行动文案 | 已实现（状态机 + 错误码提升 + 12 locale 文案 + toast 呈现）；真机未复验 |
 
 > **跟进项（CINDY-RW-09，2026-11-26）**：请 PSB 提供 `packages/shared/src/stream-cursor.ts` 的
 > **版本化快照**（或发布共享包；PSB 在 CINDY-RW-09 第 4 点已表示可发布到共享包或给出版本化
@@ -210,6 +215,14 @@
   `main/remote-workspace/__tests__/psbClient.test.ts`、
   `psbWorkspaceAdminService.test.ts`、
   `renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`。
+- **启动访问（CINDY-RW-17，2026-11-27）已适配**：`psbClient.ensureWorkspaceAccess` 是网页同款
+  状态机（读 `GET …/access` → 终态才 `POST …/access/start` → 轮询到 running，总预算 90s），
+  `adminService.streamStart` 把它作为**必经路径**（占用闸门 → ensure → 订阅 → 起观看端），
+  `WORKSPACE_NOT_OCCUPIED` / `WORKSPACE_OCCUPIED_BY_OTHER` / `TOO_MANY_TUNNELS` 都有可行动码与
+  文案；agent-tunnel Upgrade 的 `details.code` 提升为业务码；渲染层临时失败改走不占布局的
+  toast（`starting` 显示「正在启动桌面访问…」）。证据入口：工程契约 §11.8 / §13.2 / §13.4；
+  跨仓 §1.6；定向测试 `psbClient.test.ts` / `psbTunnel.test.ts` / `psbWorkspaceAdminService.test.ts` /
+  `psbRemoteWorkspaceParsing.test.ts` / `psbFailureText.test.ts` / `RemoteWorkspaceAdminPanel.test.tsx`。
 - 证据入口：工程契约 §5、§6.1、§10–§12 的定向测试清单；产品规则 §2.4、§8.1–§8.2；测试命令形如
   `pnpm --filter desktop exec vitest run <file>`（具体文件见工程契约 §8 与各小节「验证方式」）。
 
@@ -227,13 +240,10 @@
    Cindy 会创建一条 `purpose:'internal'` 的内部 Agent 会话充当观看端，并记 warn 日志。这是红线
    之外的**临时止血**，PSB 新端点在 0.1.172 已上线，新版客户端正常路径永不触发；等灰度面收窄后
    删除回退与 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`。
-6. **Cindy 还不能自己拉起桌面访问（待 PSB 放行白名单）**：`ensureWorkspaceAccess` 已实现（幂等
-   ensure + 轮询），但 PSB 只对 Cindy 放行 `/api/cindy/remote/**`，通用网页
-   `POST /api/remote/workspaces/:id/access/start` 对 Cindy 恒 403；该尝试被设计成**非致命**，
-   用户下一步仍是「去 PSB 网页启动访问」。**能力位编排**（`GET …/access` 的结果写成工作区能力位：
-  只有 `open` 走前台等待，`unknown` / `failed` / `timeout` 只做后台预热、不阻塞订阅）已有单测，
-   但因为入口恒 403，**四个分支都没有真机证据**；PSB 放行后无需改客户端，补一次真机即可
-   （产品规则 §6 已按「单测级待真机」登记）。
+6. **启动访问的自动拉起已接入，真机未复验（CINDY-RW-17）**：PSB 0.1.183 已放行 Cindy 的
+   ccess/start，Cindy 的「启动串流」必经 ensure 状态机（90s 预算）并删除旧的「能力位 / 后台
+   预热」编排；旧 PSB（404/405）仍退回直接订阅。**真机证据未取**：测试部署虽已上线 0.1.183，但
+   「点启动 → PSB 侧拉起访问 → 出画面」的端到端尚未复验（产品规则 §8.2 已登记）。
 
 ### 3.3 未验证（真机 / 环境）
 
@@ -249,6 +259,10 @@
   （无「Cindy 观看端」行）；② 重启 Cindy 后仍能读桌面会话状态并复用绑定；③ 旧 PSB / 灰度前服务端
   的过渡回退路径（端点 404/405/`UNSUPPORTED` → `purpose:'internal'`，列表不可见、`sessionCount`
   不增加）。
+- **CINDY-RW-17 启动访问的真机复验**：① 点「启动」→ PSB 侧桌面访问被拉起（`starting` 期间显示
+  「正在启动桌面访问…」）→ 出画面；② 工作区空闲时弹「占用工作区」确认框、确认后只占用一次并重试
+  同一次启动、取消后无常驻错误；③ 临时失败只出现浮动 toast（页面布局不被顶）；④
+  `TOO_MANY_TUNNELS` / 隧道 `details.code` 提升的可行动文案。当前只有单测与 0.1.183 契约级证据。
 - **版本控制检查（CINDY-RW-10）两代形态的真机复验**：① 旧版 409 兼容路径（<0.1.180）可在当前
   测试部署直接构造（故意弄脏工作区 → 占用/释放 → 409 + actions → retry/旧 revert）；② 0.1.180
   advisory 主路径（2xx `data.vcs`、`clean-workspace` 202 + `operationId`、「清理已开始 + 刷新」）

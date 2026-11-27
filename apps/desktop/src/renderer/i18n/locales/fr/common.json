@@ -22900,6 +22900,7 @@
       "workspaceOccupied": "Une autre personne utilise cet espace de travail. Retirez le verrou sur le site PSB et réessayez.",
       "occupyRequired": "Cet espace de travail n’est pas encore occupé par vous. Occupez-le d’abord.",
       "agentSessionActive": "Une tâche s’exécute encore dans cet espace de travail. Terminez-la ou arrêtez-la avant de libérer l’espace.",
+"tooManyTunnels": "Cette session distante a épuisé les emplacements de tunnel / de visionnage (4 par défaut). Fermez ou arrêtez d’autres sessions distantes, puis réessayez.",
       "clientOffline": "Cet ordinateur est hors ligne. Réessayez plus tard.",
       "unknown": "L'action a échoué. Réessayez plus tard."
     },

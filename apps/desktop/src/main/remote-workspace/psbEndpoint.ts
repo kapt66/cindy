@@ -23,10 +23,7 @@ import {
   MEKA_PSB_TEST_HOST,
   readMekaPsbHostOverride,
 } from '../cindy-brain/mekaPsbHostOverride.js';
-import {
-  PSB_CINDY_API_PREFIX,
-  PSB_WEB_API_PREFIX,
-} from '../../shared/psb-remote-workspace.js';
+import { PSB_CINDY_API_PREFIX } from '../../shared/psb-remote-workspace.js';
 
 /** 正式 PSB 部署（生产）。 */
 export const PSB_FORMAL_HOST = MEKA_PSB_HOST;
@@ -94,20 +91,6 @@ const PSB_PATH_MAX_LENGTH = 2_048;
 /** Cindy 命名空间前缀（含尾斜杠）：只允许 `/api/cindy/remote/…`。 */
 const PSB_CINDY_PATH_PREFIX = `${PSB_CINDY_API_PREFIX}/`;
 
-/** PSB 通用网页命名空间前缀（仅「拉起桌面访问」这一条可选增强显式放行）。 */
-const PSB_WEB_PATH_PREFIX = `${PSB_WEB_API_PREFIX}/`;
-
-export interface ResolvePsbUrlOptions {
-  /**
-   * 额外放行 PSB 通用网页命名空间（`/api/remote/**`）。
-   *
-   * 只给「尽力拉起桌面访问」的 `POST …/access/start` 用：那是 PSB 网页链已有的一条路由，
-   * Cindy 目前还没被放行（恒 403），但复用它是既定方向（见共享契约 `PSB_WEB_ROUTES`）。
-   * 其余所有调用都只允许 Cindy 命名空间——默认关闭，打开必须显式。
-   */
-  readonly allowPsbWebNamespace?: boolean;
-}
-
 /**
  * 把 PSB 路径解析成**确定的**绝对 HTTPS 地址；越界一律抛 {@link PsbUrlRejectedError}。
  *
@@ -140,12 +123,12 @@ export interface ResolvePsbUrlOptions {
  * PSB 下发的 `actions[].path` 都是固定路由 + id，**没有任何编码分隔符的正当用途**，所以直接在
  * 原始 path 上拒绝，而不是赌下游怎么解码。
  */
-export function resolvePsbUrl(pathname: string, options: ResolvePsbUrlOptions = {}): string {
-  return resolvePsbPathUrl(pathname, options).toString();
+export function resolvePsbUrl(pathname: string): string {
+  return resolvePsbPathUrl(pathname).toString();
 }
 
 /** 内部：解析成 `URL`（HTTP 与 WS 共用一个校验器，避免两条拼法各漏一道）。 */
-function resolvePsbPathUrl(pathname: string, options: ResolvePsbUrlOptions): URL {
+function resolvePsbPathUrl(pathname: string): URL {
   const { origin } = resolvePsbEndpoint();
   if (typeof pathname !== 'string' || pathname.length === 0) {
     throw new PsbUrlRejectedError('empty', String(pathname));
@@ -187,12 +170,7 @@ function resolvePsbPathUrl(pathname: string, options: ResolvePsbUrlOptions): URL
     throw new PsbUrlRejectedError('duplicate-slash', pathname);
   }
   if (!resolved.pathname.startsWith(PSB_CINDY_PATH_PREFIX)) {
-    if (
-      options.allowPsbWebNamespace !== true ||
-      !resolved.pathname.startsWith(PSB_WEB_PATH_PREFIX)
-    ) {
-      throw new PsbUrlRejectedError('not-cindy-namespace', pathname);
-    }
+    throw new PsbUrlRejectedError('not-cindy-namespace', pathname);
   }
   return resolved;
 }
@@ -247,7 +225,7 @@ export function psbWebSocketUrl(pathname: string): string {
   // 与 HTTP 出网共用同一份路径校验（origin / 归一化 / 命名空间），只把 scheme 换成 `wss:`。
   // **不做 http 降级**：把一条带 Bearer 的隧道降级到明文会让 token 与会话内容出现在链路上，
   // 而失败原因会变成"连不上"，比直接报错更难查。
-  const resolved = resolvePsbPathUrl(pathname, {});
+  const resolved = resolvePsbPathUrl(pathname);
   const { host } = resolvePsbEndpoint();
   return `wss://${host}${resolved.pathname}${resolved.search}`;
 }

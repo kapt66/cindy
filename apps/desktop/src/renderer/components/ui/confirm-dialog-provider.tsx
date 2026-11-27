@@ -3,6 +3,14 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import { useTranslation } from 'react-i18next';
 
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import {
+  isConfirmDialogDismissKey,
+  isConfirmDialogOpen,
+  noteConfirmDialogDismissKey,
+  noteConfirmDialogOpened,
+  noteConfirmDialogSettled,
+  shouldSwallowOutsideConfirmDialogKey,
+} from '@/lib/confirmDialogKeyboardGuard';
 
 export interface ConfirmOptions {
   title: string;
@@ -101,6 +109,36 @@ interface QueueItem {
 const ConfirmDialogContext = createContext<ConfirmDialogContextValue | null>(null);
 
 /**
+ * 确认框关闭后把焦点还给**打开前**有焦点的控件。
+ *
+ * `useConfirmDialog` 的弹窗是程序化打开的（没有 Radix `Trigger`），而 Radix 只在自己的
+ * `onCloseAutoFocus` 里归还给 Trigger —— 没有 Trigger 时焦点会掉到 `<body>`：Composer 收不到
+ * 键盘（用户以为在输入框里打字/回车，实际没有落点）、选择器 / 列表要重新点一次。2026-11-27
+ * 复测的「取消占用确认后回车不顺」也包含这一段。
+ *
+ * 归还推迟到下一拍（而不是 close 事件里同步）：退场动画期间 FocusScope 仍会抢回弹窗，同步
+ * 聚焦会被它弹回去；用户已经点去别的控件时不抢焦点。
+ */
+function restoreConfirmDialogFocus(anchor: HTMLElement | null): void {
+  if (!anchor) return;
+  window.setTimeout(() => {
+    if (!anchor.isConnected) return;
+    const active = document.activeElement;
+    if (active === anchor) return;
+    if (
+      active instanceof HTMLElement &&
+      active !== document.body &&
+      active !== document.documentElement
+    ) {
+      return;
+    }
+    // 队列里的下一个确认框已经打开时，焦点归它。
+    if (document.querySelector('[role="alertdialog"]')) return;
+    anchor.focus({ preventScroll: true });
+  }, 0);
+}
+
+/**
  * 一次性清掉之前可能被误勾选的 markdown 保存确认 skip 键。Ctrl+S 之前不弹窗、
  * 直接写盘,有用户在弹窗版本里勾了"下次不再提示"以为只关弹窗,结果连按钮路径
  * 也跳了 —— 这里强制重置一次,让用户重新选择。sentinel 键保证只跑一次。
@@ -132,10 +170,15 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const isShowingRef = useRef(false);
   const resolvedRef = useRef(false);
+  // 弹框前有焦点的控件：程序化确认（没有 Trigger）关闭后由 restoreConfirmDialogFocus 归还。
+  const focusAnchorRef = useRef<HTMLElement | null>(null);
 
   const processNext = useCallback(() => {
     const next = queueRef.current.shift();
     if (next) {
+      const active = document.activeElement;
+      focusAnchorRef.current = active instanceof HTMLElement ? active : null;
+      noteConfirmDialogOpened();
       currentItemRef.current = next;
       setCurrentItem(next);
       setOpen(true);
@@ -259,13 +302,47 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
     [currentItem],
   );
 
+  /**
+   * 确认框独占键盘：确认框是当前最顶层交互面。
+   *
+   * Radix 的焦点陷阱只保证 `Tab` 不跑出弹窗，不接管 `keydown` 的默认行为；而发送前占用预检
+   * 是**异步**弹框的，打开 / 关闭时 composer 的焦点恢复可能刚好在途。这里在 window capture
+   * 统一兜住：框打开期间，落在 `[role="alertdialog"]` 之外的 Enter / Esc 一律 `preventDefault +
+   * stopPropagation`（composer 不会发送、也不会落换行）；关闭后的那一拍（见
+   * `confirmDialogKeyboardGuard.ts` 的一次性抑制）同样吞掉「用来关框的键」。落在框内的键不拦，
+   * 记录成候选关框键后照常交给 Radix（取消 / 确认 / Esc）。
+   */
+  useEffect(() => {
+    const onKeyDownCapture = (event: KeyboardEvent) => {
+      if (!isConfirmDialogDismissKey(event.key)) return;
+      const target = event.target;
+      const insideDialog =
+        target instanceof Element && target.closest('[role="alertdialog"]') !== null;
+      if (insideDialog && isConfirmDialogOpen()) {
+        noteConfirmDialogDismissKey(event.key);
+        return;
+      }
+      if (!shouldSwallowOutsideConfirmDialogKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener('keydown', onKeyDownCapture, true);
+    return () => window.removeEventListener('keydown', onKeyDownCapture, true);
+  }, []);
+
   useEffect(() => {
     if (!open && currentItem !== null) {
       const timer = setTimeout(() => {
         isShowingRef.current = false;
         currentItemRef.current = null;
         setCurrentItem(null);
+        // 记账 + 通知确认框已彻底关闭（composer 的焦点恢复在这之后重试），并归还焦点。
+        noteConfirmDialogSettled();
+        const focusAnchor = focusAnchorRef.current;
+        focusAnchorRef.current = null;
+        const hasNext = queueRef.current.length > 0;
         processNext();
+        if (!hasNext) restoreConfirmDialogFocus(focusAnchor);
       }, 200);
       return () => clearTimeout(timer);
     }

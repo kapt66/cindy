@@ -448,6 +448,9 @@ const IPC_ERROR_CODES = {
   // 释放占用时该工作区里仍有正在输出的会话（PSB 409 `AGENT_SESSION_ACTIVE`）：先结束 / 停止
   // 那条会话再释放。不是可自动重试的竞态，也不引导用户去 PSB 网页兜底。
   PSB_AGENT_SESSION_ACTIVE: true,
+  // 隧道 / 观看名额已满（PSB `TOO_MANY_TUNNELS`，CINDY-RW-17）：先关闭或停止其它远程会话把名额
+  // 让出来，再重试。与「会话已终态」「请求太频繁」是不同的下一步，所以单独一个码。
+  PSB_TOO_MANY_TUNNELS: true,
   // 远端客户端没有该 Agent 的运行时（PSB `unusableReason='agent-unsupported'`）：下一步是
   // 升级那台电脑上的客户端，与「等它就绪」（PSB_WORKSPACE_NOT_READY）不同，所以单独一个码。
   PSB_AGENT_UNSUPPORTED: true,

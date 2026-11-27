@@ -755,142 +755,400 @@ describe('订阅串流 409 NO_RUNNING_SESSION：state → 可行动失败码', (
   });
 });
 
-/* ==================== 尽力拉起桌面访问（通用网页接口，待 PSB 放行） ==================== */
+/* ==================== 「启动访问」路由与状态机（CINDY-RW-17） ==================== */
 
-describe('ensureWorkspaceAccess：幂等拉起 + 轮询，入口未开放时非致命', () => {
-  /** 记录每次请求的 URL 与方法（断言「只打这两条路径」）。 */
-  function recordingFetch(
-    respond: (input: string, init: RequestInit) => Response,
-  ): {
-    fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
-    requests: Array<{ url: string; method: string }>;
-  } {
-    const requests: Array<{ url: string; method: string }> = [];
-    return {
-      requests,
-      fetchImpl: async (input, init) => {
-        requests.push({ url: input, method: String(init.method) });
-        return respond(input, init);
-      },
-    };
-  }
+/**
+ * PSB-RW-17 契约（PSB 0.1.183，2026-11-27，测试环境已上线）：
+ * `POST /api/cindy/remote/workspaces/:id/access/start` 幂等 ensure（202 开始启动 / 200 已
+ * starting 或 running + `attached:true`）、`GET …/access` 读 `data.access.state`。
+ * 验收的是**真实序列化外壳**（2026-11-26 联调事故：外壳少一层 `data` 曾被静默吞掉）。
+ */
 
-  const POLL_FAST = { attempts: 2, intervalMs: 0 };
+/** 记录每次请求 URL / 方法（断言「先读还是先 POST」「POST 了几次」）。 */
+function recordingFetch(respond: (input: string, init: RequestInit) => Response): {
+  fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
+  requests: Array<{ url: string; method: string }>;
+} {
+  const requests: Array<{ url: string; method: string }> = [];
+  return {
+    requests,
+    fetchImpl: async (input, init) => {
+      requests.push({ url: input, method: String(init.method) });
+      return respond(input, init);
+    },
+  };
+}
 
-  it('200 且已在 running → ok，只 POST 一次、不轮询', async () => {
+/** 单测里把轮询压到 0 间隔 / 短预算（测试卫生：不做真实等待）。 */
+const ACCESS_POLL_FAST = { attempts: 6, intervalMs: 0, totalMs: 500 };
+
+describe('startWorkspaceAccess / readWorkspaceAccess：202/200 两种真实外壳', () => {
+  it('202（开始启动）→ state=starting、sessionId、attached=false、access.state=starting', async () => {
     const tokens = makeTokens();
     const { fetchImpl, requests } = recordingFetch(() =>
-      jsonResponse(200, { data: { state: 'running' } }),
+      jsonResponse(202, {
+        data: {
+          access: {
+            state: 'starting',
+            session: { id: 'desktop-9', state: 'starting', display: 90 },
+          },
+          state: 'starting',
+          sessionId: 'desktop-9',
+          attached: false,
+        },
+      }),
     );
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+    const api = makeApi(fetchImpl, tokens.port);
 
-    const outcome = await api.ensureWorkspaceAccess('ws-1');
+    const result = await api.startWorkspaceAccess('ws-1');
 
-    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: false });
+    expect(result).toEqual({
+      state: 'starting',
+      sessionId: 'desktop-9',
+      attached: false,
+      access: { state: 'starting' },
+    });
     expect(requests).toEqual([
       {
-        url: expect.stringMatching(/\/api\/remote\/workspaces\/ws-1\/access\/start$/),
+        url: expect.stringMatching(/\/api\/cindy\/remote\/workspaces\/ws-1\/access\/start$/),
         method: 'POST',
       },
     ]);
   });
 
-  it('202 受理后轮询 GET …/access 直到 running（走 Cindy 命名空间的读口）', async () => {
+  it('200（已在 running，幂等 attach）→ state=running、attached=true', async () => {
     const tokens = makeTokens();
-    let polls = 0;
-    const { fetchImpl, requests } = recordingFetch((input, init) => {
-      if (String(init.method) === 'POST') return jsonResponse(202, {});
-      polls += 1;
-      return jsonResponse(200, { data: { state: polls >= 2 ? 'running' : 'starting' } });
+    const api = makeApi(
+      async () =>
+        jsonResponse(200, {
+          data: {
+            access: { state: 'running', session: { id: 'desktop-9', state: 'running' } },
+            state: 'running',
+            sessionId: 'desktop-9',
+            attached: true,
+          },
+        }),
+      tokens.port,
+    );
+
+    await expect(api.startWorkspaceAccess('ws-1')).resolves.toEqual({
+      state: 'running',
+      sessionId: 'desktop-9',
+      attached: true,
+      access: { state: 'running' },
     });
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+  });
+
+  it('GET …/access 读 data.access.state；未知状态词归一 null（不猜成某个已知状态）', async () => {
+    const tokens = makeTokens();
+    const known = makeApi(
+      async () => jsonResponse(200, { data: { access: { state: 'stopping' }, state: 'stopping' } }),
+      tokens.port,
+    );
+    await expect(known.readWorkspaceAccess('ws-1')).resolves.toBe('stopping');
+
+    const unknown = makeApi(
+      async () => jsonResponse(200, { data: { access: { state: 'brand-new-state' } } }),
+      tokens.port,
+    );
+    await expect(unknown.readWorkspaceAccess('ws-1')).resolves.toBeNull();
+  });
+
+  it('403 WORKSPACE_NOT_OCCUPIED：码 + 可行动文案键 + error.message 可读原文（REST）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(403, {
+          error: {
+            code: 'WORKSPACE_NOT_OCCUPIED',
+            message: '先占用工作区再启动访问。',
+            details: {
+              code: 'WORKSPACE_NOT_OCCUPIED',
+              workspaceId: 'ws-1',
+              occupancy: { occupied: false, byMe: false, personId: null, personName: '' },
+              occupiedByName: null,
+              action: 'access-start',
+            },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api.startWorkspaceAccess('ws-1').catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('WORKSPACE_NOT_OCCUPIED');
+    expect(error.failure.messageKey).toBe('remoteWorkspace.error.occupyRequired');
+    expect(error.failure.message).toBe('先占用工作区再启动访问。');
+    expect(psbIpcCodeForFailure(error.failure)).toBe('PSB_WORKSPACE_NOT_OCCUPIED');
+  });
+
+  it('外层泛化码 + details.code 业务码：提升为业务码（不让用户看到 FORBIDDEN）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(403, {
+          error: {
+            code: 'FORBIDDEN',
+            message: '先占用工作区再启动访问。',
+            details: { code: 'WORKSPACE_NOT_OCCUPIED' },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api.startWorkspaceAccess('ws-1').catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('WORKSPACE_NOT_OCCUPIED');
+    expect(error.failure.messageKey).toBe('remoteWorkspace.error.occupyRequired');
+  });
+
+  it('409 被他人占用：码 + 占用人名（details.occupiedByName）', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          error: {
+            code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+            message: '工作区已被李四占用。',
+            details: {
+              code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+              workspaceId: 'ws-1',
+              occupancy: { occupied: true, byMe: false, personId: '8', personName: '李四' },
+              occupiedByName: '李四',
+              action: 'access-start',
+            },
+          },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api.startWorkspaceAccess('ws-1').catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('WORKSPACE_OCCUPIED_BY_OTHER');
+    expect(error.failure.messageKey).toBe('remoteWorkspace.error.occupiedByOther');
+    expect(error.failure.message).toBe('李四');
+  });
+
+  it('隧道名额已满（TOO_MANY_TUNNELS）→ 专用可行动码与文案键', async () => {
+    const tokens = makeTokens();
+    const api = makeApi(
+      async () =>
+        jsonResponse(409, {
+          error: { code: 'TOO_MANY_TUNNELS', message: '隧道数量已达上限。' },
+        }),
+      tokens.port,
+    );
+
+    const error = (await api
+      .subscribeWorkspaceStream('ws-1')
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(error.failure.code).toBe('TOO_MANY_TUNNELS');
+    expect(error.failure.messageKey).toBe('remoteWorkspace.error.tooManyTunnels');
+    expect(psbIpcCodeForFailure(error.failure)).toBe('PSB_TOO_MANY_TUNNELS');
+    expect(psbFailureMessageKeyForIpcCode('PSB_TOO_MANY_TUNNELS')).toBe(
+      'remoteWorkspace.error.tooManyTunnels',
+    );
+  });
+});
+
+/* ==================== ensureWorkspaceAccess：网页同款状态机（CINDY-RW-17） ==================== */
+
+describe('ensureWorkspaceAccess：读 access → 终态才 start → 轮询到 running', () => {
+  it('running：直接返回，不 POST（重复点「启动」不会重复拉起）', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch(() =>
+      jsonResponse(200, { data: { access: { state: 'running' } } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: false });
+    expect(requests.map((entry) => entry.method)).toEqual(['GET']);
+  });
+
+  it('starting：只轮询（不重复 POST），到 running 即返回', async () => {
+    const tokens = makeTokens();
+    let reads = 0;
+    const { fetchImpl, requests } = recordingFetch(() => {
+      reads += 1;
+      return jsonResponse(200, { data: { access: { state: reads >= 2 ? 'running' : 'starting' } } });
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: false });
+    expect(requests.map((entry) => entry.method)).toEqual(['GET', 'GET']);
+  });
+
+  it('stopping：等它落定（终态）再 POST start，再轮询到 running', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch((_input, init) => {
+      const method = String(init.method);
+      const readCount = requests.filter((entry) => entry.method === 'GET').length;
+      if (method === 'POST') return jsonResponse(202, { data: { access: { state: 'starting' } } });
+      // 第 1 次读 = stopping；第 2 次读 = 已落定（none）；之后 = running。
+      if (readCount === 1) return jsonResponse(200, { data: { access: { state: 'stopping' } } });
+      if (readCount === 2) return jsonResponse(200, { data: { access: { state: 'none' } } });
+      return jsonResponse(200, { data: { access: { state: 'running' } } });
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
 
     const outcome = await api.ensureWorkspaceAccess('ws-1');
 
     expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: true });
-    expect(requests.map((entry) => entry.method)).toEqual(['POST', 'GET', 'GET']);
-    expect(requests[1]?.url).toMatch(/\/api\/cindy\/remote\/workspaces\/ws-1\/access$/);
+    expect(requests.map((entry) => entry.method)).toEqual(['GET', 'GET', 'POST', 'GET']);
+    expect(requests[2]?.url).toMatch(/\/api\/cindy\/remote\/workspaces\/ws-1\/access\/start$/);
   });
 
-  it('403（Cindy 白名单未放行）→ cindy-entry-not-open，非致命且不轮询', async () => {
+  it('none（终态）：POST start 一次 → 轮询到 running', async () => {
     const tokens = makeTokens();
-    const { fetchImpl, requests } = recordingFetch(() =>
-      jsonResponse(403, {
-        error: { code: 'FORBIDDEN', message: '这个 Cindy 身份不能访问该接口' },
-      }),
+    let reads = 0;
+    const { fetchImpl, requests } = recordingFetch((_input, init) => {
+      if (String(init.method) === 'POST') {
+        return jsonResponse(202, {
+          data: { access: { state: 'starting' }, state: 'starting', attached: false },
+        });
+      }
+      reads += 1;
+      // 第 1 次读 = 没在运行（终态）；POST 之后从 starting 走到 running。
+      if (reads === 1) return jsonResponse(200, { data: { access: { state: 'none' } } });
+      return jsonResponse(200, {
+        data: { access: { state: reads >= 3 ? 'running' : 'starting' } },
+      });
+    });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toEqual({ ok: true, state: 'running', startedByThisCall: true });
+    expect(requests.map((entry) => entry.method)).toEqual(['GET', 'POST', 'GET', 'GET']);
+  });
+
+  it('POST 200 running（幂等 attach）：立即 ok，不再轮询', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch((_input, init) =>
+      String(init.method) === 'POST'
+        ? jsonResponse(200, { data: { access: { state: 'running' }, attached: true } })
+        : jsonResponse(200, { data: { access: { state: 'stopped' } } }),
     );
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
+
+    await expect(api.ensureWorkspaceAccess('ws-1')).resolves.toEqual({
+      ok: true,
+      state: 'running',
+      startedByThisCall: true,
+    });
+    expect(requests.map((entry) => entry.method)).toEqual(['GET', 'POST']);
+  });
+
+  it('403 WORKSPACE_NOT_OCCUPIED → not-occupied（供上层弹确认占用），不轮询', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl, requests } = recordingFetch((_input, init) =>
+      String(init.method) === 'POST'
+        ? jsonResponse(403, {
+            error: { code: 'WORKSPACE_NOT_OCCUPIED', message: '先占用工作区再启动访问。' },
+          })
+        : jsonResponse(200, { data: { access: { state: 'none' } } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
 
     const outcome = await api.ensureWorkspaceAccess('ws-1');
 
     expect(outcome).toMatchObject({
       ok: false,
-      reason: 'cindy-entry-not-open',
-      failure: { code: 'FORBIDDEN' },
+      reason: 'not-occupied',
+      failure: { code: 'WORKSPACE_NOT_OCCUPIED' },
     });
-    expect(requests).toHaveLength(1);
+    expect(requests).toHaveLength(2);
   });
 
-  it('404（旧 PSB 没有这条路由）→ cindy-entry-not-open，非致命', async () => {
+  it('409 被他人占用 → occupied-by-other（带占用人名）', async () => {
     const tokens = makeTokens();
-    const { fetchImpl, requests } = recordingFetch(() =>
-      jsonResponse(404, { error: { code: 'NOT_FOUND', message: '接口不存在' } }),
+    const { fetchImpl } = recordingFetch((_input, init) =>
+      String(init.method) === 'POST'
+        ? jsonResponse(409, {
+            error: {
+              code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+              message: '工作区已被李四占用。',
+              details: { occupiedByName: '李四' },
+            },
+          })
+        : jsonResponse(200, { data: { access: { state: 'none' } } }),
     );
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
-
-    const outcome = await api.ensureWorkspaceAccess('ws-1');
-
-    expect(outcome).toMatchObject({ ok: false, reason: 'cindy-entry-not-open' });
-    expect(requests).toHaveLength(1);
-  });
-
-  it('轮询预算内没到 running → timeout（不是异常，调用方继续走订阅）', async () => {
-    const tokens = makeTokens();
-    const { fetchImpl } = recordingFetch((input, init) => {
-      if (String(init.method) === 'POST') return jsonResponse(202, {});
-      return jsonResponse(200, { data: { state: 'starting' } });
-    });
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
-
-    const outcome = await api.ensureWorkspaceAccess('ws-1');
-
-    expect(outcome).toEqual({ ok: false, reason: 'timeout', failure: null });
-  });
-
-  it('幂等 ensure 说「没在运行也没在启动」→ 不再轮询，交给订阅的 409 报原因', async () => {
-    const tokens = makeTokens();
-    const { fetchImpl, requests } = recordingFetch(() =>
-      jsonResponse(200, { data: { state: 'none' } }),
-    );
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
-
-    const outcome = await api.ensureWorkspaceAccess('ws-1');
-
-    expect(outcome).toMatchObject({ ok: false, reason: 'failed', failure: null });
-    expect(requests).toHaveLength(1);
-  });
-
-  it('网络失败 → failed（非致命），且永久只打一次（不在增强接口上重试）', async () => {
-    const tokens = makeTokens();
-    const { fetchImpl, requests } = recordingFetch(() => {
-      throw new Error('ECONNRESET');
-    });
-    const api = makeApi(fetchImpl, tokens.port, { accessPoll: POLL_FAST });
+    const api = makeApi(fetchImpl, tokens.port, { accessPoll: ACCESS_POLL_FAST });
 
     const outcome = await api.ensureWorkspaceAccess('ws-1');
 
     expect(outcome).toMatchObject({
       ok: false,
-      reason: 'failed',
-      failure: { code: 'PSB_UNREACHABLE' },
+      reason: 'occupied-by-other',
+      failure: { code: 'WORKSPACE_OCCUPIED_BY_OTHER', message: '李四' },
     });
-    expect(requests).toHaveLength(1);
   });
 
-  it('总预算是 deadline：单次请求超时被压到剩余预算内（不再「每次 20s × 次数」）', async () => {
+  it('旧 PSB：POST 404 / GET 404 → unsupported（调用方退回直接订阅）', async () => {
+    const tokens = makeTokens();
+    const postMissing = makeApi(
+      recordingFetch((_input, init) =>
+        String(init.method) === 'POST'
+          ? jsonResponse(404, { error: { code: 'NOT_FOUND', message: '接口不存在' } })
+          : jsonResponse(200, { data: { access: { state: 'none' } } }),
+      ).fetchImpl,
+      tokens.port,
+      { accessPoll: ACCESS_POLL_FAST },
+    );
+    await expect(postMissing.ensureWorkspaceAccess('ws-1')).resolves.toEqual({
+      ok: false,
+      reason: 'unsupported',
+      failure: null,
+    });
+
+    const getMissing = makeApi(
+      async () => jsonResponse(404, { error: { code: 'NOT_FOUND', message: '接口不存在' } }),
+      tokens.port,
+      { accessPoll: ACCESS_POLL_FAST },
+    );
+    await expect(getMissing.ensureWorkspaceAccess('ws-1')).resolves.toEqual({
+      ok: false,
+      reason: 'unsupported',
+      failure: null,
+    });
+  });
+
+  it('预算用尽仍在 starting → timeout，且失败码是「正在启动」那一档（等到就绪再重试）', async () => {
+    const tokens = makeTokens();
+    const { fetchImpl } = recordingFetch((_input, init) =>
+      String(init.method) === 'POST'
+        ? jsonResponse(202, { data: { access: { state: 'starting' } } })
+        : jsonResponse(200, { data: { access: { state: 'starting' } } }),
+    );
+    const api = makeApi(fetchImpl, tokens.port, {
+      accessPoll: { attempts: 3, intervalMs: 0, totalMs: 500 },
+    });
+
+    const outcome = await api.ensureWorkspaceAccess('ws-1');
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      reason: 'timeout',
+      failure: {
+        code: 'PSB_STREAM_ACCESS_STARTING',
+        messageKey: 'remoteWorkspace.admin.streamAccessStarting',
+        streamAccessState: 'starting',
+      },
+    });
+    if (outcome.ok || !outcome.failure) throw new Error('expected a timeout failure');
+    // 跨 IPC 后是一条可行动码：渲染层给「正在启动，请稍等再试」而不是通用失败。
+    expect(psbIpcCodeForFailure(outcome.failure)).toBe('PSB_STREAM_ACCESS_STARTING');
+  });
+
+  it('总预算是 deadline：单次请求超时被压到剩余预算内（不会卡满默认 20s）', async () => {
     const tokens = makeTokens();
     const requests: string[] = [];
-    // 模拟 PSB 一直不回：只有 `AbortSignal` 结束这次请求。旧实现会等满 20s；总预算是 30ms。
+    // 模拟 PSB 一直不回：只有 `AbortSignal` 结束这次请求。
     const api = makeApi(
       async (input, init) => {
         requests.push(input);
@@ -910,7 +1168,6 @@ describe('ensureWorkspaceAccess：幂等拉起 + 轮询，入口未开放时非�
     const elapsed = Date.now() - startedAt;
 
     expect(outcome).toMatchObject({ ok: false, reason: 'failed' });
-    // 总预算 30ms：必须远小于单次默认超时（20s），也远小于旧实现的最坏值。
     expect(elapsed).toBeLessThan(1_000);
     expect(requests).toHaveLength(1);
   });

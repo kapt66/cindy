@@ -143,6 +143,17 @@ export const PSB_TUNNEL_FAILURE_CODES = [
 
 export type PsbTunnelFailureCode = (typeof PSB_TUNNEL_FAILURE_CODES)[number];
 
+/**
+ * 隧道错误的**实际码**：外层归因码，或从 `details.code` 提升上来的业务 IPC 码（CINDY-RW-17）。
+ *
+ * 宽度是刻意的：PSB 的 agent-tunnel Upgrade 在「工作区没被占用 / 被别人占用 / 会话正在输出 /
+ * 隧道名额满」时给出的**外层**码只是 `FORBIDDEN` / `CONFLICT`，业务码在 `error.details.code`。
+ * 若继续用外层码当 `PsbTunnelError.code`，用户可见错误串里就只有一句泛泛的失败；提升后
+ * `code` = `PSB_WORKSPACE_NOT_OCCUPIED` 之类的业务码，渲染层的 `[PSB_*]` 解码与失败单表
+ * 可直接给出可行动文案。
+ */
+export type PsbTunnelErrorCode = PsbTunnelFailureCode | PsbIpcFailureCode;
+
 /* ============================== 3. PSB API 路径 ============================== */
 
 /**
@@ -173,16 +184,26 @@ export const PSB_CINDY_ROUTES = {
   /**
    * 工作区**桌面访问状态**读口（PSB 0.1.180，`GET …/workspaces/:id/access`）。
    *
-   * 只在「Cindy 自己拉起了桌面访问」之后用来轮询到 running（见 `ensureWorkspaceStart`；
-   * main `psbClient.ensureWorkspaceAccess`）。Cindy 侧**不**用它做常规状态展示：页面上的
-   * 桌面会话状态仍来自 `stream/status.desktopSession`（那是已配对的观看端会话视角）。
+   * CINDY-RW-17（PSB 0.1.183）起 Cindy 用它跑网页同款的「启动访问」状态机：读 access →
+   * 终态才 `POST …/access/start` → 轮询本读口到 `running` → 再 `stream/subscribe`。
+   * 响应形状按 PSB 最终契约：`{ data: { access: { state, session? }, state?, sessionId? } }`，
+   * 解析只走 {@link readPsbWorkspaceAccessState}（`state` / `access.state` 两个位置）。
    *
-   * 响应形状 PSB 尚未给最终示例（跟进项已登记在
- * `docs/collaboration/psb-remote-workspace-contract.md`），所以解析按 `state` /
-   * `desktopSession` / `access.state` 三种同义字段宽松读取，**不猜更多路径**。
+   * Cindy 侧**不**用它做常规状态展示：页面上的桌面会话状态仍来自
+   * `stream/status.desktopSession`（那是已配对的观看端会话视角）。
    */
   workspaceAccess: (workspaceId: string): string =>
     `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/access`,
+  /**
+   * **幂等 ensure 拉起桌面访问**（CINDY-RW-17，PSB 0.1.183 起 Cindy Bearer 已放行）：
+   * `POST /api/cindy/remote/workspaces/:id/access/start`。语义 = 网页「启动访问」那条链的
+   * 机器形态，**不自动占用**：工作区空闲未占用 → 403 `WORKSPACE_NOT_OCCUPIED`；被他人占用
+   * → 409 `WORKSPACE_OCCUPIED_BY_OTHER`；成功 202（开始启动）/ 200（已在 starting 或
+   * running，`attached:true`）。见 {@link PsbWorkspaceAccessStartResult} 与 main
+   * `psbClient.ensureWorkspaceAccess`。
+   */
+  accessStart: (workspaceId: string): string =>
+    `${PSB_CINDY_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/access/start`,
   clients: `${PSB_CINDY_API_PREFIX}/clients`,
   projectTemplates: `${PSB_CINDY_API_PREFIX}/project-templates`,
   session: (sessionId: string): string =>
@@ -199,33 +220,17 @@ export const PSB_CINDY_WS = {
     `${PSB_CINDY_API_PREFIX}/sessions/${encodeURIComponent(sessionId)}/stream`,
 } as const;
 
-/* ====================== 3b. PSB 通用网页接口（待 Cindy 白名单放行） ====================== */
+/* ====================== 3b. 命名空间边界（CINDY-RW-17 收口） ====================== */
 
 /**
- * PSB **浏览器网页**命名空间（`/api/remote/**`）。
+ * Cindy 只走 `/api/cindy/remote/**`。
  *
- * Cindy 复用它的**唯一**一个接口是工作区桌面访问的幂等拉起：
- * `POST /api/remote/workspaces/:id/access/start`（200/202/409，幂等 ensure）。语义在 PSB 的
- * 网页路由里已经存在，Cindy 不再自造一条等价逻辑。
- *
- * ## 当前状态：Cindy Bearer **尚未**被放行（2026-11-26，PSB 0.1.180）
- *
- * PSB 的 Cindy 命名空间白名单是**精确形状**（只放行 `/api/cindy/remote/**`），所以这条路由
- * 现在对 Cindy 恒返回 **403**。PSB 台账（`docs/collaboration/psb-remote-workspace-contract.md`）
- * 记的是「Cindy 入口下一轮加」：
- * 要么放行 Cindy 的 `access/start`，要么在 `/api/cindy/remote/**` 下提供命名空间入口。
- *
- * 因此调用方必须把这条路径当成**可选增强**：403 / 404（旧 PSB）/ 405 都收敛成
- * 「Cindy 入口尚未开放」的**非致命**标记，继续走原有错误路径（subscribe 的 409 会给出
- * 可行动文案）。**不要**再猜别的路径来「拉起访问」——猜错的路径只会得到更多 404。
+ * 历史上「拉起桌面访问」借用过 PSB **通用网页**命名空间 `/api/remote/**`（Cindy Bearer
+ * 未被放行，恒 403，只能当非致命的可选增强）。**CINDY-RW-17（PSB 0.1.183）起** PSB 在
+ * Cindy 命名空间下提供了等价入口 {@link PSB_CINDY_ROUTES.accessStart}，那条网页命名空间的
+ * 例外已删除：`resolvePsbUrl` 不再接受任何 `/api/remote/**` 路径，调用方也**不要**再猜
+ * 别的路径来「拉起访问」。
  */
-export const PSB_WEB_API_PREFIX = '/api/remote';
-
-export const PSB_WEB_ROUTES = {
-  /** 幂等 ensure 工作区桌面访问（200/202 成功，409 见契约）。 */
-  workspaceAccessStart: (workspaceId: string): string =>
-    `${PSB_WEB_API_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/access/start`,
-} as const;
 
 /* ============================== 4. PSB 响应 DTO ============================== */
 
@@ -468,6 +473,30 @@ export function isPsbWorkspaceAccessState(value: unknown): value is PsbWorkspace
 }
 
 /**
+ * 「拉起桌面访问」的成功响应（CINDY-RW-17 最终契约，PSB 0.1.183，2026-11-27）。
+ *
+ * 两种真实形态（`data` 内）：
+ *
+ * - **202**（从「没在运行」开始启动）：
+ *   `{ access: { state:'starting', session:{ id, state:'starting', display:90 } },
+ *     state:'starting', sessionId, attached:false }`
+ * - **200**（已在 starting / running；重复调用 = 幂等 attach）：
+ *   `{ access: { state:'running', session:{ id, state:'running' } },
+ *     state:'running', sessionId, attached:true }`
+ *
+ * 只保留接入端要用的四个事实：`state`（顶层，未知词归一 `null`）、`sessionId`、
+ * `attached`（这次调用是否只是挂到一条已存在的访问）与 `access.state`（子对象视角）。
+ * **不用它判断「能不能订阅」**：订阅前仍以 `GET …/access` 的 running 为准。
+ */
+export interface PsbWorkspaceAccessStartResult {
+  readonly state: PsbWorkspaceAccessState | null;
+  readonly sessionId: string | null;
+  readonly attached: boolean;
+  /** PSB 的 `access` 子对象，只保留状态；没有该子对象时 `null`。 */
+  readonly access: { readonly state: PsbWorkspaceAccessState | null } | null;
+}
+
+/**
  * 订阅 409 里「**没有 running 桌面访问**」的机器码（PSB `details.code`）。
  *
  * 另外两个同类机器码（`NO_DESKTOP_SESSION`）属于 WS 4004 / `stream/status.reasonCode` 那套，
@@ -606,6 +635,13 @@ export const PSB_ERROR_CODES = {
    * 下一步是**先结束 / 停止那条会话**再释放；不是「去 PSB 网页处理」，也不是可自动重试的竞态。
    */
   agentSessionActive: 'AGENT_SESSION_ACTIVE',
+  /**
+   * 隧道名额已满（PSB 2026-11-27 新增，CINDY-RW-17）。
+   *
+   * PSB 与浏览器共用默认 4 条观看/隧道名额。用户下一步是**关闭 / 停止其它远程会话**再重试；
+   * 不是「重试就能好」，也不是去网页处理。文案见 `remoteWorkspace.error.tooManyTunnels`。
+   */
+  tooManyTunnels: 'TOO_MANY_TUNNELS',
   clientOffline: 'CLIENT_OFFLINE',
   notFound: 'NOT_FOUND',
   /** 403「不是归属人」：与 `NOT_FOUND` 同一个处置（不泄漏存在性），单表里按同一 IPC 码映射。 */
@@ -876,6 +912,20 @@ export const PSB_FAILURE_DESCRIPTORS = {
     psbCode: PSB_ERROR_CODES.agentSessionActive,
     noticeCode: null,
     messageKey: 'remoteWorkspace.error.agentSessionActive',
+    state: null,
+    nextStep: 'stop-session',
+  },
+  PSB_TOO_MANY_TUNNELS: {
+    /**
+     * 隧道 / 观看名额已满（PSB `TOO_MANY_TUNNELS`，CINDY-RW-17）。
+     *
+     * 下一步是**关闭 / 停止其它远程会话**（把名额让出来）再重试：重试本身不会恢复，
+     * 也不是去网页处理。它与 `PSB_SESSION_STOPPED`（会话已终态）/ `PSB_RATE_LIMITED`
+     * （请求太频繁）是不同事实，不能合并成一句「连接失败」。
+     */
+    psbCode: PSB_ERROR_CODES.tooManyTunnels,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.tooManyTunnels',
     state: null,
     nextStep: 'stop-session',
   },
@@ -1336,6 +1386,53 @@ export function parsePsbWorkspaceStreamSubscription(
   };
 }
 
+/**
+ * 读工作区桌面访问状态（PSB 最终契约：`GET …/access` 的 `data.access.state`）。
+ *
+ * 位置只认两处——顶层的 `state` 与嵌套的 `access.state`（PSB 的 200 与 202 两种响应都带顶层
+ * `state`；只带子对象的历史形状也兼容）。**不解析中文、不猜别的字段**：读不到 / 未知词返回
+ * `null`，由调用方决定「未知 = 仍需 ensure / 不能确认 running」，不能把它当成某个已知状态。
+ */
+export function readPsbWorkspaceAccessState(value: unknown): PsbWorkspaceAccessState | null {
+  if (!isRecord(value)) return null;
+  const nested = isRecord(value['access']) ? value['access']['state'] : undefined;
+  for (const candidate of [value['state'], nested]) {
+    if (isPsbWorkspaceAccessState(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * 解析「拉起桌面访问」的成功响应（202/200）。
+ *
+ * `sessionId` 与 `state` 都容忍缺省（`null`）：接入端要的是「有没有到 running / 是否只是
+ * attach」，而不是这条响应本身携带完整会话视图。不是对象 = 协议违约 → `null`（调用方按
+ * `PSB_PROTOCOL` 处理，与原 `call` 的其余端点同一口径）。
+ */
+export function parsePsbWorkspaceAccessStartResult(
+  value: unknown,
+): PsbWorkspaceAccessStartResult | null {
+  if (!isRecord(value)) return null;
+  const access = isRecord(value['access']) ? value['access'] : null;
+  const accessSession = access !== null && isRecord(access['session']) ? access['session'] : null;
+  const topSession = isRecord(value['session']) ? value['session'] : null;
+  const sessionId =
+    readIdentityString(value['sessionId']) ??
+    (topSession === null ? null : readIdentityString(topSession['id'])) ??
+    (accessSession === null ? null : readIdentityString(accessSession['id']));
+  return {
+    state: readPsbWorkspaceAccessState(value),
+    sessionId,
+    attached: readBoolean(value['attached']),
+    access:
+      access === null
+        ? null
+        : {
+            state: isPsbWorkspaceAccessState(access['state']) ? access['state'] : null,
+          },
+  };
+}
+
 /* ===================== 5c. 失败外壳解析（main 的 HTTP / WS 共用一份） ===================== */
 
 /**
@@ -1389,6 +1486,111 @@ export function readPsbFailureFieldsFromText(text: string): PsbFailureFields | n
   }
   if (!isRecord(parsed)) return null;
   return readPsbFailureFields(parsed);
+}
+
+/**
+ * `details.code`（PSB 的**业务码第二位置**，CINDY-RW-17）。
+ *
+ * PSB 的 REST 失败外壳把业务码放在 `error.code`；但**隧道 Upgrade 拒绝**（以及部分守卫）的
+ * 外层码是通用的 `FORBIDDEN`（403）/ `CONFLICT`（409），真正的业务码在
+ * `error.details.code`（例如 `WORKSPACE_NOT_OCCUPIED`）。读法只认这一条路径、有界截断；
+ * 读不到 / 畸形一律 `null`（不猜）。
+ */
+export function readPsbFailureDetailsCode(details: unknown): string | null {
+  if (!isRecord(details)) return null;
+  return readBoundedString(details['code'], PSB_TEXT_LIMITS.code);
+}
+
+/**
+ * 外层「什么都不能说明」的失败码：真正的业务原因在 `details.code`。
+ *
+ * 只列 PSB 真实出过的两种外层形态（HTTP 403 / 409 的通用壳）；`HTTP_<status>` 由调用方兜底
+ * （见 `resolvePsbFailureCode`）。
+ */
+export const PSB_GENERIC_OUTER_FAILURE_CODES: ReadonlySet<string> = new Set([
+  PSB_ERROR_CODES.forbidden,
+  'CONFLICT',
+]);
+
+/**
+ * 一次 PSB 失败的**有效业务码**（CINDY-RW-17）：`details.code` 命中失败单表时优先于顶层码。
+ *
+ * 为什么要提升：PSB 的隧道 Upgrade 拒绝外层是 `FORBIDDEN` / `CONFLICT`，如果直接拿外层码查
+ * 文案表，用户看到的就是一句泛泛的「操作失败」或原始英文码；而 `details.code` 里才是
+ * 「工作区没被占用 / 被他人占用 / 会话正在输出 / 隧道名额满」这些**下一步动作不同**的事实。
+ *
+ * 只在 `details.code` 能在单表里查到文案、且顶层码不是另一条**同样具体**的业务码时提升：
+ * 两个具体码冲突时保留顶层（REST 契约里 `error.code` 才是权威位置）。
+ */
+export function resolvePsbFailureCode(fields: PsbFailureFields): string | null {
+  const detailsCode = readPsbFailureDetailsCode(fields.details);
+  if (detailsCode && psbFailureDescriptorForPsbCode(detailsCode) !== null) {
+    const top = fields.code;
+    if (
+      top === null ||
+      top === detailsCode ||
+      PSB_GENERIC_OUTER_FAILURE_CODES.has(top) ||
+      top.startsWith('HTTP_')
+    ) {
+      return detailsCode;
+    }
+  }
+  return fields.code;
+}
+
+/**
+ * 可以从 `details.code` **提升为业务码**的守卫失败（CINDY-RW-17）。
+ *
+ * 只收这四种：它们的下一步动作各不相同（确认占用 / 等对方释放 / 先结束输出中的会话 /
+ * 关掉其它远程会话腾名额），且都能从 §4b 单表拿到可行动文案。其余码不提扫（避免把鉴权 /
+ * 终态一类的既有归因换掉）。
+ */
+export const PSB_GUARD_FAILURE_CODES = [
+  PSB_ERROR_CODES.workspaceNotOccupied,
+  PSB_ERROR_CODES.occupiedByOther,
+  PSB_ERROR_CODES.agentSessionActive,
+  PSB_ERROR_CODES.tooManyTunnels,
+] as const;
+
+export type PsbGuardFailureCode = (typeof PSB_GUARD_FAILURE_CODES)[number];
+
+export function isPsbGuardFailureCode(value: unknown): value is PsbGuardFailureCode {
+  return (
+    typeof value === 'string' && (PSB_GUARD_FAILURE_CODES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * 提升结果：业务码 + 跨 IPC 的失败码 + 可直接下发/记录的 `PsbRemoteFailure`。
+ *
+ * `ipcCode` 是 §4b 单表的投影（例如 `WORKSPACE_NOT_OCCUPIED` → `PSB_WORKSPACE_NOT_OCCUPIED`），
+ * 隧道层用它替换错误码里的外层 `FORBIDDEN` / `CONFLICT`，渲染层才能按业务码取文案。
+ */
+export interface PsbGuardFailurePromotion {
+  readonly businessCode: PsbGuardFailureCode;
+  readonly ipcCode: PsbIpcFailureCode;
+  readonly failure: PsbRemoteFailure;
+}
+
+/**
+ * 从失败外壳里读「可提升的守卫业务码」；没有 / 不认识返回 `null`。
+ *
+ * 同时供两条传输使用：REST（`psbClient` 的失败映射）与 agent-tunnel 的 **Upgrade 拒绝体**
+ * （`psbTunnel` 把 403/409 的 body 解析后提到这里）。两边读同一份 `details.code`，不各写一套。
+ */
+export function readPsbGuardFailurePromotion(
+  fields: PsbFailureFields,
+): PsbGuardFailurePromotion | null {
+  const detailsCode = readPsbFailureDetailsCode(fields.details);
+  if (!isPsbGuardFailureCode(detailsCode)) return null;
+  const failure: PsbRemoteFailure = {
+    code: detailsCode,
+    messageKey: psbFailureMessageKeyForPsbCode(detailsCode) ?? PSB_FAILURE_UNKNOWN_MESSAGE_KEY,
+    message: fields.message.trim() || null,
+  };
+  const ipcCode = psbIpcCodeForFailure(failure);
+  if (!ipcCode) return null;
+  return { businessCode: detailsCode, ipcCode, failure };
 }
 
 /* ============================== 5b. 串流宿主光标形状（stream.cursor，2026-11-26） ============================== */

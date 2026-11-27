@@ -47,6 +47,10 @@ import {
   psbStreamCursorKeyword,
   psbWorkspaceHealth,
   psbWorkspaceWritable,
+  parsePsbWorkspaceAccessStartResult,
+  readPsbGuardFailurePromotion,
+  readPsbWorkspaceAccessState,
+  resolvePsbFailureCode,
   type PsbDescribedIpcCode,
   type PsbFailureDescriptor,
 } from '../psb-remote-workspace';
@@ -373,5 +377,113 @@ describe('管理页串流状态只保留一个归一化强度', () => {
     expect(fromPsb).toEqual(readPsbAdminStreamStatus(parsed));
     expect(fromPsb.desktopSession).toBeNull();
     expect(fromPsb.reasonCode).toBeNull();
+  });
+});
+
+/* ============ 启动访问（CINDY-RW-17）：202/200 外壳与业务码提升 ============ */
+
+/**
+ * PSB-RW-17（0.1.183）：`access/start` 的 202/200 外壳、`details.code` 的业务码提升，
+ * 以及 agent-tunnel Upgrade 拒绝体的守卫提升。解析错一层的后果是「界面显示泛泛失败 / 又去
+ * 网页点启动」，所以逐字段钉住真实序列化形状。
+ */
+describe('启动访问：访问状态 / 202-200 外壳 / details.code 业务码提升', () => {
+  it('readPsbWorkspaceAccessState 只认 state 与 access.state，未知词归 null', () => {
+    expect(readPsbWorkspaceAccessState({ state: 'running' })).toBe('running');
+    expect(readPsbWorkspaceAccessState({ access: { state: 'starting' } })).toBe('starting');
+    expect(readPsbWorkspaceAccessState({ desktopSession: 'running' })).toBeNull();
+    expect(readPsbWorkspaceAccessState({ access: { state: 'future-state' } })).toBeNull();
+    expect(readPsbWorkspaceAccessState(null)).toBeNull();
+  });
+
+  it('parsePsbWorkspaceAccessStartResult 解析 202 / 200 两种真实外壳', () => {
+    expect(
+      parsePsbWorkspaceAccessStartResult({
+        access: { state: 'starting', session: { id: 'desktop-9', state: 'starting', display: 90 } },
+        state: 'starting',
+        sessionId: 'desktop-9',
+        attached: false,
+      }),
+    ).toEqual({
+      state: 'starting',
+      sessionId: 'desktop-9',
+      attached: false,
+      access: { state: 'starting' },
+    });
+
+    expect(
+      parsePsbWorkspaceAccessStartResult({
+        access: { state: 'running', session: { id: 'desktop-9', state: 'running' } },
+        state: 'running',
+        sessionId: 'desktop-9',
+        attached: true,
+      }),
+    ).toEqual({
+      state: 'running',
+      sessionId: 'desktop-9',
+      attached: true,
+      access: { state: 'running' },
+    });
+
+    // 不是对象 = 协议违约（调用方按 PSB_PROTOCOL 处理，不伪造一个成功）。
+    expect(parsePsbWorkspaceAccessStartResult('nope')).toBeNull();
+  });
+
+  it('resolvePsbFailureCode：details.code 命中单表时提升，两个具体码冲突时保留顶层', () => {
+    const promote = resolvePsbFailureCode({
+      code: 'FORBIDDEN',
+      message: '先占用工作区再启动访问。',
+      details: { code: 'WORKSPACE_NOT_OCCUPIED' },
+    });
+    expect(promote).toBe('WORKSPACE_NOT_OCCUPIED');
+
+    // 顶层已经是具体业务码：保留它（REST 契约里 error.code 是权威位置）。
+    expect(
+      resolvePsbFailureCode({
+        code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+        message: '',
+        details: { code: 'TOO_MANY_TUNNELS' },
+      }),
+    ).toBe('WORKSPACE_OCCUPIED_BY_OTHER');
+
+    // details.code 不在单表（不认识的新码）：不提升，保留外层。
+    expect(
+      resolvePsbFailureCode({ code: 'FORBIDDEN', message: '', details: { code: 'FUTURE_CODE' } }),
+    ).toBe('FORBIDDEN');
+  });
+
+  it('readPsbGuardFailurePromotion：四种守卫码提升为跨 IPC 业务码，其余不提升', () => {
+    const cases: ReadonlyArray<{ detailsCode: string; ipcCode: string }> = [
+      { detailsCode: 'WORKSPACE_NOT_OCCUPIED', ipcCode: 'PSB_WORKSPACE_NOT_OCCUPIED' },
+      { detailsCode: 'WORKSPACE_OCCUPIED_BY_OTHER', ipcCode: 'PSB_WORKSPACE_OCCUPIED_BY_OTHER' },
+      { detailsCode: 'AGENT_SESSION_ACTIVE', ipcCode: 'PSB_AGENT_SESSION_ACTIVE' },
+      { detailsCode: 'TOO_MANY_TUNNELS', ipcCode: 'PSB_TOO_MANY_TUNNELS' },
+    ];
+    for (const item of cases) {
+      const promoted = readPsbGuardFailurePromotion({
+        code: 'CONFLICT',
+        message: '可读中文原因。',
+        details: { code: item.detailsCode },
+      });
+      expect(promoted?.ipcCode, item.detailsCode).toBe(item.ipcCode);
+      expect(promoted?.failure.code).toBe(item.detailsCode);
+      expect(promoted?.failure.message).toBe('可读中文原因。');
+      // 提升后的 IPC 码必须能在单表里查到文案（否则渲染层会落通用失败）。
+      expect(psbFailureMessageKeyForIpcCode(item.ipcCode)).not.toBeNull();
+    }
+
+    expect(
+      readPsbGuardFailurePromotion({ code: 'CONFLICT', message: '', details: { code: 'AUTH_INVALID' } }),
+    ).toBeNull();
+  });
+
+  it('TOO_MANY_TUNNELS 在失败单表里可行动（关掉其它远程会话后重试），且 IPC 码合法', () => {
+    expect(psbIpcCodeForFailure({ code: 'TOO_MANY_TUNNELS', messageKey: 'x', message: null })).toBe(
+      'PSB_TOO_MANY_TUNNELS',
+    );
+    expect(psbFailureMessageKeyForIpcCode('PSB_TOO_MANY_TUNNELS')).toBe(
+      'remoteWorkspace.error.tooManyTunnels',
+    );
+    expect(psbFailureDescriptorForIpcCode('PSB_TOO_MANY_TUNNELS')?.nextStep).toBe('stop-session');
   });
 });

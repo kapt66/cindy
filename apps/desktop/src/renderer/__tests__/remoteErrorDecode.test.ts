@@ -141,6 +141,17 @@ describe('decodeRemoteErrorMessage', () => {
     expect(decodeRemoteErrorMessage('[PSB_CLIENT_OFFLINE] 远端客户端当前离线。')).toBe(
       i18n.t('remoteWorkspace.error.clientOffline'),
     );
+    // CINDY-RW-17：agent-tunnel Upgrade 拒绝会把外层 FORBIDDEN/CONFLICT 提升成业务码，会话页
+    // 横幅必须同样解码成可行动文案（不要显示泛化的 FORBIDDEN 或原始码）。
+    expect(decodeRemoteErrorMessage('[PSB_WORKSPACE_NOT_OCCUPIED] 先占用工作区再启动访问。')).toBe(
+      i18n.t('remoteWorkspace.error.occupyRequired'),
+    );
+    expect(decodeRemoteErrorMessage('[PSB_AGENT_SESSION_ACTIVE] 会话正在输出。')).toBe(
+      i18n.t('remoteWorkspace.error.agentSessionActive'),
+    );
+    expect(decodeRemoteErrorMessage('[PSB_TOO_MANY_TUNNELS] 隧道数量已达上限。')).toBe(
+      i18n.t('remoteWorkspace.error.tooManyTunnels'),
+    );
     // 未登记的 PSB 码不猜文案（保持原串，交给诊断）。
     expect(decodeRemoteErrorMessage('[PSB_SOMETHING_NEW] 未知失败')).toBe(
       '[PSB_SOMETHING_NEW] 未知失败',

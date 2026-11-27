@@ -102,10 +102,20 @@ import { psbBannerMessageKeyForIpcCode } from '../../shared/psb-remote-workspace
 // 发送被「工作区还没被你占用」拒绝时，占用必须由用户确认（2026-11-27 用户复测口径）：
 // 确认与显式占用收在 features/remote-workspace/occupyRequired.ts，store 只负责在确认成功后
 // 重试同一次发送（复用本函数的既有 enqueue 通道，保持草稿 / 附件 / 队列语义）。
+//
+// 2026-11-27 追加：**发送前**先做占用预检（`psbSendPreflight.ts`）——未占用先弹确认，取消就
+// 完全不发送（不排队、不落库、不出失败气泡）；确认则先显式占用成功再发。上面的失败后确认
+// 从此只作竞态兜底（预检通过后被抢 / 预检读不到 PSB）。
+import { tryGetPsbRemoteBridge } from '@/features/remote-workspace/bridge';
 import {
   isPsbOccupyRequiredFailure,
   requestPsbOccupyConfirmationForSession,
 } from '@/features/remote-workspace/occupyRequired';
+import { psbFailureText } from '@/features/remote-workspace/psbFailureText';
+import {
+  startPsbSendPreflight,
+  type PsbSendPreflightOutcome,
+} from '@/features/remote-workspace/psbSendPreflight';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 import type { AgentMeta, MessageRole, Message, MessageAutomationOrigin } from '@/lib/ccAgent.types';
 import { toMessageAutomationOrigin } from '@/lib/messageAutomationOrigin';
@@ -15143,7 +15153,35 @@ function setQueueExpanded(sessionId: string, expanded: boolean): void {
   ).catch((err) => log.warn('setQueueExpanded failed:', err));
 }
 
+/**
+ * 暂停队列的「继续」→ 让 main 恢复并 drain 队首。
+ *
+ * 2026-11-27 追加：队列里的消息会在 resume 后由 main **自动发出**，所以恢复之前也走同一条
+ * 发送前占用预检。预检拦下（他人占用 / 离线 / 未就绪）或用户取消 → **不调用 resume**：队列
+ * 保持暂停、消息没有发出、也不会出现「排队消息自动发出去变失败气泡」。拿不到 PSB 会话 id
+ * （非 psb / 状态未水合）时按原链路直接 resume，由主进程权威闸门兜底。
+ */
 function resumeQueue(sessionId: string): void {
+  if (!sessionId) return;
+  const psbPreflight = startPsbSendPreflightForSession(sessionId);
+  if (!psbPreflight) {
+    resumeQueueNow(sessionId);
+    return;
+  }
+  void psbPreflight.then(
+    (outcome) => {
+      if (outcome.kind !== 'proceed') {
+        notifyPsbSendPreflightBlocked(outcome);
+        return;
+      }
+      resumeQueueNow(sessionId);
+    },
+    // 预检自身异常不拦发送（主进程仍是权威闸门）。
+    () => resumeQueueNow(sessionId),
+  );
+}
+
+function resumeQueueNow(sessionId: string): void {
   if (!sessionId) return;
   // #2194 (Codex review P2): 暂停队列的「继续」是本端点击意图——恢复后 drain
   // 派发的队首项落库时会作为新尾部 user 行出现，不登记则门控误判为外部注入，
@@ -15922,6 +15960,54 @@ function withAgentSendDispatch<T>(
   }
 }
 
+/**
+ * 发送前占用预检（store 侧的接线；判定本体在
+ * `features/remote-workspace/psbSendPreflight.ts`）。
+ *
+ * 只有当前会话的 `remoteHostId` 是 `psb:` 时才返回 Promise；其它会话 / 状态还没水合时返回
+ * `null` —— 调用方**不引入 await**、不发任何 PSB 请求（本机 / SSH / device-link 发送路径的
+ * 同步语义不变）。拿不到 PSB 会话 id 时同样跳过，交给主进程权威闸门兜底。
+ */
+function startPsbSendPreflightForSession(
+  sessionId: string,
+): Promise<PsbSendPreflightOutcome> | null {
+  // 用 `sessions.get` 而不是 `getOrCreateState`：预检只是旁路读，不应为一个从未加载过的会话
+  // 建立内存状态；拿不到 `remoteHostId` 就是不预检（主进程兜底）。
+  const remoteHostId = sessions.get(sessionId)?.remoteHostId ?? null;
+  if (!remoteHostId) return null;
+  return startPsbSendPreflight({ remoteHostId, bridge: tryGetPsbRemoteBridge() });
+}
+
+/**
+ * 预检拦下发送 → 可行动提示（`cancelled` 静默；`proceed` 无事）。
+ *
+ * 这是「发送前」提示，不是对话里的失败气泡：文案全部复用既有 PSB 单表 / `psbFailureText`，
+ * 不新增第二个码表，也不新增「去 PSB」类引导。
+ */
+function notifyPsbSendPreflightBlocked(outcome: PsbSendPreflightOutcome): void {
+  if (outcome.kind !== 'blocked') return;
+  const blocked = outcome.blocked;
+  if (blocked.cause === 'occupy-failed') {
+    toast.warning(
+      blocked.error
+        ? psbFailureText(i18n.t, blocked.error)
+        : i18n.t('remoteWorkspace.error.unknown'),
+    );
+    return;
+  }
+  const name = blocked.personName.trim();
+  if (blocked.messageKey === 'remoteWorkspace.error.occupiedByOther') {
+    // 与 psbFailureText 同口径：拿不到占用人名时回落到「无名字」的同一句话。
+    toast.warning(
+      name
+        ? i18n.t('remoteWorkspace.error.occupiedByOther', { name })
+        : i18n.t('remoteWorkspace.error.workspaceOccupied'),
+    );
+    return;
+  }
+  toast.warning(i18n.t(blocked.messageKey));
+}
+
 function sendMessage(
   sessionId: string,
   text: string,
@@ -16088,7 +16174,13 @@ function sendMessage(
   );
 }
 
-/** sendMessage 的主体(附件已完成标注物化)。无 await 前置,整个主体同步执行。 */
+/**
+ * sendMessage 的主体(附件已完成标注物化)。
+ *
+ * 非 psb 会话无 await 前置、整个主体同步执行（保既有的「点击即在同步栈内 enqueue」语义）；
+ * psb 会话在乐观气泡之前先做一次发送前占用预检（见 `startPsbSendPreflightForSession`），
+ * 那是唯一会让主体在气泡前让步的 await。
+ */
 async function sendMessageCore(
   sessionId: string,
   text: string,
@@ -16112,6 +16204,20 @@ async function sendMessageCore(
       : (rendererClearGenerationBySession.get(sessionId) ?? 0) !== clearGenerationAtStart)
   ) {
     return false;
+  }
+  // 2026-11-27 用户复测：**发送前**先检测工作区占用（不靠失败后再弹确认）。
+  // 预检在乐观气泡 / 队列项 / 落库之前完成：取消或拦下时直接返回 false，此时**没有**产生任何
+  // 消息或队列写入，调用方按既有 `false` 语义原样保留草稿 / 附件。
+  // 预检读不到 PSB 时返回 `proceed`（交给主进程权威闸门），失败后确认仍是竞态兜底。
+  let psbPreflightOccupied = false;
+  const psbPreflight = startPsbSendPreflightForSession(sessionId);
+  if (psbPreflight) {
+    const outcome = await psbPreflight;
+    if (outcome.kind !== 'proceed') {
+      notifyPsbSendPreflightBlocked(outcome);
+      return false;
+    }
+    psbPreflightOccupied = outcome.occupiedByPreflight;
   }
   const starPromptOwner = getDataOwnerGeneration();
   const current = getOrCreateState(sessionId);
@@ -16265,9 +16371,10 @@ async function sendMessageCore(
   /**
    * 一次 enqueue 尝试（成功 = 输入被主端受理）。
    *
-   * `retrying` 为 `false` 且失败是 `PSB_WORKSPACE_NOT_OCCUPIED`（工作区还没被用户占用）时：
-   * 弹「需要占用这个工作区」确认框，用户确认并**显式占用成功**后**重试同一次发送**
-   * （2026-11-27 用户复测：占用一律由用户确认；占用成功后自动重试发起的那次发送）。
+   * 正常情况下发送前预检已经处理过「还没占用」（确认 + 显式占用 + 直接发送），这里不再弹框。
+   * `retrying` 为 `false`、预检**没有**刚占用过（例如预检读不到 PSB 而放行、之后主端读到了）、
+   * 且失败是 `PSB_WORKSPACE_NOT_OCCUPIED` 时，才作为竞态兜底弹「需要占用这个工作区」确认框：
+   * 用户确认并**显式占用成功**后**重试同一次发送**（2026-11-27 用户复测：占用一律由用户确认）。
    * 失败发生在受理之前（主端占用闸门在落库/派发之前），所以重试用同一份 `queued` 载荷是安全的；
    * 草稿 / 附件 / 队列语义不变。取消 → 不占用、不发送，失败照旧落到错误横幅，调用方恢复草稿。
    */
@@ -16301,7 +16408,9 @@ async function sendMessageCore(
       if (!opts?.authRetryPersistOnProjectionError) recordGithubStarPromptSend(sessionId, queued.clientId, starPromptOwner);
       return true;
     } catch (err) {
-      if (!retrying && isPsbOccupyRequiredFailure(err)) {
+      // 预检刚显式占用成功仍被主进程闸门拒绝 = 竞态（被抢 / 被交接）。不再弹第二次确认：
+      // 用户刚点过「占用」，再问一遍只会让同一次发送出现两个确认框；失败照旧落错误横幅。
+      if (!retrying && !psbPreflightOccupied && isPsbOccupyRequiredFailure(err)) {
         // 确认期间先撤掉横幅：这不是最终失败，用户正在决定要不要占用这个工作区。
         setState(sessionId, (s) => ({
           ...s,
@@ -16579,6 +16688,17 @@ async function steerMessageCore(
   ) {
     return false;
   }
+  // 与 sendMessageCore 同口径：插话也先做发送前占用预检（取消 / 拦下 → 不发送、无乐观气泡）。
+  let psbPreflightOccupied = false;
+  const psbPreflight = startPsbSendPreflightForSession(sessionId);
+  if (psbPreflight) {
+    const outcome = await psbPreflight;
+    if (outcome.kind !== 'proceed') {
+      notifyPsbSendPreflightBlocked(outcome);
+      return false;
+    }
+    psbPreflightOccupied = outcome.occupiedByPreflight;
+  }
   const starPromptOwner = getDataOwnerGeneration();
   const queued = buildQueuedMessage(
     sessionId,
@@ -16711,7 +16831,9 @@ async function steerMessageCore(
       rollbackOptimisticSteer();
       return false;
     } catch (err) {
-      if (!retrying && isPsbOccupyRequiredFailure(err)) {
+      // 与 attemptEnqueue 同口径：预检已显式占用成功时，主进程闸门再拒绝只按竞态失败处理，
+      // 不重复弹第二次确认。
+      if (!retrying && !psbPreflightOccupied && isPsbOccupyRequiredFailure(err)) {
         // 确认期间先撤掉横幅：这不是最终失败，用户正在决定要不要占用这个工作区。
         setState(sessionId, (s) => ({
           ...s,
@@ -16826,7 +16948,29 @@ async function resendBlockedMessage(
   }
 }
 
+/**
+ * 把一条**已在队列里**的消息立刻插话发出（FIFO 之外，直接并入当前回合）。
+ *
+ * 2026-11-27 追加：队列项同样可能因工作区已被交接而让 main 的占用闸门拒绝，所以这里也走
+ * 发送前预检——预检拦下 / 取消 → 不调用 steer（队列项原样留在队列里，不出失败气泡）。
+ */
 function steerQueuedMessage(sessionId: string, clientId: string): Promise<boolean> {
+  if (!sessionId || !clientId) return Promise.resolve(false);
+  const psbPreflight = startPsbSendPreflightForSession(sessionId);
+  if (!psbPreflight) return steerQueuedMessageNow(sessionId, clientId);
+  return psbPreflight.then(
+    (outcome) => {
+      if (outcome.kind !== 'proceed') {
+        notifyPsbSendPreflightBlocked(outcome);
+        return false;
+      }
+      return steerQueuedMessageNow(sessionId, clientId);
+    },
+    () => steerQueuedMessageNow(sessionId, clientId),
+  );
+}
+
+function steerQueuedMessageNow(sessionId: string, clientId: string): Promise<boolean> {
   if (!sessionId || !clientId) return Promise.resolve(false);
   // Capture the target before entering the dispatch coordinator. A relay
   // reconnect may clear remoteProjectsStore while the coordinator is waiting;
@@ -17257,7 +17401,30 @@ function clearError(sessionId: string): void {
   });
 }
 
+/**
+ * ErrorBanner 的「重试」：让 main 重新入队/续跑上一次失败的消息。
+ *
+ * 2026-11-27 追加：重发（含 main 在重试里重新入队的那条消息）同样经过主进程占用闸门，所以
+ * 点重试也先走发送前预检——拦下 / 取消 → 不调用 main 的 retry，既有的失败横幅保持原样，
+ * 不会先重发失败再弹确认。自动重发路径（例如鉴权过期恢复）经 `sendMessage` 也走同一预检。
+ */
 function retryLastError(sessionId: string): Promise<void> {
+  if (!sessionId) return Promise.resolve();
+  const psbPreflight = startPsbSendPreflightForSession(sessionId);
+  if (!psbPreflight) return retryLastErrorNow(sessionId);
+  return psbPreflight.then(
+    (outcome) => {
+      if (outcome.kind !== 'proceed') {
+        notifyPsbSendPreflightBlocked(outcome);
+        return;
+      }
+      return retryLastErrorNow(sessionId);
+    },
+    () => retryLastErrorNow(sessionId),
+  );
+}
+
+function retryLastErrorNow(sessionId: string): Promise<void> {
   if (!sessionId) return Promise.resolve();
   disposeLiveErrorPersist(sessionId);
   // 续跑语义在 main:coordinator 判定失败 turn 已有 assistant 产出时,用共享英文

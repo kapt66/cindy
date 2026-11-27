@@ -48,7 +48,11 @@ import { CC_MGR_BUNDLE_VERSION } from '@cindy/maker-cc-manager';
 import {
   parsePsbRemoteHostId,
   psbTunnelNeedsBundleVersion,
+  readPsbFailureFieldsFromText,
+  readPsbGuardFailurePromotion,
+  type PsbGuardFailurePromotion,
   type PsbRemoteFailure,
+  type PsbTunnelErrorCode,
   type PsbTunnelFailureCode,
   type PsbTunnelMode,
 } from '../../shared/psb-remote-workspace.js';
@@ -101,7 +105,7 @@ export function readPsbTunnelReadyFrameCapability(): PsbReadyFrameCapability {
  */
 export class PsbTunnelError extends Error {
   constructor(
-    readonly code: PsbTunnelFailureCode,
+    readonly code: PsbTunnelErrorCode,
     readonly detail: string,
     readonly failure: PsbRemoteFailure | null = null,
   ) {
@@ -110,9 +114,34 @@ export class PsbTunnelError extends Error {
   }
 }
 
-/** 把 PSB 的拒绝原因附在分类错误后面（单行、截断；没有 body 就返回原错误）。 */
+/** Upgrade 拒绝体里「可提升为业务码」的守卫失败（`details.code`，CINDY-RW-17）。 */
+function readUpgradeGuardPromotion(body: string): PsbGuardFailurePromotion | null {
+  const fields = readPsbFailureFieldsFromText(body);
+  if (!fields) return null;
+  return readPsbGuardFailurePromotion(fields);
+}
+
+/**
+ * 把 PSB 的拒绝原因附在分类错误后面（单行、截断）。
+ *
+ * **业务码优先**（CINDY-RW-17）：Upgrade 被外层 `FORBIDDEN`(403) / `CONFLICT`(409) 拒绝时，
+ * body 的 `error.details.code` 才是真正的业务原因（`WORKSPACE_NOT_OCCUPIED` /
+ * `WORKSPACE_OCCUPIED_BY_OTHER` / `AGENT_SESSION_ACTIVE` / `TOO_MANY_TUNNELS`）。
+ * 命中时把错误码换成跨 IPC 的业务码并带上失败形状：渲染层按码显示「确认占用 → 重试 /
+ * 被他人占用 / 先结束会话 / 关掉其它远程会话」的可行动文案，而不是泛泛的 FORBIDDEN。
+ * 解析不出业务码时退回原来的「外层码 + body 原文」。
+ */
 function withUpgradeDetail(error: PsbTunnelError, body: string): PsbTunnelError {
   const detail = body.replace(/\s+/g, ' ').trim().slice(0, 300);
+  const promoted = readUpgradeGuardPromotion(body);
+  if (promoted) {
+    const message = promoted.failure.message?.trim();
+    return new PsbTunnelError(
+      promoted.ipcCode,
+      message && message.length > 0 ? message : detail || error.detail,
+      promoted.failure,
+    );
+  }
   if (!detail) return error;
   return new PsbTunnelError(error.code, `${error.detail}: ${detail}`, error.failure);
 }
@@ -598,7 +627,7 @@ function classifyPsbError(error: Error): PsbTunnelError {
   if (error instanceof PsbTunnelError) return error;
   const match = /^\[(PSB_[A-Z_]+)\]\s?(.*)$/.exec(error.message);
   if (match) {
-    const code = match[1] as PsbTunnelFailureCode;
+    const code = match[1] as PsbTunnelErrorCode;
     return new PsbTunnelError(code, match[2] ?? '');
   }
   return new PsbTunnelError('PSB_TUNNEL_UNREACHABLE', error.message);

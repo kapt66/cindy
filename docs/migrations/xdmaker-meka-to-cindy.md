@@ -8660,6 +8660,86 @@ src/renderer/features/remote-workspace/draft/__tests__/psbDraftSession.test.ts
 src/renderer/__tests__/remoteErrorDecode.test.ts` + `pnpm --filter desktop run typecheck` +
 `check:i18n` / `check:i18n-glossary` / `check:dev-docs` / `check:test-hygiene`（结果以本轮报告为准）。
 
+**2026-11-27 第四轮人工复测：发送前预检占用，取消就不发送（实现事实，文档已同步）**：
+
+- **检查点从「失败后」提前到「发送前」**：旧链路消息先进入对话、主进程占用闸门拒绝后才弹确认，
+  用户看到「回复未完成 / `[PSB_WORKSPACE_NOT_OCCUPIED]`」。新增渲染层唯一预检
+  `renderer/features/remote-workspace/psbSendPreflight.ts`：每条 psb 消息发送前读一次
+  `psbRemote.sessionStatus`（不用本地缓存），按与主进程同一判据 `psbWorkspaceWritable` 分流——
+  byMe 直接发；空闲先复用既有确认框，确认并**显式占用成功后**才发送；取消 / 占用失败 / 他人占用 /
+  离线 / 未就绪一律**不发送**（取消静默、其余给共享单表可行动提示，不产生对话内失败气泡）；
+  读取失败不放拦，交给主进程权威闸门。
+- **零写入**：预检在 `makerChatStore.sendMessageCore` / `steerMessageCore` 的乐观气泡、队列项与
+  `input.enqueue`/`steer` 之前完成；非 psb 会话零 PSB 请求、不引入 await。`resumeQueue` /
+  `retryLastError` / `steerQueuedMessage` 同样预检（队列消息不会被自动发出去变失败气泡）；
+  主进程回合结束后的自动 drain 没有渲染层插入点，仍以主进程闸门为准（已登记边界）。
+- **失败后确认只作竞态兜底**：预检已确认并占用成功的同一次发送，被主进程闸门再拒绝时不再弹
+  第二次确认；`occupyRequired` 增加详细结果（取消 / 占用失败可区分），按工作区 resolver 从
+  boolean 改为详细结果，启动串流 / 懒建会话行为不变。
+- 文档：产品规则 §2.2 / §2.6、工程契约新增 §13.6.1；定点测试见下方「验证证据」。
+
+**验证证据（2026-11-27 第四轮，实跑）**：
+`pnpm --filter desktop exec vitest run src/renderer/__tests__/makerChatStorePsbSendPreflight.test.ts
+src/renderer/__tests__/localSentUserMessage.test.ts src/renderer/__tests__/pendingQueueDefer.test.ts
+src/renderer/__tests__/remoteErrorDecode.test.ts
+src/renderer/features/remote-workspace/__tests__/occupyRequired.test.ts
+src/renderer/features/remote-workspace/draft/__tests__/psbDraftSession.test.ts`（结果以本轮报告为准）；
+另跑 `src/renderer/__tests__/makerChatStore*` + `features/remote-workspace/**/__tests__` +
+`renderer/hooks` 共 85 文件 / 1118 用例全 PASS。按交付口径未跑长门禁与全量 `typecheck`（本批为
+渲染层局部改动，与另一代理的串流 / access-start 改动并行）。
+
+**2026-11-27 CINDY-RW-17：Cindy 启动串流自动拉起桌面访问（实现事实，文档已同步）**：
+
+PSB 测试环境已上线 **0.1.183**（提交 `0b7f6a3`），在 Cindy 命名空间放行
+`POST /api/cindy/remote/workspaces/:id/access/start`（幂等 ensure，**不自动占用**），Cindy 与网页
+同一口径，**不再需要用户去网页点「启动访问」**：
+
+- **状态机**（`main/remote-workspace/psbClient.ts`）：`ensureWorkspaceAccess` 重写为
+  「读 `GET …/access` → `running` 直接返回（不 POST）/ `starting` 只轮询 / `stopping` 等落定再
+  POST / `none`·`stopped`·`failed`·未知词 POST start → 轮询到 running」，总预算
+  **90s deadline**（`PSB_ACCESS_POLL_DEFAULT={attempts:180,intervalMs:500,totalMs:90_000}`，单次请求
+  超时压到剩余预算内）。失败收敛成 `{ok:false, reason:'not-occupied'|'occupied-by-other'|
+  'unsupported'|'timeout'|'failed', failure}`（**不抛异常，fatal 语义由调用方决定**）；404/405/
+  `UNIMPLEMENTED` → `unsupported`，调用方退回直接订阅。新增 `startWorkspaceAccess`
+  （202/200 真实外壳：`data.access.state` / `sessionId` / `attached`）与 `readWorkspaceAccess`
+  （`data.access.state`；未知词 `null`）。
+- **必经路径**（`main/remote-workspace/adminService.ts`）：`streamStart` 顺序固定为
+  「占用闸门（mine）→ `ensureWorkspaceAccess`（失败带码抛出、不订阅、不起观看端）→
+  `stream/subscribe` → `streamViewer.start`」；旧的「能力位 / 后台预热 / 不阻塞启动」编排与
+  能力位类型全部删除（它建立在「Cindy 入口恒 403」的历史事实上）。`starting` 期间渲染层显示
+  「正在启动桌面访问…」。
+- **失败码与提升**：403 `WORKSPACE_NOT_OCCUPIED`（用户确认占用后重试）；409
+  `WORKSPACE_OCCUPIED_BY_OTHER`（带人名）/ `TOO_MANY_TUNNELS`（新增
+  `PSB_TOO_MANY_TUNNELS` + `remoteWorkspace.error.tooManyTunnels` × 12 locale，下一步「关闭或停止
+  其它远程会话」）；错误外壳 `{error:{code,message,details}}` 的**可读中文取 `error.message`**，
+  `details.code` 命中单表时提升为业务码（`resolvePsbFailureCode`）。agent-tunnel Upgrade 的
+  外层 `FORBIDDEN`/`CONFLICT` 用同一份 `readPsbGuardFailurePromotion` 把业务码提升成
+  `[PSB_*]`（不再显示泛化 FORBIDDEN）。`ipc-errors.ts` 新增 `PSB_TOO_MANY_TUNNELS`。
+- **呈现（2026-11-27 用户口径：临时提示不得占布局）**：渲染层删掉控制条下方
+  `border-b` + `shrink-0` 的内联失败条与「被 PSB 关闭」内联说明，临时失败 / 中性关闭一律走全局
+  toast（`@/lib/toast`，绝对定位、自动消失）；「在网页启动访问」降为 toast 上的动作按钮；
+  `WORKSPACE_NOT_OCCUPIED` 直接弹既有「占用工作区」确认框（`occupyRequired`），确认 → 占用 →
+  重试同一次启动，取消 → 不发请求、不留常驻错误、状态回「串流未启动」。布局里只保留持久状态
+  （串流未启动 / 正在启动桌面访问… / 等待画面 / 串流中、详情字段与画面）。
+- **旧 PSB 兼容**：`access/start` 返回 404/405/`UNIMPLEMENTED` 时退回「直接 subscribe + 409
+  文案」；旧装配端口没有 `ensureWorkspaceAccess` 时按旧路径订阅。
+- **路径收口**：此前借用的通用网页 `/api/remote/**` 例外已从 `resolvePsbUrl` 删除
+  （`PSB_WEB_ROUTES` / `allowPsbWebNamespace` 一并删除），只允许 `/api/cindy/remote/**`。
+- 文档：工程契约 §11.8 / §13.2 / §13.4 / §15.1 / §15.7，产品规则 §2.4 / §6 / §8.2，跨仓摘要
+  §1.6 / §2（CINDY-RW-17 行）/ §3.1 / §3.2 / §3.3 已同步。
+
+**验证证据（2026-11-27 CINDY-RW-17，实跑）**：
+`pnpm --filter desktop exec vitest run src/shared/__tests__/psbRemoteWorkspaceParsing.test.ts
+src/main/remote-workspace/__tests__/psbClient.test.ts
+src/main/remote-workspace/__tests__/psbTunnel.test.ts
+src/main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts
+src/main/remote-workspace/__tests__/streamViewer.test.ts
+src/main/remote-workspace/__tests__/psbRemoteIpcWiring.guard.test.ts
+src/renderer/features/remote-workspace/__tests__/psbFailureText.test.ts
+src/renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`
+（全绿；结果以本轮报告为准）+ `pnpm --filter desktop run typecheck` + `check:i18n` /
+`check:i18n-glossary` / `check:dev-docs`。按用户要求只跑改动测试，未跑整目录 / 长门禁；未重启 dev。
+
 **未验证 / 风险（如实登记）**：
 
 - **串流改工作区级订阅后的真机复验（P0 已适配，待真机）**：启动串流后 PSB 会话列表只有用户任务
@@ -8667,9 +8747,14 @@ src/renderer/__tests__/remoteErrorDecode.test.ts` + `pnpm --filter desktop run t
   `409 NO_RUNNING_SESSION` 可行动文案、旧 PSB 回退路径 `purpose:'internal'` 列表不可见。单测覆盖见
   工程契约 §11.6 与迁移记录下方证据。
 - **订阅 409 可行动文案的真机复验（待做）**：访问未运行时点「启动」→ 三档文案 / 诊断行 /
-  「在网页启动访问」按钮 / `starting` 一次自动重试；访问 running 时正常出画面与输入。另：
-  `ensureWorkspaceAccess` 的「入口未开放」分支（403）已被单测覆盖，但**放行后的成功路径无法在
-  当前 PSB 上真机验证**（白名单未开；跟进项见跨仓摘要 §1.6）；PSB 放行后需补一次真机联调。
+  「在网页启动访问」动作 / `starting` 一次自动重试；访问 running 时正常出画面与输入。
+  CINDY-RW-17 起「启动访问」由 Cindy 自动拉起（PSB 0.1.183 已放行 `access/start`），**放行后的
+  成功路径仍待真机**（见下一条）。
+- **CINDY-RW-17 自动拉起桌面访问的真机复验（2026-11-27，待做）**：点「启动」→ PSB 侧桌面访问被
+  拉起（读 access → 终态才 start → 轮询到 running）、`starting` 显示「正在启动桌面访问…」、
+  空闲工作区弹「占用工作区」确认框（确认后只占用一次并重试同一次启动；取消无占位、无常驻错误）、
+  临时失败只出现浮动 toast（页面布局不被顶）、`TOO_MANY_TUNNELS` / 隧道 `details.code` 提升的
+  文案可行动。测试部署已上线 0.1.183，但上述路径**尚未真机复验**，只有单测与契约级证据。
 - **宿主光标形状同步**：现行口径是「**只同步形状、外观永远宿主风格**」（远端 `name` → CSS
   关键字，只在画面区域生效，不用位图；旧「CSS 自定义位图光标」口径已作废），未真机复验（需要
   running 桌面会话；双方已安排取证）；映射 / 未知回退 / 只在画面区域 / 停止与 `closed` 恢复有单测。
@@ -8677,6 +8762,10 @@ src/renderer/__tests__/remoteErrorDecode.test.ts` + `pnpm --filter desktop run t
   新口径真机复验未完成（判据有单测）。
 - **多观看者输入（0.1.172 权限模型）**：未构造真机场景；`errors=frame` 未启用，`stream.control`
   拒绝帧未消费。
+- **发送前占用预检的真机复验（2026-11-27 第四轮，待做）**：空闲工作区发消息 → 先弹占用确认
+  （取消不出气泡、草稿在；确认后先占用再发送）、他人占用 / 离线 → 发送前可行动提示、队列「继续」
+  与失败重试同样先预检。单测只到桥替身层，未接真实 PSB；**主进程回合结束后的队列自动 drain**
+  没有渲染层插入点，仍以主进程闸门为准（不改主进程闸门的前提）。
 - **Windows `SendInput`**：PSB 未生产验证；**慢订阅者（收帧后 4004）**：弱网 / 积压未构造，仅单测。
 - **正式部署**：只读链路未复测（同一份代码，差异只在 `CINDY_MEKA_PSB_HOST`）。
 - **新页完整目检**：Light / Dark 颜色用模拟媒体切换验证过，窄窗口 / 全屏 / 真实鼠标走查与终态

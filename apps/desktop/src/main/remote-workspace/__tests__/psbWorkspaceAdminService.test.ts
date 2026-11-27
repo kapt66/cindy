@@ -411,15 +411,15 @@ function createHarness(options: HarnessOptions = {}): Harness {
     sendStreamInput: async () => {},
     subscribeWorkspaceStream: async () => subscription(`desktop-${calls.subscribed.length}`),
     ensureWorkspaceLocked: async () => {},
-    // 生产现状：PSB 白名单还没放行 Cindy 的 `/api/remote/**`，所以「尽力拉起」恒为非致命
-    // `cindy-entry-not-open`。默认就按这个真实形态跑，避免单测里假装「能拉起」。
+    // CINDY-RW-17：新 PSB（0.1.183）已放行 Cindy 的 `access/start`，启动串流的必经步骤是
+    // 「先确保访问 running」。默认按「访问已在 running」跑，避免每条用例都为它写一份 fake。
     ...(options.withoutAccessEnsure === true
       ? {}
       : {
           ensureWorkspaceAccess: async (): Promise<PsbWorkspaceAccessEnsureOutcome> => ({
-            ok: false,
-            reason: 'cindy-entry-not-open',
-            failure: null,
+            ok: true,
+            state: 'running',
+            startedByThisCall: false,
           }),
         }),
     localRemoteHostId: null,
@@ -1350,38 +1350,103 @@ describe('管理页：多窗口复用同一条串流连接', () => {
   });
 });
 
-/* ============= 订阅前「尽力拉起桌面访问」（可选增强，Cindy 入口未放行） ============= */
+/* ========== 启动串流必经：占用闸门 → ensureWorkspaceAccess → 订阅（CINDY-RW-17） ========== */
 
-describe('管理页：订阅前尽力拉起桌面访问', () => {
-  it('拉起发生在订阅之前；入口未开放（403/404）也照常订阅、照常建观看端', async () => {
-    // 生产现状默认就是 `cindy-entry-not-open`（PSB 白名单没放行 Cindy 的 /api/remote/**）。
-    const subscribeCallsAtEnsure: number[] = [];
+/**
+ * PSB-RW-17（PSB 0.1.183）：Cindy 启动串流与网页同一口径 —— 先确保桌面访问到 `running`，
+ * 再订阅观看端。`ensureWorkspaceAccess` 由「可选增强」升级为**必经路径**：
+ * 顺序固定「占用闸门（mine）→ ensure → 订阅 → 起观看端」；ensure 失败（未占用 / 被他人占用 /
+ * 超时 / 网络）**带码抛出**，不订阅、不起观看端、不建会话；只有旧 PSB（`unsupported`）才退回
+ * 直接订阅（订阅的 409 会给出可行动文案）。
+ */
+describe('管理页：启动串流前必须确保桌面访问 running', () => {
+  it('顺序是「占用闸门 → ensure → 订阅」；到 running 后照常启动', async () => {
+    const order: string[] = [];
     const harness = createHarness({
       behavior: {
+        ensureWorkspaceLocked: async () => {
+          order.push('lock');
+        },
         ensureWorkspaceAccess: async () => {
-          subscribeCallsAtEnsure.push(harness.subscribeCalls.length);
-          return { ok: false, reason: 'cindy-entry-not-open', failure: null };
+          order.push('ensure');
+          return { ok: true, state: 'running', startedByThisCall: true };
+        },
+        subscribeWorkspaceStream: async () => {
+          order.push('subscribe');
+          return subscription('desktop-1');
         },
       },
     });
 
     const result = await harness.service.streamStart(WORKSPACE_ID);
 
-    // 0 = 那一刻还没订阅过任何工作区 —— ensure 必须排在 subscribe 前。
-    expect(subscribeCallsAtEnsure).toEqual([0]);
-    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
+    expect(order).toEqual(['lock', 'ensure', 'subscribe']);
     expect(result.viewerSessionId).toBe('desktop-1');
+    expect(harness.startStreamCalls).toEqual(['desktop-1']);
     expect(harness.createSessionCalls).toHaveLength(0);
   });
 
-  it('拉起到 running 时不改变启动语义（仍然用订阅返回的桌面访问会话）', async () => {
+  it('空闲未占用（403 WORKSPACE_NOT_OCCUPIED）→ 抛 PSB_WORKSPACE_NOT_OCCUPIED，不订阅', async () => {
+    // 渲染层据此弹「需要占用这个工作区」确认框 → 用户确认 → 显式占用 → 重试同一次启动。
     const harness = createHarness({
       behavior: {
         ensureWorkspaceAccess: async () => ({
-          ok: true,
-          state: 'running',
-          startedByThisCall: true,
+          ok: false,
+          reason: 'not-occupied',
+          failure: {
+            code: 'WORKSPACE_NOT_OCCUPIED',
+            messageKey: 'remoteWorkspace.error.occupyRequired',
+            message: '先占用工作区再启动访问。',
+          },
         }),
+      },
+    });
+
+    const error = (await harness.service
+      .streamStart(WORKSPACE_ID)
+      .catch((cause: unknown) => cause)) as PsbClientError;
+
+    expect(psbIpcCodeForFailure(error.failure)).toBe('PSB_WORKSPACE_NOT_OCCUPIED');
+    expect(harness.subscribeCalls).toHaveLength(0);
+    expect(harness.startStreamCalls).toHaveLength(0);
+    expect(harness.lockChecks).toEqual([WORKSPACE_ID]);
+  });
+
+  it.each(['occupied-by-other', 'timeout', 'failed'] as const)(
+    'ensure 失败（%s）→ 带码抛出，不订阅、不起观看端、不建会话',
+    async (reason) => {
+      const failure =
+        reason === 'occupied-by-other'
+          ? {
+              code: 'WORKSPACE_OCCUPIED_BY_OTHER',
+              messageKey: 'remoteWorkspace.error.occupiedByOther',
+              message: '李四',
+            }
+          : {
+              code: 'PSB_STREAM_ACCESS_STARTING',
+              messageKey: 'remoteWorkspace.admin.streamAccessStarting',
+              message: null,
+              streamAccessState: 'starting' as const,
+            };
+      const harness = createHarness({
+        behavior: { ensureWorkspaceAccess: async () => ({ ok: false, reason, failure }) },
+      });
+
+      const error = (await harness.service
+        .streamStart(WORKSPACE_ID)
+        .catch((cause: unknown) => cause)) as PsbClientError;
+
+      expect(error.failure.code).toBe(failure.code);
+      expect(harness.subscribeCalls).toHaveLength(0);
+      expect(harness.startStreamCalls).toHaveLength(0);
+      expect(harness.createSessionCalls).toHaveLength(0);
+    },
+  );
+
+  it('旧 PSB（access/start 404 → unsupported）→ 退回直接订阅，由订阅 409 给可行动文案', async () => {
+    const harness = createHarness({
+      behavior: {
+        ensureWorkspaceAccess: async () => ({ ok: false, reason: 'unsupported', failure: null }),
       },
     });
 
@@ -1392,7 +1457,7 @@ describe('管理页：订阅前尽力拉起桌面访问', () => {
     expect(result.viewerSessionId).toBe('desktop-1');
   });
 
-  it('拉起本身抛异常（端口违约）也不阻断启动', async () => {
+  it('ensure 端口违约抛异常 → 不订阅（不再「后台预热、继续订阅」）', async () => {
     const harness = createHarness({
       behavior: {
         ensureWorkspaceAccess: async () => {
@@ -1401,116 +1466,14 @@ describe('管理页：订阅前尽力拉起桌面访问', () => {
       },
     });
 
-    const result = await harness.service.streamStart(WORKSPACE_ID);
+    await harness.service.streamStart(WORKSPACE_ID).catch(() => undefined);
 
     expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
-    expect(result.viewerSessionId).toBe('desktop-1');
-    // 这属于「增强接口坏了」，要留痕，但只 warn 不失败（后台预热，异常在微任务里被兜住）。
-    await vi.waitFor(() => {
-      expect(
-        harness.warnings.some((entry) => entry.message.includes('workspace access ensure threw')),
-      ).toBe(true);
-    });
-  });
-
-  it('拉起访问不再阻塞启动必经路径：ensure 一直不返回，启动照常完成', async () => {
-    // 用可变 holder 而不是 `let release = null`：后者在 promise executor 里赋值时 TS 无法
-    // 收窄到「可调用」，会在 `release?.()` 报 not callable。
-    const releaseEnsure: { fn: (() => void) | null } = { fn: null };
-    const harness = createHarness({
-      behavior: {
-        // 真实形态下它有 ~3s 轮询预算；这里模拟「慢到永远不返回」，启动不能被它拖住。
-        ensureWorkspaceAccess: () =>
-          new Promise<PsbWorkspaceAccessEnsureOutcome>((resolve) => {
-            releaseEnsure.fn = () =>
-              resolve({ ok: true, state: 'running', startedByThisCall: true });
-          }),
-      },
-    });
-
-    const result = await harness.service.streamStart(WORKSPACE_ID);
-
-    expect(result.viewerSessionId).toBe('desktop-1');
-    // ensure 是**先发起**的（后台预热），但订阅与起观看端都不等它。
-    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
-    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID]);
-    expect(harness.startStreamCalls).toEqual(['desktop-1']);
-    releaseEnsure.fn?.();
-    await vi.waitFor(() => {
-      expect(harness.infos.some((entry) => entry.message.includes('access is running'))).toBe(
-        true,
-      );
-    });
-  });
-
-  it('入口未开放的能力位在本进程内缓存：再次订阅不再白打一次 ensure', async () => {
-    const harness = createHarness();
-    await harness.service.streamStart(WORKSPACE_ID);
-    // 等后台预热把 `cindy-entry-not-open` 写进能力位。
-    await vi.waitFor(() => {
-      expect(
-        harness.infos.some(
-          (entry) =>
-            entry.message.includes('access ensure did not succeed') &&
-            entry.fields?.['reason'] === 'cindy-entry-not-open',
-        ),
-      ).toBe(true);
-    });
-    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
-
-    // 绑定失效（桌面访问被重建）→ 下次启动要重新订阅，但入口未开放的能力位已经知道结果。
-    harness.behavior.streamStatus = async (sessionId) => {
-      if (sessionId === 'desktop-1') throw notFound();
-      return streamStatus();
-    };
-    await harness.service.streamStatus(WORKSPACE_ID);
-    expect(harness.deps.store.desktopSessionIdForWorkspace(WORKSPACE_ID)).toBeNull();
-
-    const restarted = await harness.service.streamStart(WORKSPACE_ID);
-    expect(restarted.viewerSessionId).toBe('desktop-2');
-    expect(harness.subscribeCalls).toEqual([WORKSPACE_ID, WORKSPACE_ID]);
-    // 能力位 closed 且未过期：不再发起第二次 ensure。
-    expect(harness.ensureAccessCalls).toEqual([WORKSPACE_ID]);
-  });
-
-  it('拉起访问失败且订阅本身没有可读原因 → 启动失败带上 ensure 的 PSB 原文（码不变）', async () => {
-    const harness = createHarness({
-      behavior: {
-        ensureWorkspaceAccess: async () => ({
-          ok: false,
-          reason: 'failed',
-          failure: {
-            code: 'PSB_UNREACHABLE',
-            messageKey: 'remoteWorkspace.error.unreachable',
-            message: '入口未开放：403',
-          },
-        }),
-        subscribeWorkspaceStream: async () => {
-          // PSB 上游没给可读 message 的情况：main 不能只留一条空失败。
-          throw new PsbClientError(
-            {
-              code: 'PSB_STREAM_NO_RUNNING_SESSION',
-              messageKey: 'remoteWorkspace.admin.streamAccessNone',
-              message: null,
-              streamAccessState: 'none',
-            },
-            409,
-          );
-        },
-      },
-    });
-
-    const error = (await harness.service
-      .streamStart(WORKSPACE_ID)
-      .catch((cause: unknown) => cause)) as PsbClientError;
-
-    // 主失败的码 / 可行动语义不变，只补 PSB 原文做 detail。
-    expect(error.failure.code).toBe('PSB_STREAM_NO_RUNNING_SESSION');
-    expect(error.failure.streamAccessState).toBe('none');
-    expect(error.failure.message).toBe('入口未开放：403');
-    expect(error.status).toBe(409);
-    // 拉起访问失败不会自行触发旧 PSB 的建会话回退。
-    expect(harness.createSessionCalls).toHaveLength(0);
+    expect(harness.subscribeCalls).toHaveLength(0);
+    // 端口违约要留痕（诊断用），但语义是「这一轮启动失败」。
+    expect(
+      harness.warnings.some((entry) => entry.message.includes('workspace access ensure threw')),
+    ).toBe(true);
   });
 
   it('旧装配（端口上没有 ensureWorkspaceAccess）照常启动', async () => {

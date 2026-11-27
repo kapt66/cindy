@@ -56,6 +56,10 @@ describe('psbFailureText（渲染层唯一失败文案出口）', () => {
     expect(psbFailureText(t, createIpcError('PSB_AGENT_SESSION_ACTIVE', '会话正在输出'))).toBe(
       'remoteWorkspace.error.agentSessionActive',
     );
+    // CINDY-RW-17：隧道名额满的下一步是「关掉其它远程会话后重试」，不是通用失败。
+    expect(psbFailureText(t, createIpcError('PSB_TOO_MANY_TUNNELS', '隧道数量已达上限'))).toBe(
+      'remoteWorkspace.error.tooManyTunnels',
+    );
   });
 
   it('占用失败拿不到人名时回落无名字的同一句，不会显示未插值的 {{name}}', () => {

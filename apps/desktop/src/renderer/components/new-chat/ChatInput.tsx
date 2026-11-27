@@ -6390,6 +6390,50 @@ export function ChatInput({
             latestStorageKeyRef.current === sourceStorageKey &&
             storageKeyForDraftRef.current === sourceStorageKey &&
             !editor.isDestroyed;
+          // 本机 / SSH / PSB 会话的失败恢复 = **原样放回点击时的草稿**（正文、光标、附件）。
+          // 共用下面的 `restoreRemoteOptimisticDraft` 会给草稿追加「FIFO 恢复分隔空段」——那套
+          // 语义服务的是 device-link 失败后跨重连的多次恢复，本机失败会让用户看到草稿末尾多出
+          // 空行：取消「占用工作区」确认后，看起来就像那下回车被输入进了输入框。
+          if (!optimisticallyClearRemoteComposer && updateLive && isCurrentComposer) {
+            const liveDocument = isEditorEmpty(editor) ? null : editor.getJSON();
+            if (!liveDocument) {
+              const restoredText = tiptapDocHasContent(documentBeforeOptimisticClear)
+                ? documentBeforeOptimisticClear
+                : null;
+              isRestoringRef.current = true;
+              try {
+                if (restoredText) editor.commands.setContent(restoredText);
+                else editor.commands.clearContent(true);
+                // 光标回到点击时的末尾；不在这里抢焦点 / 滚动（焦点由 useComposerSendFocusRestore 归还）。
+                editor.commands.setTextSelection(editor.state.doc.content.size);
+              } finally {
+                isRestoringRef.current = false;
+              }
+              restoreFiles(attachmentsBeforeOptimisticClear);
+              const restoredComments = [...commentsBeforeOptimisticClear];
+              browserCommentsRef.current = restoredComments;
+              setBrowserComments(restoredComments);
+              if (sourceStorageKey) {
+                const existing = getComposerDraft(sourceStorageKey);
+                saveComposerDraft(
+                  sourceStorageKey,
+                  {
+                    text: restoredText,
+                    attachments: [...attachmentsBeforeOptimisticClear],
+                    quotes: existing?.quotes ?? [],
+                    browserComments: restoredComments,
+                    ...(builtInSkillIntent ? { builtInSkillIntent } : {}),
+                    ...(existing?.pendingGhostId ? { pendingGhostId: existing.pendingGhostId } : {}),
+                  },
+                  // 与既有失败恢复同口径：正文由本组件自己写回并负责焦点，静默保存不再触发
+                  // 「外部草稿写入」的二次 setContent + 抢焦点（那会把光标从还原位置弹走）。
+                  { silent: true },
+                );
+              }
+              return;
+            }
+            // 发送途中编辑器里已经有更新内容（例如语音落字）：保留它，走下面的合并恢复。
+          }
           const restored = restoreRemoteOptimisticDraft(
             sourceStorageKey,
             {

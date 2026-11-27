@@ -15,12 +15,23 @@
  * error ◀──stream error / 输入通道断开
  * ```
  *
- * - `starting`：用户点「启动」，正在读状态 + 调 `adminStreamStart`；
+ * - `starting`：用户点「启动」，正在读状态 + 调 `adminStreamStart`（main 先 ensure 桌面访问，
+ *   可能要几十秒：这一相位 UI 显示「正在启动桌面访问…」）；
  * - `connecting`：订阅已建立、还没收到首帧（UI「已连接，等待画面…」）；
  * - `waiting-frame`：已订阅、PSB 状态明确说此刻没有采集在跑（`active:false`），仍在等首帧；
  * - `streaming`：本端收到过帧（**只由 `frame` 事件进入**，PSB 的 `active` 不参与）；
  * - `stopping`：停止请求进行中；
- * - `error`：本轮失败（失败条显示本轮原因；进页时的历史 `lastErrorZh` 只进详情，不产错误条）。
+ * - `error`：本轮失败（2026-11-27 用户口径：失败**不占布局** —— 一律经全局 toast 呈现，
+ *   布局里只保留「串流未启动」等持久状态；进页时的历史 `lastErrorZh` 只进详情）。
+ *
+ * ## 失败呈现：只走 toast（不占布局）
+ *
+ * 旧实现把本轮失败渲染成控制条下的内联条（`border-b` + `shrink-0`），它固定存在并一直把画面
+ * 往下推。用户明确要求「不要有临时提示信息固定存在并影响布局」，所以本 hook 在产生本轮失败 /
+ * 中性关闭说明时调用 `toast.error` / `toast.info`（`@/lib/toast`，绝对定位、自动消失），
+ * 状态里的 `failure` 只作为相位与诊断载体保留，不再渲染成内联条。
+ * 启动遇到 `PSB_WORKSPACE_NOT_OCCUPIED` 时**不产出任何提示**，直接弹「占用工作区」确认框：
+ * 确认 → 显式占用 → 重试同一次启动；取消 → 收回未启动（用户自己的决定不是错误）。
  *
  * ## 生命周期不变量
  *
@@ -44,6 +55,8 @@
 
 import { useCallback, useEffect, useReducer, useRef, type RefObject } from 'react';
 import type { TFunction } from 'i18next';
+
+import { toast } from '@/lib/toast';
 
 import { useOptionalConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import {
@@ -281,6 +294,8 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
   onClearPictureRef.current = input.onClearPicture;
   const translateRef = useRef(input.translate);
   translateRef.current = input.translate;
+  /** 「在网页启动访问」（toast 的动作按钮用；实现定义在下方，经 ref 取最新版本）。 */
+  const openWebRef = useRef<(() => void) | null>(null);
   /** 卸载 / 相位检查后仍要能派发（mounted 令牌统一在派发处判）。 */
   const emit = useCallback(
     (action: StreamSessionAction) => {
@@ -296,6 +311,42 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
       retryTimerRef.current = null;
     }
   }, []);
+
+  /**
+   * 本轮失败用 **toast** 呈现（2026-11-27 用户口径：临时提示不得占布局）。
+   *
+   * 旧实现把失败渲染成控制条下方的内联条（`border-b` + `shrink-0`），它固定存在并一直把画面
+   * 往下推——用户明确不接受「临时提示信息固定存在并影响布局」。现在：
+   *   - toast 是全局浮层（`ToastContainer` 在所有受信窗口里都挂载了），绝对定位、会自动消失，
+   *     **完全不参与布局**；
+   *   - 布局里只保留**持久状态**（「串流未启动」/「等待画面」/ 详情字段），不再有错误条。
+   *
+   * `offerOpenWeb` 的「在网页启动访问」作为 toast 上的一个动作按钮提供（同一能力，不降级成
+   * 常驻提示条）。PSB 中文原话作为第二行诊断（toast 支持 `\n`）。
+   */
+  const showFailureToast = useCallback(
+    (failure: {
+      readonly text: string;
+      readonly detail?: string | null;
+      readonly offerOpenWeb?: boolean;
+    }) => {
+      const t = translateRef.current();
+      const detail = failure.detail?.trim();
+      const message = detail && detail !== failure.text ? `${failure.text}\n${detail}` : failure.text;
+      // 只有「在网页启动访问」这一档需要动作按钮：没有动作时不传第二个参数（调用点断言更干净）。
+      if (failure.offerOpenWeb === true) {
+        toast.error(message, {
+          action: {
+            label: t('remoteWorkspace.admin.streamAccessOpenWeb'),
+            onClick: () => openWebRef.current?.(),
+          },
+        });
+        return;
+      }
+      toast.error(message);
+    },
+    [],
+  );
 
   /** `streaming` 的 ref：HUD / 交互 / watchdog 用，不必因 state 变化重挂监听。 */
   const resetViewer = useCallback(() => {
@@ -338,13 +389,9 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
       // stale：先给「工作区已不可见 / 连不上」的可行动原因，不发一次注定失败的写请求。
       // 页面每 30s / 聚焦时会重读上下文，PSB 恢复后按钮自然回到可用。
       if (blockedActionKey) {
-        emit({
-          type: 'start-failed',
-          failure: {
-            text: translateRef.current()(blockedActionKey),
-            detail: null,
-          },
-        });
+        const text = translateRef.current()(blockedActionKey);
+        showFailureToast({ text });
+        emit({ type: 'start-failed', failure: { text, detail: null } });
         return;
       }
       emit({ type: 'start-request' });
@@ -356,14 +403,10 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
         if (next) emit({ type: 'status', status: next });
         if (next && !next.capability) {
           // 状态可能刚被推送刷新成 capability:false（按钮的禁用态来自上一次渲染）：用户点了
-          // 「启动」却什么都不发生是最糟的反馈，这里给一条能照做的原因。
-          emit({
-            type: 'start-failed',
-            failure: {
-              text: translateRef.current()('remoteWorkspace.session.streamUnsupported'),
-              detail: null,
-            },
-          });
+          // 「启动」却什么都不发生是最糟的反馈，这里给一条能照做的原因（toast，不占布局）。
+          const text = translateRef.current()('remoteWorkspace.session.streamUnsupported');
+          showFailureToast({ text });
+          emit({ type: 'start-failed', failure: { text, detail: null } });
           return;
         }
         const started = normalizeWorkspaceAdminStreamStart(
@@ -377,15 +420,11 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
           return;
         }
         if (!started) {
-          emit({
-            type: 'start-failed',
-            failure: {
-              text: translateRef.current()('remoteWorkspace.session.streamFailed', {
-                message: translateRef.current()('remoteWorkspace.error.unknown'),
-              }),
-              detail: null,
-            },
+          const text = translateRef.current()('remoteWorkspace.session.streamFailed', {
+            message: translateRef.current()('remoteWorkspace.error.unknown'),
           });
+          showFailureToast({ text });
+          emit({ type: 'start-failed', failure: { text, detail: null } });
           return;
         }
         if (started.viewerSessionId) viewerSessionIdRef.current = started.viewerSessionId;
@@ -417,28 +456,25 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
             return;
           }
           if (outcome === 'declined') {
-            // 用户取消 = 不占用、不启动：给一句能照做的原因（不是通用「操作失败」）。
-            emit({
-              type: 'start-failed',
-              failure: {
-                text: t('remoteWorkspace.error.occupyRequired'),
-                detail: null,
-              },
-            });
+            // 用户取消 = 不占用、不启动。**不产错误条**（2026-11-27 用户口径：取消是用户自己的
+            // 决定，不是失败，更不该留下一条常驻提示把画面往下推）；只把相位收回「未启动」，
+            // 布局里的持久状态自然回到「串流未启动」。
+            emit({ type: 'stopped', failure: null });
             return;
           }
         }
         const notice = psbStreamAccessFailureNotice(t, rawFailure);
         if (notice) {
-          emit({
-            type: 'start-failed',
-            failure: {
-              text: notice.text,
-              detail: notice.detail,
-              accessState: notice.state,
-              offerOpenWeb: notice.offerOpenWeb,
-            },
-          });
+          const failure: StreamFailureBanner = {
+            text: notice.text,
+            detail: notice.detail,
+            accessState: notice.state,
+            offerOpenWeb: notice.offerOpenWeb,
+          };
+          emit({ type: 'start-failed', failure });
+          // 临时失败只经 toast（绝对定位、自动消失，不参与布局）；「在网页启动访问」作为
+          // toast 上的动作按钮，而不是常驻的内联条。
+          showFailureToast(failure);
           // `starting` 竞态：访问正在启动，等它落定后自动再试一次；不循环。
           if (notice.retryOnce && !retriedStartingRef.current) {
             retriedStartingRef.current = true;
@@ -450,18 +486,28 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
           }
           return;
         }
-        emit({
-          type: 'start-failed',
-          failure: {
+        {
+          const failure: StreamFailureBanner = {
             text: t('remoteWorkspace.session.streamFailed', {
               message: psbFailureText(t, rawFailure),
             }),
             detail: null,
-          },
-        });
+          };
+          emit({ type: 'start-failed', failure });
+          showFailureToast(failure);
+        }
       }
     },
-    [blockedActionKey, bridge, clearStartingRetry, confirmDialog, emit, releaseOwnership, workspaceId],
+    [
+      blockedActionKey,
+      bridge,
+      clearStartingRetry,
+      confirmDialog,
+      emit,
+      releaseOwnership,
+      showFailureToast,
+      workspaceId,
+    ],
   );
   /** 自动重试定时器必须调用**最新**的 `start`：存到 ref，避免定时器闭包捕获旧版本。 */
   const startRef = useRef<typeof start | null>(null);
@@ -486,17 +532,19 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
         await bridge.adminStreamStop({ workspaceId });
       } catch {
         // 失败也给一条中性、可行动的话；画面与状态照下面无条件复位（不残留旧帧）。
+        // 临时提示走 toast（不占布局），布局里只体现「串流未启动」这个持久状态。
         failure = {
           text: translateRef.current()('remoteWorkspace.session.stopFailed'),
           detail: null,
         };
+        showFailureToast(failure);
       } finally {
         stoppingRef.current = false;
         resetViewer();
         if (options.updateUi) emit({ type: 'stopped', failure });
       }
     },
-    [bridge, clearStartingRetry, emit, resetViewer, workspaceId],
+    [bridge, clearStartingRetry, emit, resetViewer, showFailureToast, workspaceId],
   );
 
   const stop = useCallback(() => {
@@ -545,6 +593,8 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
         // 本端回到 idle 后停止路径会提前 return，owner 计数永远不归零。
         releaseOwnership();
         const messageZh = event.detail?.messageZh?.trim() ?? null;
+        // 观看端被 PSB 关闭是一句**临时说明**（不是本轮失败）：走中性 toast，不占布局。
+        if (messageZh) toast.info(messageZh);
         emit({ type: 'closed', note: messageZh });
         return;
       }
@@ -554,15 +604,14 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
       resetViewer();
       releaseOwnership();
       const t = translateRef.current();
-      emit({
-        type: 'stream-error',
-        failure: {
-          text: t('remoteWorkspace.session.streamFailed', {
-            message: eventFailureMessage(t, event.failure),
-          }),
-          detail: null,
-        },
-      });
+      const failure: StreamFailureBanner = {
+        text: t('remoteWorkspace.session.streamFailed', {
+          message: eventFailureMessage(t, event.failure),
+        }),
+        detail: null,
+      };
+      emit({ type: 'stream-error', failure });
+      showFailureToast(failure);
     });
     // 不依赖 `t`：语言切换不能重订阅（旧实现把 t 放进依赖，切语言就重挂事件）。
   }, [bridge, emit, releaseOwnership, resetViewer]);
@@ -679,12 +728,14 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
       clearStartingRetry();
       resetViewer();
       releaseOwnership();
-      emit({
-        type: 'stream-error',
-        failure: { text: psbFailureText(translateRef.current(), error), detail: null },
-      });
+      const failure: StreamFailureBanner = {
+        text: psbFailureText(translateRef.current(), error),
+        detail: null,
+      };
+      emit({ type: 'stream-error', failure });
+      showFailureToast(failure);
     },
-    [clearStartingRetry, emit, releaseOwnership, resetViewer],
+    [clearStartingRetry, emit, releaseOwnership, resetViewer, showFailureToast],
   );
 
   /* ---------------------------- 在网页启动访问 ---------------------------- */
@@ -696,20 +747,26 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
       resetViewer();
       releaseOwnership();
       emit({ type: 'stream-error', failure: { text, detail: null } });
+      showFailureToast({ text });
     },
-    [emit, releaseOwnership, resetViewer],
+    [emit, releaseOwnership, resetViewer, showFailureToast],
   );
 
   const openWebForAccess = useCallback(() => {
     if (!bridge) return;
     void bridge.openWebWorkspace({ workspaceId }).catch((error: unknown) => {
       if (!mountedRef.current) return;
-      emit({
-        type: 'stream-error',
-        failure: { text: psbFailureText(translateRef.current(), error), detail: null },
-      });
+      const failure: StreamFailureBanner = {
+        text: psbFailureText(translateRef.current(), error),
+        detail: null,
+      };
+      emit({ type: 'stream-error', failure });
+      showFailureToast(failure);
     });
-  }, [bridge, emit, workspaceId]);
+  }, [bridge, emit, showFailureToast, workspaceId]);
+  // toast 上的「在网页启动访问」动作按钮经 ref 调用最新实现（toast 是命令式全局 API，
+  // 创建时只能捕获闭包；这里保证语言 / bridge 变化后仍调用当前版本）。
+  openWebRef.current = openWebForAccess;
 
   /* ------------------------------- 卸载 ------------------------------- */
 

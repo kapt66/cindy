@@ -6,9 +6,10 @@
  * 相同:外部宿主服务全部惰性,编辑器、输入框状态与发送派发真实运行。
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentProps, ReactNode } from 'react';
 import type { Editor } from '@tiptap/react';
+import { EditorView } from '@tiptap/pm/view';
 import type { ProviderView } from '@cindy/model-providers';
 import { sshNativeCodexProvider, sshModel, sshProvider } from '@/features/cc-agent/__tests__/sshModelFixtures';
 import type { AttachedFile } from '@/lib/fileTypes';
@@ -30,6 +31,14 @@ import {
   resolvePromptRecommendationPrediction,
 } from '@/lib/promptRecommendationStore';
 import type { InputDeviceRendererAction } from '../../../../shared/inputDevices';
+import { __resetConfirmDialogKeyboardGuardForTests } from '@/lib/confirmDialogKeyboardGuard';
+
+// 本文件把 useConfirmDialog 换成 h.confirm（外部替身），但保留了真实的 provider 组件。
+// 占用确认框的键盘 / 焦点契约要跑真实 Radix AlertDialog，所以另取一次真实模块：
+// provider 与真实 useConfirmDialog 共享同一个 context，替身与真实入口互不干扰。
+const actualConfirmDialog = await vi.importActual<
+  typeof import('@/components/ui/confirm-dialog-provider')
+>('@/components/ui/confirm-dialog-provider');
 
 const h = vi.hoisted(() => ({ t: (key: string) => key, confirm: vi.fn(), editor: null as Editor | null, listening: false, stop: vi.fn().mockResolvedValue(undefined),
   setModel: vi.fn(), selectModel: undefined as ComponentProps<typeof ModelSelector>['onModelChange'] | undefined, remoteProviders: [] as ProviderView[],
@@ -150,6 +159,7 @@ const annotatedImage: AttachedFile = {
 };
 
 beforeEach(() => {
+  __resetConfirmDialogKeyboardGuardForTests();
   h.uploadChatFolder.mockReset();
   h.cacheImageFromBuffer.mockReset().mockResolvedValue(undefined);
   h.listAgentSkills.mockReset().mockResolvedValue({ success: true, skills: [] });
@@ -173,7 +183,10 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); clearDraft('composer-regression'); h.remoteProviders = []; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-function renderComposer(extra: Partial<ComponentProps<typeof ChatInput>> = {}) {
+function renderComposer(
+  extra: Partial<ComponentProps<typeof ChatInput>> = {},
+  wrap?: (node: ReactNode) => ReactNode,
+) {
   const attachmentState: ComponentProps<typeof ChatInput>['attachmentState'] = {
     attachments: [], hasAttachments: false, addFiles: vi.fn(), addClipboardImage: vi.fn(),
     rejections: [], dismissRejection: noOp, clearRejections: noOp, addFolderPath: noOp,
@@ -185,7 +198,8 @@ function renderComposer(extra: Partial<ComponentProps<typeof ChatInput>> = {}) {
     attachmentState,
     hideRuntimeControls: true, showFolderPicker: false, disableAutofocus: true,
     onSend: vi.fn().mockResolvedValue(true), ...extra };
-  const view = render(<ChatInput {...props} />);
+  const node = <ChatInput {...props} />;
+  const view = render(wrap ? wrap(node) : node);
   return { ...view, props };
 }
 
@@ -1074,3 +1088,128 @@ it('rechecks the built-in creator on every restored-task retry', async () => {
   expect(onSend).toHaveBeenCalledTimes(1);
   expect(getDraft('composer-regression')?.builtInSkillIntent).toEqual(intent);
 });
+
+// 2026-11-27 复测：PSB 远程工作区**发送前占用预检**会在发送途中弹「占用这个工作区」确认框。
+// 确认框是程序化打开的全局模态（发送清空并锁定 composer 之后才异步出现），取消后必须：
+// 不发送、不重开第二个框、草稿原样（不多出回车）、焦点回到 composer 且还能继续输入。
+// 这里用真实 ConfirmDialogProvider/AlertDialog + 真实 ChatInput 覆盖这一段的键盘与焦点语义；
+// onSend 替身复刻 store 预检的「等用户确认 → 返回 false」，发送入口仍是 composer 的 Enter。
+describe('发送前占用确认框：回车与焦点', () => {
+  const CONFIRM_COPY = {
+    title: '占用「saga2_project-3」？',
+    description: '占用后其他人无法使用，直到你释放 / 结束任务。',
+    confirmText: '占用',
+    cancelText: '取消',
+  };
+  let openOccupyConfirm: (() => Promise<boolean>) | null = null;
+
+  // jsdom 没有布局：确认框关闭后把焦点还给 composer 时 ProseMirror 会量选区坐标。
+  // 只把几何量测变成固定值，不改变焦点 / 正文 / 发送这些被测行为。
+  beforeEach(() => {
+    vi.spyOn(EditorView.prototype, 'coordsAtPos').mockReturnValue({ left: 0, right: 0, top: 0, bottom: 0 });
+  });
+
+  function OccupyConfirmHost() {
+    const { confirm } = actualConfirmDialog.useConfirmDialog();
+    openOccupyConfirm = () => confirm(CONFIRM_COPY);
+    return null;
+  }
+
+  function renderWithOccupyConfirm(
+    onSend: NonNullable<ComponentProps<typeof ChatInput>['onSend']>,
+  ) {
+    return renderComposer(
+      {
+        sessionId: 'psb-occupy-enter',
+        initialModel: 'remote-only',
+        initialProviderId: 'openai',
+        initialEffort: 'low',
+        onSend,
+      },
+      (node) => (
+        <actualConfirmDialog.ConfirmDialogProvider>
+          <OccupyConfirmHost />
+          {node}
+        </actualConfirmDialog.ConfirmDialogProvider>
+      ),
+    );
+  }
+
+  function pressEnter(): boolean {
+    return fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' });
+  }
+
+  it('取消：不发送第二下、草稿原样无换行、焦点回到输入框且能继续输入', async () => {
+    const onSend = vi.fn(async () => (await openOccupyConfirm!()) as boolean);
+    renderWithOccupyConfirm(onSend);
+    await waitFor(() => expect(h.editor).not.toBeNull());
+    await act(async () => { h.editor!.commands.setContent('<p>hi</p>'); });
+    h.editor!.view.dom.focus();
+
+    await act(async () => { fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' }); });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    const cancel = await screen.findByRole('button', { name: CONFIRM_COPY.cancelText });
+    // 确认框打开期间它独占键盘：落在编辑器上的 Enter 被拦下，不会开始第二次发送。
+    expect(screen.getByRole('alertdialog')).toBeTruthy();
+    expect(pressEnter()).toBe(false);
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    // 用 Enter 取消（真实浏览器里按钮由 Enter 的默认行为触发 click；jsdom 显式补 click）。
+    fireEvent.keyDown(cancel, { key: 'Enter', code: 'Enter' });
+    fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+
+    // 取消 = 不发送、不排队；草稿按点击时快照原样回来，不多出回车。
+    await waitFor(() => expect(h.editor!.getText()).toBe('hi'));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    // 关框用的那个 Enter 被一次性抑制，不会落进编辑器、也不会重开确认框。
+    expect(pressEnter()).toBe(false);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(onSend).toHaveBeenCalledTimes(1);
+    // 焦点回到 composer，取消后立即继续输入不丢字符。
+    await waitFor(() => expect(document.activeElement).toBe(h.editor!.view.dom));
+    await act(async () => { h.editor!.view.dispatch(h.editor!.state.tr.insertText('!')); });
+    await act(async () => {});
+    expect(h.editor!.getText()).toBe('hi!');
+  });
+
+  it('确认：只发送一次并清空草稿', async () => {
+    const onSend = vi.fn(async () => (await openOccupyConfirm!()) as boolean);
+    renderWithOccupyConfirm(onSend);
+    await waitFor(() => expect(h.editor).not.toBeNull());
+    await act(async () => { h.editor!.commands.setContent('<p>hi</p>'); });
+    h.editor!.view.dom.focus();
+
+    await act(async () => { fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' }); });
+    const confirmButton = await screen.findByRole('button', { name: CONFIRM_COPY.confirmText });
+    fireEvent.keyDown(confirmButton, { key: 'Enter', code: 'Enter' });
+    fireEvent.click(confirmButton);
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    // 受理成功 = 保持清空；不再弹第二个确认框。
+    await act(async () => {});
+    expect(h.editor!.getText()).toBe('');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('确认框已在途时再按 Enter：不重复发送、不弹第二个框', async () => {
+    let finishSend!: (accepted: boolean) => void;
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve; }));
+    renderWithOccupyConfirm(onSend);
+    await waitFor(() => expect(h.editor).not.toBeNull());
+    await act(async () => { h.editor!.commands.setContent('<p>hi</p>'); });
+    h.editor!.view.dom.focus();
+
+    // 第一次 Enter 进入发送（onSend 挂起，等价于预检在读 / 确认框已弹出）。
+    await act(async () => { fireEvent.keyDown(h.editor!.view.dom, { key: 'Enter', code: 'Enter' }); });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(pressEnter()).toBe(false);
+    expect(pressEnter()).toBe(false);
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    await act(async () => { finishSend(false); });
+    await waitFor(() => expect(h.editor!.getText()).toBe('hi'));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+});
+

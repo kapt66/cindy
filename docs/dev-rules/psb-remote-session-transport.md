@@ -152,9 +152,9 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
   常量在共享契约的 `PSB_CINDY_ROUTES`。
 - **出网 URL 只有一份归一化判据（`resolvePsbUrl`）**：`psbEndpoint.ts` 对 HTTP 与两条 WS 统一
   校验「origin 相同 + 归一化后 pathname 逐字节不变 + 以 `/api/cindy/remote/` 开头」；`..` /
-  `%2e%2e` / 反斜杠 / `//` 等会被 URL 解析器改写的形态全部拒绝。唯一显式放行 `/api/remote/**`
-  的调用是「尽力拉起桌面访问」的 `POST …/access/start`（须显式 `allowPsbWebNamespace:true`），
-  不能靠字符串前缀二次判断（见 §15.1）。
+  `%2e%2e` / 反斜杠 / `//` 等会被 URL 解析器改写的形态全部拒绝。CINDY-RW-17 起**没有**任何
+  命名空间例外（拉起访问也走 Cindy 命名空间的 `access/start`），不能靠字符串前缀二次判断
+  （见 §15.1）。
 - **外壳**：成功读 `{ data: … }`，失败读 PSB 既有的 `{ error: { code, message, details? } }`；
   DTO 由共享解析函数**防崩收口**（连 id 都没有的行丢弃；未知枚举值一律 `null`，**不**回落
   `claude-code` / `failed` 这类「安全默认」——把未知当已知会让错误隧道或假终态发生；展示字段按
@@ -169,7 +169,8 @@ Harness，那些实现只依赖「一条字节流 + mode 选择」。因此 PSB 
 - **网络失败与业务失败分开**：连不上/超时记 `PSB_UNREACHABLE`（用户查网络），PSB 返回的
   `{error:{code}}` 保留原码并映射成文案键（用户看工作区）。混成一个码会让「为什么不能开会话」
   永远只有一句「操作失败」。单次请求预算 20s，超时按网络失败处理；「尽力拉起桌面访问」的轮询
-  另受**总 deadline** 约束（默认 `totalMs=5000`，每次请求超时压到剩余预算内，最坏 5s，见 §15.7）。
+  另受**总 deadline** 约束（CINDY-RW-17 起默认 `totalMs=90_000` 覆盖 Unity / 虚拟桌面冷启动，
+  每次请求超时压到剩余预算内，见 §15.7）。
 - **409 必须可行动**：`WORKSPACE_OCCUPIED_BY_OTHER`（带占用人名，用于文案插值）、`CLIENT_OFFLINE`、
   工作区非 `ready`、会话终态分别给不同的文案键与下一步建议；归属 404 与真不可达不混用。
 - **失败形状统一**：渲染层只收 `PsbRemoteFailure { code, messageKey, message }`，**不在渲染层判
@@ -545,6 +546,9 @@ dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSes
     `renderer/features/remote-workspace/__tests__/occupyRequired.test.ts`（确认 + 显式占用 + 重试的
     唯一实现）+ `remoteErrorDecode.test.ts` / `RemoteWorkspaceAdminPanel.test.tsx` /
     `psbDraftSession.test.ts` 的「确认后重试同一次动作、取消不占用」三条入口用例 +
+    `renderer/__tests__/makerChatStorePsbSendPreflight.test.ts`（发送前预检：取消零发送 /
+    occupy→send 顺序 / byMe 直接发 / 他人占用·离线的可行动提示 / 读取失败 fail-open /
+    预检占用后竞态不重复确认 / 队列恢复与重试同样预检 / 非 psb 零 PSB 请求，见 §13.6.1）+
   - IPC 面接线守卫（preload ↔ handler ↔ bridge 三处一致）。
 - 纯文档改动：`pnpm check:dev-docs`。
 - 实机联调顺序（PSB 侧同样要求逐段留证据，见 PSB 仓 `协作需求.md` §3A.5）：**测试部署** →
@@ -1163,10 +1167,10 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
   相位卸载的停止由 IPC 的「启动在途停止」标记兜住（见 §15.3）。
 - **桌面访问被重建**：旧绑定 id 读不到 → 丢掉绑定与本机记录，下一次启动重新订阅拿新 id
   （PSB 契约：订阅没有 `expiresAt`，不要把它当长期句柄）。
-- **没有 running 桌面访问**：订阅返回 `409` + `NO_RUNNING_SESSION`，main 原样抛
-  （`PsbClientError` 保留 PSB 可读中文），渲染层显示「先在 PSB 网页启动桌面访问」这类可行动文案。
-  `ensureWorkspaceAccess` 是**可选增强**（见 §11.8）：能力位 `open` 时前台尝试拉起，其余情况
-  后台预热、不阻塞订阅，失败一律非致命；它不会降级去建会话。
+- **桌面访问启动**：CINDY-RW-17 起启动串流**必经** `ensureWorkspaceAccess`（读 access → 终态才
+  `POST access/start` → 轮询到 running，默认 90s 预算；见 §11.8），失败带码抛出、不会带着「访问
+  没起来」去订阅；旧 PSB（404/405/`UNIMPLEMENTED`）才退回直接订阅，此时 409 `NO_RUNNING_SESSION`
+  仍按 `details.state` 给可行动文案。它不会降级去建会话。
 - **过渡回退（仅旧 PSB）**：订阅端点 404/405/`UNSUPPORTED` → 允许临时回退创建**内部 Agent
   会话**，必须 `purpose:'internal'` + 标题 `PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`
   （`Cindy 观看端 · 内部串流订阅`）+ warn 日志；新端点可用时永不执行。详见 §11.7。
@@ -1303,9 +1307,9 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
   `WORKSPACE_ID_UNKNOWN` + `unknown-workspace`；目录启发式命中不写会话映射 / 快照（占用成功
   确认后才落快照，映射仍不写）；回退内部会话起观看端失败 → `stopSession` 回滚、PSB 说会话结束
   → 结束内部会话、新订阅成功后按 TTL 清理旧回退会话；启动未落定时点停止 → 自动停掉刚起的
-  串流、排队 stop 不重复停；ensure 慢/不返回不阻塞启动、入口未开放能力位在本进程内缓存、
-  启动失败时把 ensure 的 PSB 原文补进 `failure.message`（码不变）；`context` 读会话行线索抛错时
-  退化到最近使用工作区而不向上抛。
+  串流、排队 stop 不重复停；启动串流前**必经** ensure 访问（闸门 → ensure → 订阅的顺序）、
+  ensure 未占用 / 被他人占用 / 超时 / 端口违约时**不订阅**、旧 PSB `unsupported` 退回直接订阅；
+  `context` 读会话行线索抛错时退化到最近使用工作区而不向上抛。
 - `main/remote-workspace/__tests__/psbClient.test.ts` 补新契约：工作区级订阅的路径 / 方法 /
   `{ sessionId, streamPath?, subscriberId?, expiresAt? }` 解析、缺 `sessionId` 判 `PSB_PROTOCOL`、
   409 `NO_RUNNING_SESSION` 保留 PSB 可读原因、`createSession` 省略 `purpose` 时不带该字段 /
@@ -1381,60 +1385,77 @@ invoke 结果同形，渲染层直接替换状态。main 不轮询 PSB。串流�
 **退出条件**：等旧服务端灰度面收窄后删除回退分支、`PSB_ADMIN_INTERNAL_STREAM_SESSION_TITLE`
 与 `createRequestId` 依赖，并同步本节与产品规则 §2.4。
 
-### 11.8 订阅 409 `NO_RUNNING_SESSION` 的处置与 `access/start` 入口（2026-11-26 真机）
+### 11.8 桌面访问的启动：`access/start` 状态机、409 处置与临时失败呈现（CINDY-RW-17）
 
-真机事实：工作区访问未运行时点「启动串流」只显示「串流失败：操作失败，请稍后重试。」——409 的
-`details.code` / `details.state` 没被解析，落进了通用错误。现在分四层处置（产品文案与用户动作见
-[产品规则](../product-rules/psb-remote-workspace-sessions.md) §2.4）：
+**口径（2026-11-27，PSB 0.1.183 测试环境已上线）**：Cindy 与 PSB 网页**同一条**启动访问链，
+用户**不需要再去网页点一次**：
 
-1. **客户端解析**（`main/remote-workspace/psbClient.ts` 的 `subscribeWorkspaceStream`）：只在订阅这
-   条调用上开 `mapNoRunningSession`，把 `details.code='NO_RUNNING_SESSION'`（或平铺失败外壳
-   `{code,message,details}` 的同名字段；两种 PSB 都出过）解析成
-   `PsbRemoteFailure{ code:'PSB_STREAM_NO_RUNNING_SESSION', streamAccessState, message }`，
-   `message` 取 `error.message` → `details.messageZh` → `details.message` 的顺序；
-   `state` 未知 / 缺省归一 `null`。**其它 409 不进入这条分支**（占用冲突等仍走原映射），
-   防止把别的冲突误标成「去网页启动」。
-2. **跨 IPC 只有 code+message**：`psbIpcCodeForFailure` 按 `streamAccessState` 翻成三条码
-   （共享契约 `PSB_NO_RUNNING_SESSION_IPC_CODES`）：
-   | `details.state` | IPC 码 | 下一步 |
-   | --- | --- | --- |
-   | `none` / `stopped` / `failed` / 未知 | `PSB_STREAM_NO_RUNNING_SESSION` | 去 PSB 网页「远程控制」启动访问 |
-   | `starting` | `PSB_STREAM_ACCESS_STARTING` | 等一会儿（UI 自动重试一次） |
-   | `stopping` | `PSB_STREAM_ACCESS_STOPPING` | 等它落定 |
-   三条不能并成一条：合并会让用户对着「正在启动」去做「去网页启动」这种无效动作。
-3. **尽力拉起访问（可选增强，非闸门）**：`PsbRemoteService.ensureWorkspaceAccess`（`psbClient`
-   实现）＝ `POST /api/remote/workspaces/:id/access/start`（PSB 通用网页接口，幂等 ensure；200/202
-   视为受理）→ 轮询 `GET /api/cindy/remote/workspaces/:id/access` 到 `running`。默认
-   `PSB_ACCESS_POLL_DEFAULT = { attempts: 6, intervalMs: 500, totalMs: 5000 }`，**总预算是 deadline**：
-   每次请求超时被压到剩余预算内，最坏等待恒为 5s（旧实现 6 × 单次 20s 最坏 ~120s，见 §15.7）；
-   可由 `PsbApiDeps.accessPoll` 覆盖，单测用 0ms。
-   - 结果形状：`{ok:true,state:'running',startedByThisCall}` 或
-     `{ok:false,reason:'cindy-entry-not-open'|'timeout'|'failed',failure}`。**永不抛异常**；
-     403/404/405/`UNSUPPORTED` 归 `cindy-entry-not-open`（白名单未放行 / 旧 PSB）。
-   - 调用点：`adminService.acquireBinding()` 在订阅前经**能力位编排**（`prepareWorkspaceAccess`）：
-     能力位 `open`（上一次真的拉起到 running）→ 前台调用；`closed`（Cindy 入口未开放）→ 本进程
-     内 TTL（10 分钟）内直接跳过，不再每次启动都白打一次 403；`unknown` / `failed` / `timeout`
-     → **后台预热，不阻塞订阅**。结果（含失败码 / PSB 原话）写进工作区能力位；当它直接导致用户
-     点「启动」失败时，失败错误的 `message` 会补上这条可读原因（码与 messageKey 不变）。
-     `PsbAdminRemotePort` 上是**可选**方法，旧装配 / fake 没有它就跳过。占用闸门仍排在它之前
-     （先锁工作区，再谈访问起停）。
-   - 路径只由共享契约的 `PSB_WEB_ROUTES.workspaceAccessStart` / `PSB_CINDY_ROUTES.workspaceAccess`
-     提供，`PsbApiDeps.workspaceAccessStartPath` 是唯一的可覆盖点；**不许在别处拼**。
-   - **当前基本拿不到 `ok:true`**：PSB 的 Cindy Bearer 白名单只放行 `/api/cindy/remote/**`，
-     `/api/remote/**` 对 Cindy 恒 403，PSB 台账记「Cindy 入口下一轮加」；所以失败必须非致命，
-     真正的可行动路径仍是订阅 409 + 网页按钮。
-4. **渲染层**：`renderer/features/remote-workspace/psbFailureText.ts` 的
-   `psbStreamAccessFailureNotice` 是唯一映射点（三个 IPC 码 → 本地化文案 + 是否给网页入口 +
-   是否自动重试）；`RemoteWorkspaceAdminConnection` 的失败横幅显示正文 + PSB 中文原话诊断行，
-   `none` 家族给「在网页启动访问」（复用 `openWebWorkspace`），`starting` 自动重试一次
-   （`STARTING_RETRY_DELAY_MS = 2s`，不循环，切工作区 / 卸载 / 用户再次点击都会清掉定时器）。
+```
+GET …/access → 终态（none / stopped / failed）才 POST …/access/start（幂等 ensure）
+            → 轮询 GET …/access 到 running → POST …/stream/subscribe → 观看端 WS
+```
 
-**验证**：`main/remote-workspace/__tests__/psbClient.test.ts`（各 state 映射、平铺外壳、其它 409
-不误标、ensure 的 200/202/403/404/超时/网络失败）、
-`main/remote-workspace/__tests__/psbWorkspaceAdminService.test.ts`（409 各 state 抛新码且不建会话 /
-不落盘 / 不起观看端、ensure 先于订阅且失败不阻断、旧装配无该方法照常启动、占用闸门先于 ensure）、
-`renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`（三档文案、
-网页按钮、诊断行、`starting` 只重试一次、`stopping` 不重试）。
+`starting` 只轮询（不重复 POST）；`stopping` 等它落定再 POST；`running` 直接订阅。PSB 自 0.1.183
+起在 `/api/cindy/remote/**` 放行 `access/start`，此前借用的通用网页 `/api/remote/**` 例外**已删除**
+（`resolvePsbUrl` 只接受 Cindy 命名空间，见 §15.1）。
+
+1. **客户端解析**（`main/remote-workspace/psbClient.ts`）：
+   - `startWorkspaceAccess(workspaceId)`（`POST …/access/start`）解析 202 / 200 的**真实外壳**：
+     202 `{data:{access:{state:'starting',session:{id,state}},state:'starting',sessionId,attached:false}}`；
+     200 `{data:{access:{state:'running',…},state:'running',sessionId,attached:true}}`
+     （`PsbWorkspaceAccessStartResult`；`state` / `sessionId` 缺省归一 `null`）。
+   - `readWorkspaceAccess(workspaceId)`（`GET …/access`）只读 `data.access.state`（兼容顶层
+     `state`）；未知词 → `null`（不猜成某个已知状态）。
+   - `ensureWorkspaceAccess(workspaceId)` 是**网页同款状态机**，总预算 **90s deadline**
+     （`PSB_ACCESS_POLL_DEFAULT = { attempts: 180, intervalMs: 500, totalMs: 90_000 }`；单次请求
+     超时压到剩余预算内；单测注入 0 间隔 / 短预算）。**永不抛异常**，失败收敛成
+     `{ok:false, reason, failure}`：`not-occupied`（403）/ `occupied-by-other`（409）/
+     `unsupported`（404/405/`UNIMPLEMENTED`，旧 PSB）/ `timeout`（预算用尽，`failure` 带按最后
+     观察状态的可行动码，如 `PSB_STREAM_ACCESS_STARTING`）/ `failed`（其它）。**fatal 语义由调用方
+     决定**（`adminService.streamStart` 把它当闸门）。
+2. **失败码与业务码提升**（`shared/psb-remote-workspace.ts`）：
+   - 403 `WORKSPACE_NOT_OCCUPIED` → `PSB_WORKSPACE_NOT_OCCUPIED`（用户先确认占用再重试）；
+   - 409 `WORKSPACE_OCCUPIED_BY_OTHER` → 带占用人名；409 `TOO_MANY_TUNNELS` →
+     `PSB_TOO_MANY_TUNNELS` + `remoteWorkspace.error.tooManyTunnels`（关闭 / 停止其它远程会话后重试）；
+   - 错误外壳是 `{ error: { code, message, details } }`，**可读中文在 `error.message`**（不是
+     `messageZh`），保留为 `failure.message`；`details.code` 命中失败单表时提升为业务码
+     （`resolvePsbFailureCode`）；两个具体码冲突时保留外层 `error.code`（REST 契约里它是权威位置）。
+   - **agent-tunnel Upgrade 拒绝的外层是 `FORBIDDEN` / `CONFLICT`，业务码在 `error.details.code`**：
+     `psbTunnel` 用同一份 `readPsbGuardFailurePromotion` 把 `WORKSPACE_NOT_OCCUPIED` /
+     `WORKSPACE_OCCUPIED_BY_OTHER` / `AGENT_SESSION_ACTIVE` / `TOO_MANY_TUNNELS` 提升成
+     `[PSB_*]` 业务码（`PsbTunnelError.code` = 跨 IPC 的业务码），用户看到的是可行动文案而不是
+     泛化的 FORBIDDEN；其余 Upgrade 失败仍按状态码归因（§5 / §15.1）。
+3. **启动串流接入点（必经路径）**：`adminService.streamStart` 顺序固定为
+   「占用闸门（mine；空闲返回 `PSB_WORKSPACE_NOT_OCCUPIED`，由渲染层弹确认 → 用户确认 → 重试）→
+   `ensureWorkspaceAccess`（**必经**，失败带码抛出、不订阅、不起观看端）→ 工作区级
+   `stream/subscribe` → `streamViewer.start`」。只有旧 PSB 的 `unsupported` 才退回直接订阅
+   （订阅的 409 会给可行动文案）。旧「能力位 / 后台预热 / 不阻塞启动」编排已删除：它建立在
+   「Cindy 入口恒 403」的历史事实上，真机上会让启动永远拿不到访问。`streamStatus` / `context`
+   **不为读 access 多发请求**：桌面访问状态仍由 `stream/status` 与 409 `details.state` 承载。
+4. **渲染层呈现（2026-11-27 用户口径：临时提示不得占布局）**：
+   - `starting` 期间控制条显示「**正在启动桌面访问…**」
+     （`remoteWorkspace.admin.streamAccessStarting`），不再显示「正在连接串流」——后者会让用户
+     以为本端连接卡住并反复点「启动」；
+   - **所有临时失败 / 中性关闭说明走全局 toast**（`@/lib/toast`，绝对定位、自动消失，
+     `ToastContainer` 覆盖所有受信窗口）：启动失败、`STARTING` / `STOPPING` / `NO_RUNNING_SESSION`、
+     网络失败、停止失败、观看端被 PSB 关闭的原因。`none` 家族的「在网页启动访问」作为 toast 上的
+     **动作按钮**（复用 `openWebWorkspace`），不再渲染 `border-b` + `shrink-0` 的内联条；
+   - `WORKSPACE_NOT_OCCUPIED` **不产任何提示**：直接弹既有「占用工作区」确认框
+     （`features/remote-workspace/occupyRequired.ts`）→ 确认后 occupy → 重试同一次启动；
+     取消 → 不占用、不启动、不产常驻错误，状态收回「串流未启动」；
+   - 布局里只保留**持久状态**：控制条上的串流未启动 / 正在启动桌面访问… / 已连接等待画面 /
+     串流中、详情浮层字段与画面本身。
+5. **回退与兼容**：旧 PSB（`access/start` 404/405/`UNIMPLEMENTED`）→ `unsupported` → 直接订阅并
+   沿用既有 409 文案；旧装配端口没有 `ensureWorkspaceAccess` 时按旧路径订阅（生产装配一定有）。
+
+**验证**：`main/remote-workspace/__tests__/psbClient.test.ts`（202 / 200 外壳、状态机六种入口、
+403 / 409 码、预算超时、旧 PSB 404、`TOO_MANY_TUNNELS`、`details.code` 提升）、
+`psbTunnel.test.ts`（Upgrade 403 / 409 的 `details.code` 提升）、
+`psbWorkspaceAdminService.test.ts`（闸门 → ensure → 订阅顺序、ensure 失败不订阅、`unsupported`
+回退、旧装配兼容）、`shared/__tests__/psbRemoteWorkspaceParsing.test.ts`（访问状态 / 202-200 外壳 /
+业务码提升）、`renderer/features/remote-workspace/__tests__/psbFailureText.test.ts`
+（`TOO_MANY_TUNNELS` 文案）、`renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`
+（启动等待文案、失败走 toast 不占布局、403 弹确认框且无内联条、取消无常驻错误、持久状态可见）。
 
 ## 12. 交互输入与全屏捕获（2026-11-26）
 
@@ -1840,13 +1861,13 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
    发送前透明重建（§6.1）的建会话走同一个服务方法，因此**重绑路径同样被闸门覆盖**，没有第二条
    绕过路径。`psbClient.createSession` 内部**先读工作区再 POST**（共 2 次 HTTP）：读工作区失败时
    一个请求都不发，不会留下无人认领的孤儿会话（见 §15.6）。
-2. **启动串流**：`adminService.streamStart()` 在工作区级订阅（或旧 PSB 的过渡回退建会话）与起观看
-   端之前 `remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false })` → 空闲时返回
-   `PSB_WORKSPACE_NOT_OCCUPIED`（渲染层确认后占用再重试本次启动），失败不订阅、不建会话、不建立
-   观看连接。
-   订阅前还会按能力位**尽力**调用一次 `ensureWorkspaceAccess`（**可选增强、不是闸门**：403/404/
-   超时都不阻断；只有 `open` 能力位前台等待，`unknown` / `failed` / `timeout` 是后台预热不阻塞，
-   见 §11.8），顺序是「占用闸门 → 尽力拉起访问 → 订阅」。
+2. **启动串流**：`adminService.streamStart()` 先过占用闸门
+   `remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false })` → 空闲时返回
+   `PSB_WORKSPACE_NOT_OCCUPIED`（渲染层弹确认框，用户确认占用后重试本次启动），失败不订阅、不建
+   会话、不建立观看连接。随后**必经** `ensureWorkspaceAccess`（CINDY-RW-17，见 §11.8）：读
+   `GET …/access` → 终态才 `POST …/access/start` → 轮询到 running（默认 90s）；未占用 / 被他人
+   占用 / 超时 / 网络失败**带码抛出且不订阅**，只有旧 PSB 的 `unsupported` 才退回直接订阅。顺序是
+   「占用闸门 → ensure 访问 → 订阅 → 起观看端」。
    只读的 `streamStatus` / `adminContext` 不受此限（读状态不是工作区写入，且**不会**订阅或创建
    会话，只借已有绑定 id，见 §11.2）。会话级串流通道已删除（§4），不存在「会话级启动串流」这条
    绕过占用检查的路径；`ensureWorkspaceLockedForSession()` 仍保留给下面第 3 条的发送前闸门。
@@ -1865,6 +1886,10 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
    本轮没有开隧道、没有落任何远端写入，**消息保留在草稿/队列里可重试**（不会因为占位而丢消息）。
    **非 `psb:` 会话不进这道闸门**：`register.ts` 按 `remoteHostId` 解析 `psb:<id>`，解析不到
    直接返回——本机 / MCPR / SSH / device-link 任务 **0 次 PSB 请求**，不因这道校验增加延迟。
+   2026-11-27 第二轮起，渲染层在调用 enqueue/steer **之前**还会用同一判据做一次**发送前预检**
+   （`renderer/features/remote-workspace/psbSendPreflight.ts`，见 §13.6.1）——把「先发出去、失败后
+   再确认」改成「发送前先确认，取消就不发送」。因此一条 psb 消息的占用读取总成本是预检 2 次 HTTP
+   + 本闸门 2 次 HTTP（闸门仍是最终权威，预检不替代它）。
 
 **串流键鼠输入不单独再校验**：启动已经锁过；未锁定的场景由启动失败覆盖（`PSB_STREAM_NOT_ACTIVE`
 / 启动失败），单独加闸门只会让弱网下的合法输入被静默丢掉。
@@ -1917,6 +1942,14 @@ if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB �
 `PSB_WORKSPACE_NOT_OCCUPIED`）与 `remoteWorkspace.error.agentSessionActive`（「这个工作区里还有
 任务正在输出，先结束或停止它，再释放占用。」——覆盖 `PSB_AGENT_SESSION_ACTIVE`）。两条都是
 可行动说明，**不新增「去 PSB」类降级提示**（用户明确反对用提示掩盖契约缺口）。
+
+**2026-11-27 CINDY-RW-17 新增一条**：`TOO_MANY_TUNNELS` → `PSB_TOO_MANY_TUNNELS` +
+`remoteWorkspace.error.tooManyTunnels`（12 locale，语义「隧道 / 观看名额已满，先关闭或停止其它
+远程会话再重试」，单表 `nextStep:'stop-session'`）。同时 agent-tunnel Upgrade 的外层
+`FORBIDDEN` / `CONFLICT` 会把 `details.code` 提升成上述业务码（`PsbTunnelError.code` 即跨 IPC 的
+业务码），渲染层按单表给出可行动文案，不再显示泛化的 FORBIDDEN。**临时失败呈现**（2026-11-27
+用户口径）：渲染层不再渲染 `border-b` / `shrink-0` 的内联错误条，失败 / 中性关闭一律走全局 toast
+（绝对定位、自动消失），布局里只保留持久状态（串流未启动 / 正在启动桌面访问… / 等待画面）。
 
 **渲染层唯一文案实现（2026-11-26 独立审查归并）**：`renderer/features/remote-workspace/psbFailureText.ts`
 的 `psbFailureText(t, error)` 是唯一出口——输入可以是原始 IPC 错误、推送里的 `PsbRemoteFailure`
@@ -2053,6 +2086,81 @@ hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
   `admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`（启动串流确认 + 重试、取消不启动）、
   `draft/__tests__/psbDraftSession.test.ts`（懒建确认 + 同一去重键重试、取消不建）。
 
+### 13.6.1 发送前预检：先查占用，取消就不发送（2026-11-27 第二轮复测，实现事实）
+
+用户截图暴露的坏体验是「消息先进对话 → 占用闸门拒绝 → 对话里留下『回复未完成 /
+`[PSB_WORKSPACE_NOT_OCCUPIED]`』→ 才补确认框」。现在渲染层在**发送之前**做预检，失败后确认
+只保留为**竞态兜底**：
+
+- **判定唯一实现**：`renderer/features/remote-workspace/psbSendPreflight.ts` 的
+  `startPsbSendPreflight({ remoteHostId, bridge })`。它不是 React 组件、不碰 store：桥与确认框
+  都注入（确认复用 `occupyRequired` 的注册式工作区 resolver，宿主仍是
+  `PsbOccupyRequiredConfirmation.tsx`）。
+- **顺序**：解析 `psb:<PSB sessionId>`（`remoteWorkspacePsbSessionId`）→ 每次发送都读一次
+  `psbRemote.sessionStatus({ sessionId })`（**不用本地缓存**）→ 与主进程闸门同一判据
+  `psbWorkspaceWritable(workspace, { requireAgentRuntime: false })`：
+  1. 不能写（他人占用 / 离线 / 未就绪）→ `blocked(workspace)`：**不发送**，用共享单表文案给
+     可行动提示（被他人占用带占用人名），不产生对话内失败气泡；
+  2. 由我占用 → `proceed(occupiedByPreflight:false)`：直接发送；
+  3. 空闲 → `requestPsbOccupyConfirmationForWorkspace`：确认并**显式占用成功后**
+     `proceed(occupiedByPreflight:true)`；取消 → `cancelled`（静默不发送）；占用失败 →
+     `blocked(occupy-failed)`（带原始失败，按既有 `psbFailureText` 文案提示，不发送）；
+  4. `sessionStatus` 读取失败 / **读预算超时（3s，见 `PSB_SEND_PREFLIGHT_READ_TIMEOUT_MS`；
+     不设上限时主进程 20s×2 次 HTTP 的 PSB 超时会让点发送后几十秒没反应）** / 没有桥 /
+     非 `psb:` / 畸形 `psb:` → 返回 `null`（**不预检**），交给主进程权威闸门按现状处理
+     （主进程读不到仍拒绝并给可行动失败）。
+- **零写入点**：预检在 `makerChatStore.sendMessageCore` / `steerMessageCore` 的**乐观气泡、
+  队列项、`input.enqueue`/`steer` 之前** await；取消 / 拦下直接 `return false`，此时没有任何
+  消息、队列项或落库写入，调用方（ChatInput 等）按既有 `false` 语义保留草稿 / 附件。
+  非 psb 会话 `startPsbSendPreflightForSession` 同步返回 `null`：不引入 await、**0 次 PSB 请求**，
+  本机 / SSH / device-link 发送的既有同步语义不变。
+- **覆盖入口**：`sendMessage` / `steerMessage`（composer、草稿页首条消息、长文本粘贴发送、
+  鉴权恢复等自动重发都经它们）、`resumeQueue`（暂停队列「继续」→ main 随后自动 drain 队列消息）、
+  `retryLastError`（失败重试 → main 重新入队）、`steerQueuedMessage`（队列项直接插话）。
+  拿不到 `remoteHostId`（非 psb / 会话状态未水合）时跳过预检，由主进程兜底。
+  **主进程在回合结束后自动 drain 已在队列里的消息**没有渲染层插入点（不改主进程闸门的前提），
+  那一段仍以主进程闸门为准——这是本批如实登记的边界。
+- **不与失败后确认重复**：`proceed.occupiedByPreflight` 会传进 enqueue / steer 的失败 catch，
+  该次发送若仍被主进程闸门以 `PSB_WORKSPACE_NOT_OCCUPIED` 拒绝（预检后被抢 / 被交接），
+  **不再弹第二次确认**，失败直接落错误横幅；预检只是放行（`byMe` / 读失败）时，既有的
+  「失败后确认」兜底保持不变。
+- **`occupyRequired` 的小幅扩展**：新增 `confirmAndOccupyPsbWorkspaceDetailed`（`occupied` /
+  `declined` / `failed{error}`）与 `PsbOccupyAttemptResult`；**按工作区**的注册式 resolver 改为
+  返回详细结果（`requestPsbOccupyConfirmationForWorkspace` 无宿主时返回 `null`，不再用
+  boolean 把「取消」和「占用失败」混成同一个 `false`）。启动串流 / 显式占用仍用三态字符串版
+  `confirmAndOccupyPsbWorkspace`，行为不变。
+- **成本（如实登记）**：每个 psb 消息的占用读取 = 预检 1 次 `sessionStatus`（main 内部
+  2 次 HTTP：会话行 + 工作区列表）+ 主进程闸门 2 次 HTTP = **约 4 次 HTTP/条**。这是「每条消息
+  发送前都必须确认当前占用、且主进程闸门仍是最终权威」的直接成本；**不**为此加 TTL 缓存
+  （会重新引入「交接后仍以为锁还在」的窗口）。
+- 定向测试：`renderer/__tests__/makerChatStorePsbSendPreflight.test.ts`（空闲+取消零发送 /
+  空闲+确认的 occupy→send 顺序 / byMe 直接发 / 他人占用与离线可行动提示且无失败气泡 /
+  占用失败提示 / 读取失败 fail-open / **读预算超时不拦截（假定时器）** / 预检占用后竞态不重复
+  确认 / byMe 放行时失败后兜底保留 / resumeQueue 与 retryLastError 预检 / 非 psb 零 PSB 请求）、
+  `features/remote-workspace/__tests__/occupyRequired.test.ts`（详细结果区分取消与失败）、
+  `draft/__tests__/psbDraftSession.test.ts`（详细 resolver 下懒建行为不变）。
+
+### 13.6.2 确认框的键盘与焦点语义（2026-11-27 第三轮复测，实现事实）
+
+用户复测「占用确认框取消后，回车被输入进输入框」。根因不在 composer 的回车发送（它已同步
+`preventDefault`），而在两处：
+
+- **关框键漏进 composer**：确认框是程序化 `AlertDialog`（无 Trigger），关闭后焦点回 body，
+  Enter/Esc 的默认行为落到 textarea/下一次发送。修法：`renderer/lib/confirmDialogKeyboardGuard.ts`
+  统计打开中的确认框；框打开期间 `[role="alertdialog"]` 之外的 Enter/Esc 一律
+  `preventDefault + stopPropagation`；框内按键记为「关框键」，关闭后 300ms 内**一次性**吞掉同名
+  Enter/Esc（不影响用户随后立刻输入）；`confirm-dialog-provider.tsx` 接线并在卸载后异步归还
+  弹框前焦点。
+- **取消后草稿被追加空段**：发送失败 / 取消的恢复复用了 device-link 的 FIFO 恢复
+  `insertComposerDocumentForRestore`，会追加恢复分隔空段。修法：`ChatInput` 的 PSB 发送失败 /
+  占用确认取消改为**原样放回点击时的草稿**（不追加分隔段），光标置末尾、草稿静默保存。
+- `useComposerSendFocusRestore`：发送解锁时若确认框还开着，保留待恢复意图，等框彻底关闭再恢复
+  （否则会把框内按钮误判成「用户去了别处」而丢弃恢复）。
+
+定向测试：`components/ui/__tests__/confirmDialogFocus.test.tsx`、
+`components/new-chat/__tests__/chatInputAnnotationAbort.test.tsx`、
+`components/new-chat/__tests__/useComposerSendFocusRestore.test.tsx`。
+
 ## 14. 独立审查阻断项修复（2026-11-26，实现事实）
 
 一次性独立审查在 PSB 这一块拦下 9 个阻断项，本批逐条修复（每项都有定向测试；真机复测点见末尾）：
@@ -2101,15 +2209,15 @@ codex 任务同样不带虚拟 cwd；④ psb 会话停止 / 重绑后该会话�
 
 ### 15.1 出网 URL 只有一份归一化判据（`resolvePsbUrl`）
 
-`main/remote-workspace/psbEndpoint.ts` 的 `resolvePsbUrl(path, { allowPsbWebNamespace? })` 是
+`main/remote-workspace/psbEndpoint.ts` 的 `resolvePsbUrl(path)` 是
 HTTP 与两条 WS 出网路径的唯一来源：`new URL(path, origin)` 后要求 ①origin 相同；
 ②**归一化后的 pathname 与原始 pathname 逐字节相同**（`..` / `%2e%2e` / 反斜杠 / `//`
 等 URL 解析器会改写的形态因此全部拒绝）；③以 `/api/cindy/remote/` 开头。旧实现只查字面
 `..`，`%2e%2e` 会被 URL 归一化到命名空间之外，带 Bearer 的请求可被服务端下发的 action 路径
 指到别的路由。`psbWebSocketUrl` 复用同一校验器；`psbClient` 的所有请求（含 VCS action）都经
-它拼 URL，`isAllowedPsbRemoteActionPath` 只是同判据的布尔包装。唯一显式放行
-`/api/remote/**` 的调用是「尽力拉起桌面访问」的 `POST …/access/start`（可选增强，见 §11.8），
-且必须显式传 `allowPsbWebNamespace: true`。
+它拼 URL，`isAllowedPsbRemoteActionPath` 只是同判据的布尔包装。CINDY-RW-17 起**不存在**任何
+`/api/remote/**` 例外：拉起访问走 Cindy 命名空间的 `access/start`（§11.8），`resolvePsbUrl`
+只接受 `/api/cindy/remote/**`。
 
 ### 15.2 VCS 处置动作：kind → 固定路径 + 固定方法（不采信服务端 method/path）
 
@@ -2183,8 +2291,9 @@ PSB 没有单工作区读口），§13.3 的「读一次会话行」按本节口
 
 ### 15.7 `ensureWorkspaceAccess` 的总预算是 deadline
 
-`accessPoll = { attempts?, intervalMs?, totalMs? }`，默认 `{6, 500, 5000}`。每次请求的超时被
-压到「剩余预算」以内，最坏等待恒为 `totalMs`；旧实现 attempts=6 × 单次 20s 最坏可等 ~120s。
+`accessPoll = { attempts?, intervalMs?, totalMs? }`，CINDY-RW-17 起默认 `{180, 500, 90_000}`
+（90s 覆盖 Unity / 虚拟桌面冷启动）。每次请求的超时被压到「剩余预算」以内，最坏等待恒为
+`totalMs`；单测注入 `intervalMs:0` + 短 `totalMs` 避免真实等待。
 
 ### 15.8 列表解析：缺键是协议错，不是空列表
 

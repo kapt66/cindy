@@ -175,12 +175,13 @@ export interface PsbRemoteService {
    */
   subscribeWorkspaceStream(workspaceId: string): Promise<PsbWorkspaceStreamSubscription>;
   /**
-   * **尽力**拉起该工作区的桌面访问（可选增强；失败一律非致命）。
+   * **保证**该工作区的桌面访问到 `running`（CINDY-RW-17 起是启动串流的必经步骤）。
    *
-   * 走 PSB 通用网页接口 `POST /api/remote/workspaces/:id/access/start`（幂等 ensure）并轮询
-   * `GET /api/cindy/remote/workspaces/:id/access` 到 `running` 或预算用尽。Cindy Bearer 当前
-   * **未被放行** `/api/remote/**`（恒 403），所以 403/404/405 一律收敛成
-   * `reason:'cindy-entry-not-open'`，调用方继续走原有错误路径。**不抛异常**。
+   * 走 Cindy 命名空间的 `POST …/access/start`（幂等 ensure）与
+   * `GET …/access`（状态读口）：先读状态，只有终态（none/stopped/failed）才 POST，然后轮询到
+   * running；预算默认 90s。失败收敛成可归因结果（`not-occupied` / `occupied-by-other` /
+   * `unsupported` 旧 PSB / `timeout` / `failed`），调用方（管理页 `streamStart`）除
+   * `unsupported` 外一律带码抛出。**本方法不抛异常。**
    */
   ensureWorkspaceAccess(workspaceId: string): Promise<PsbWorkspaceAccessEnsureOutcome>;
   /**
@@ -572,10 +573,10 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     subscribeWorkspaceStream: (workspaceId) => api.subscribeWorkspaceStream(workspaceId),
 
     /**
-     * 尽力拉起桌面访问（可选增强，见 `PsbRemoteService.ensureWorkspaceAccess`）。
+     * 保证桌面访问到 running（CINDY-RW-17，启动串流的必经步骤）。
      *
-     * 不经过占用闸门：它读/写的是**桌面访问**这一层（PSB 的服务接口），不是工作区占用；
-     * 失败一律非致命，调用方（管理页 `streamStart`）继续走原订阅路径。
+     * 不经过占用闸门：它读写的是**桌面访问**这一层（PSB 的服务接口），不是工作区占用；
+     * 但 PSB 的 `access/start` 自己会拒绝「空闲未占用 / 被他人占用」，由调用方按失败码处理。
      */
     ensureWorkspaceAccess: (workspaceId) => api.ensureWorkspaceAccess(workspaceId),
 

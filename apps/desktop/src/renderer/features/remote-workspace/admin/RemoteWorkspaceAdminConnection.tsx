@@ -23,9 +23,14 @@
  * ## 布局
  *
  * 1. 横条控制区：启动 / 停止是同一个按钮切换，另有详情 / 串流信息 / 全屏 + 状态文案；高度恒定。
- * 2. 错误条（PSB 原文诊断行）/ 中性说明（观看端被 PSB 关闭时它给的 close reason 原话）。
- * 3. 画面：`flex-1 min-h-0` 的 canvas 容器，等比铺满、容器自己 `overflow-hidden`，
- *    不产生第二层滚动条；未启动 / 等待 / 失败时在画面上叠可聚焦的空态说明。
+ * 2. 画面：`flex-1 min-h-0` 的 canvas 容器，等比铺满、容器自己 `overflow-hidden`，不产生第二层
+ *    滚动条；未启动 / 等待时在画面上叠可聚焦的空态说明。
+ *
+ * **临时提示一律不占布局**（2026-11-27 用户口径：「不要有临时提示信息固定存在并影响布局」）：
+ * 启动失败 / 串流错误 / 停止失败 / 观看端被 PSB 关闭的原因都经全局 toast（
+ * `@/lib/toast`，`ToastContainer` 绝对定位、自动消失）呈现，**不再**在控制条下方渲染
+ * `border-b` + `shrink-0` 的内联条。布局里只保留**持久状态**：控制条上的「串流未启动 /
+ * 正在启动桌面访问… / 已连接等待画面 / 串流中」、详情浮层字段与画面本身。
  *
  * **详情是浮层，不占布局**：点「详情」在按钮下方弹 Popover（分辨率 / 编码 / 帧率 / 最近
  * 错误 / `reasonCode` / `desktopSession`），Esc、点外部或再点按钮关闭；打开与关闭都不改变
@@ -46,14 +51,20 @@
  * 观看名额（先补释放键鼠；PSB 每工作区观看名额有限，见产品正本 §2.4、工程契约 §5）；切到
  * 版本控制 / 设置分类**不释放**（面板保活，回来仍是同一场串流）。
  *
- * **「工作区访问没在运行」给可行动横幅，不是「操作失败」**：PSB 0.1.180 的订阅 409 带
- * `details.code='NO_RUNNING_SESSION'` + `details.state`；main 按状态翻成三条 IPC 码
+ * **「工作区访问没在运行」给可行动 toast，不是「操作失败」，也不占布局**：PSB 0.1.180 的订阅
+ * 409 带 `details.code='NO_RUNNING_SESSION'` + `details.state`；main 按状态翻成三条 IPC 码
  * （`PSB_NO_RUNNING_SESSION_IPC_CODES`），本组件据此显示：
- *   - `none` / `stopped` / `failed`：横幅说明「请先在 PSB 网页该工作区的『远程控制』启动访问」，
- *     并给「在网页启动访问」按钮（复用 `openWebWorkspace`，main 解析 `webUrl` 后系统浏览器打开）；
+ *   - `none` / `stopped` / `failed`：toast 说明「请先在 PSB 网页该工作区的『远程控制』启动访问」，
+ *     并把「在网页启动访问」作为 toast 上的动作按钮（复用 `openWebWorkspace`，main 解析
+ *     `webUrl` 后系统浏览器打开）；
  *   - `starting`：说明访问正在启动（Unity / 虚拟桌面还没就绪），并**自动重试一次**（约 2s，
  *     不循环）；`stopping`：说明正在结束，等它落定。
- * PSB 的中文原话单独作为诊断行显示，正文是本地化文案——两者都不再落到通用「操作失败」。
+ * PSB 的中文原话作为 toast 的第二行诊断；正文是本地化文案——两者都不再落到通用「操作失败」。
+ *
+ * **启动时 main 先 ensure 桌面访问**（CINDY-RW-17）：等待期间控制条显示「正在启动桌面访问…」，
+ * 不再显示「正在连接串流」（那会让用户以为本端连接卡住）。工作区空闲未占用时 main 返回
+ * `PSB_WORKSPACE_NOT_OCCUPIED`，本组件**直接弹「占用工作区」确认框**（没有内联错误条）：确认 →
+ * 显式占用 → 自动重试同一次启动；取消 → 不占用、不启动、不留常驻错误，只把状态收回未启动。
  *
  * **「已连接」与「有画面」是两个状态**：`connecting` 只表示本端订阅已建立（「启动」成功、
  * 按钮切「停止」），`streaming` **只由本端收到的 `frame` 事件**进入。PSB 的 `active` 表示
@@ -61,9 +72,9 @@
  * 它只留在 `status` 里供提示 / 详情使用。启动成功到首帧之间面板显示「已连接，等待画面…」。
  *
  * **停止 / 关闭 / 错误立即清空画面（含停止失败）**：`adminStreamStop` reject 时同样无条件
- * 复位「未订阅 / 未流式」并 `clearPicture()`，只留一条中性可行动提示（停止失败不留冻结帧、
- * 不留「串流中 / 停止」按钮）；`closed` / 错误断开 / 切工作区 / 卸载路径一致。成功路径清掉
- * 上一轮的失败条，避免旧原因挂在新状态上。
+ * 复位「未订阅 / 未流式」并 `clearPicture()`，只留一条中性可行动 toast（停止失败不留冻结帧、
+ * 不留「串流中 / 停止」按钮）；`closed` / 错误断开 / 切工作区 / 卸载路径一致。成功路径不留
+ * 上一轮的提示，避免旧原因挂在新状态上。
  *
  * **可交互观看**：画面在订阅建立后接受键鼠 / 滚轮输入，指针进入画面即由远端接管（位置同步
  * 到远端机器）；全屏时键鼠全部转发到远端并拦住宿主默认行为（只留 F5 / F11 / F12、
@@ -78,7 +89,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Cast, CircleAlert, Eye, Globe, Info, Minimize2, MousePointerClick, X } from 'lucide-react';
+import { Cast, Eye, Minimize2, MousePointerClick, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '@/components/ui/button';
@@ -211,7 +222,7 @@ export function RemoteWorkspaceAdminConnection({
     },
     translate,
   });
-  const { phase, status, failure, closedNote, viewerSessionIdRef } = session;
+  const { phase, status, viewerSessionIdRef } = session;
   const hud = useStreamHud({ playerRef, phase });
   hudRef.current = hud;
   const fullscreen = useFullscreen(stageRef);
@@ -307,14 +318,17 @@ export function RemoteWorkspaceAdminConnection({
 
   const reasonHintKey = streamReasonHintKey(context, status);
   const psbHint = status?.lastErrorZh?.trim() || context.lastErrorZh?.trim() || null;
+  // `starting` = 正在等 PSB 把桌面访问拉起到 running（CINDY-RW-17：main 的启动串流会先
+  // ensure 访问，Unity / 虚拟桌面冷启动可能要几十秒）。这里必须说「正在启动桌面访问」，
+  // 而不是「正在连接串流」——后者会让用户以为本端连接卡住、反复点「启动」。
   const overlayText = unavailable
     ? t('remoteWorkspace.session.streamUnsupported')
     : phase === 'starting'
-      ? t('remoteWorkspace.session.streamConnecting')
+      ? t('remoteWorkspace.admin.streamAccessStarting')
       : phase === 'connecting' || phase === 'waiting-frame'
         ? t('remoteWorkspace.session.streamWaiting')
         : t('remoteWorkspace.session.streamIdle');
-  const overlayHint = unavailable || playing || phase === 'starting' || failure
+  const overlayHint = unavailable || playing || phase === 'starting'
     ? null
     : reasonHintKey
       ? t(reasonHintKey)
@@ -322,7 +336,7 @@ export function RemoteWorkspaceAdminConnection({
   const statusText = phase === 'streaming'
     ? t('remoteWorkspace.session.streamLive')
     : phase === 'starting'
-      ? t('remoteWorkspace.session.streamConnecting')
+      ? t('remoteWorkspace.admin.streamAccessStarting')
       : phase === 'connecting' || phase === 'waiting-frame'
         ? t('remoteWorkspace.session.streamWaiting')
         : t('remoteWorkspace.session.streamIdle');
@@ -532,17 +546,9 @@ export function RemoteWorkspaceAdminConnection({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {controls}
-      {failure ? <StreamFailureNotice failure={failure} onOpenWeb={session.openWebForAccess} /> : null}
-      {closedNote ? (
-        <div
-          role="status"
-          data-testid="remote-workspace-admin-stream-closed-note"
-          className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-default)] bg-[var(--surface-elevated)] px-2 py-1.5 text-11 leading-4 text-[var(--text-secondary)]"
-        >
-          <Info size={13} className="mt-px shrink-0" aria-hidden />
-          <span className="min-w-0 break-words">{closedNote}</span>
-        </div>
-      ) : null}
+      {/* 临时提示（失败 / 被关闭）一律走全局 toast（绝对定位、自动消失、不参与布局）：
+          用户明确要求「不要有临时提示信息固定存在并影响布局」。这里只保留**持久状态**：
+          控制条上的串流未启动 / 等待画面文案、详情浮层与画面本身。 */}
       <div
         ref={stageRef}
         data-testid="remote-workspace-admin-stream-stage"
@@ -675,57 +681,6 @@ export function RemoteWorkspaceAdminConnection({
               <Minimize2 size={15} aria-hidden />
             </Button>
           </Tip>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-/**
- * 串流失败横幅（本轮失败）：正文是可行动文案，PSB 原文单独做诊断行；「没有 running 桌面
- * 访问」的 `none` 档给「在网页启动访问」按钮（复用既有 `openWebWorkspace`）。
- */
-function StreamFailureNotice({
-  failure,
-  onOpenWeb,
-}: {
-  readonly failure: StreamFailureBanner;
-  readonly onOpenWeb: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div
-      role="alert"
-      data-testid="remote-workspace-admin-stream-failure"
-      data-access-state={failure.accessState ?? undefined}
-      className="flex shrink-0 items-start gap-1.5 border-b border-[var(--border-default)] bg-[var(--error-bg)] px-2 py-1.5 text-11 leading-4 text-[var(--error-fg)]"
-    >
-      <CircleAlert size={13} className="mt-px shrink-0" aria-hidden />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="min-w-0 break-words">{failure.text}</span>
-        {failure.detail ? (
-          <span
-            data-testid="remote-workspace-admin-stream-failure-detail"
-            className="min-w-0 break-words opacity-80"
-          >
-            {failure.detail}
-          </span>
-        ) : null}
-        {failure.offerOpenWeb ? (
-          <div className="flex">
-            <Button
-              type="button"
-              size="xs"
-              compact
-              variant="secondary"
-              tone="quiet"
-              data-testid="remote-workspace-admin-stream-open-web"
-              onClick={onOpenWeb}
-            >
-              <Globe size={12} aria-hidden />
-              {t('remoteWorkspace.admin.streamAccessOpenWeb')}
-            </Button>
-          </div>
         ) : null}
       </div>
     </div>

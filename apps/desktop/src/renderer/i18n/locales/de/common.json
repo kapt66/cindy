@@ -22692,6 +22692,7 @@
       "workspaceOccupied": "Dieser Arbeitsbereich wird von jemand anderem genutzt. Hebe die Sperre auf der PSB-Website auf und versuche es erneut.",
       "occupyRequired": "Dieser Arbeitsbereich ist noch nicht von dir belegt. Belege ihn zuerst.",
       "agentSessionActive": "In diesem Arbeitsbereich läuft noch eine Aufgabe. Beende oder stoppe sie, bevor du den Arbeitsbereich freigibst.",
+"tooManyTunnels": "Diese Remotesitzung hat die Tunnel-/Anzeigeplätze (standardmäßig 4) aufgebraucht. Schließe oder beende andere Remotesitzungen und versuche es erneut.",
       "clientOffline": "Dieser Computer ist offline. Versuche es später erneut.",
       "unknown": "Die Aktion ist fehlgeschlagen. Versuche es später erneut."
     },

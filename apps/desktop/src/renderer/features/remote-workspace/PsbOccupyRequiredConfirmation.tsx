@@ -13,12 +13,18 @@
  * resolver 回 `true` → store 用同一份载荷重发一次。取消 / 占用失败 → `false` → store 照旧把
  * 失败落到错误横幅并恢复草稿。
  *
+ * 2026-11-27 追加的**发送前预检**（`psbSendPreflight.ts`）复用同一个确认框与同一次显式占用：
+ * 它拿 `sessionStatus` 读到的实时工作区事实走「按工作区」的 resolver，返回值是详细结果
+ * （`occupied` / `declined` / `failed`）——取消 = 静默不发送，占用失败 = 带原因的提示；
+ * 失败后确认（上面的 `true/false` resolver）从此只作**竞态兜底**（预检后被抢 / 读不到 PSB）。
+ *
  * ## 边界
  *
  * - **只挂主窗**（副窗 / 侧栏窗没有会话生命周期，同一对话框会在每个窗口各弹一份），且桥缺失时
  *   注册的是「永远拒绝」的 resolver：旧 preload 下不假装占用成功。
  * - 不在这里重试任何动作：重试是发起方的事实（发送由 store 自己重发，启动串流由它的 hook 重试）。
- * - 工作区名与 workspaceId 一律来自 main 的 `adminContext`（渲染层不持有 workspaceId，也不猜）。
+ * - 失败后确认的工作区名与 workspaceId 一律来自 main 的 `adminContext`（渲染层不持有
+ *   workspaceId，也不猜）；发送前预检的 workspaceId / 名称来自它刚读到的 `sessionStatus` 实时行。
  */
 
 import { useEffect } from 'react';
@@ -31,6 +37,7 @@ import { isSidebarWindow } from '@/lib/sidebarWindow';
 import { tryGetPsbRemoteBridge } from './bridge';
 import {
   confirmAndOccupyPsbWorkspace,
+  confirmAndOccupyPsbWorkspaceDetailed,
   registerPsbOccupyConfirmationResolver,
   registerPsbOccupyWorkspaceConfirmationResolver,
   resolvePsbWorkspaceForOccupyConfirmation,
@@ -56,18 +63,17 @@ function PsbOccupyRequiredConfirmationHost() {
       });
       return outcome === 'occupied';
     });
-    // 懒建 PSB 会话（草稿页首条消息）只有工作区事实、还没有本地任务：同一段确认 + 占用。
+    // 懒建 PSB 会话（草稿页首条消息）与**发送前预检**都只有工作区事实、还没有本地任务：
+    // 同一段确认 + 占用，返回详细结果（取消 / 占用失败可区分，预检据此决定静默还是给提示）。
     const unregisterWorkspace = registerPsbOccupyWorkspaceConfirmationResolver(
-      async ({ workspaceId, workspaceName }) => {
-        const outcome = await confirmAndOccupyPsbWorkspace({
+      async ({ workspaceId, workspaceName }) =>
+        await confirmAndOccupyPsbWorkspaceDetailed({
           t,
           confirm,
           bridge,
           workspaceId,
           workspaceName,
-        });
-        return outcome === 'occupied';
-      },
+        }),
     );
     return () => {
       unregisterSession();

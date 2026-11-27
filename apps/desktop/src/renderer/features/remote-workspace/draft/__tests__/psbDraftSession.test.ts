@@ -184,7 +184,9 @@ describe('createPsbSessionGate', () => {
       );
 
     // ① 取消：一次 createSession，失败按原样返回（不建本地会话、不占用）。
-    const unregisterDeclined = registerPsbOccupyWorkspaceConfirmationResolver(async () => false);
+    const unregisterDeclined = registerPsbOccupyWorkspaceConfirmationResolver(
+      async () => ({ status: 'declined' }),
+    );
     const declinedCreate = vi.fn(async () => {
       throw occupyRequired();
     });
@@ -199,7 +201,7 @@ describe('createPsbSessionGate', () => {
     const requested: { workspaceId: string; workspaceName: string }[] = [];
     const unregisterAccepted = registerPsbOccupyWorkspaceConfirmationResolver(async (input) => {
       requested.push(input);
-      return true;
+      return { status: 'occupied' };
     });
     const acceptedCreate = vi
       .fn()

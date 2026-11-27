@@ -147,11 +147,11 @@ export function createPsbSessionGate(): PsbSessionGate {
           });
         } catch (error) {
           if (!retrying && isPsbOccupyRequiredFailure(error)) {
-            const approved = await requestPsbOccupyConfirmationForWorkspace({
+            const attempted = await requestPsbOccupyConfirmationForWorkspace({
               workspaceId,
               workspaceName: target.workspaceTitle ?? '',
             });
-            if (approved) return createSessionOnce(true);
+            if (attempted?.status === 'occupied') return createSessionOnce(true);
           }
           throw error;
         }

@@ -22609,6 +22609,7 @@
       "workspaceOccupied": "這個工作區正被他人佔用，請在 PSB 網頁解除佔用後再試。",
       "occupyRequired": "這個工作區還沒被你佔用，需要先佔用。",
       "agentSessionActive": "這個工作區裡還有任務正在輸出，先結束或停止它，再釋放佔用。",
+"tooManyTunnels": "遠端工作階段的隧道／觀看名額已滿（預設 4 條），先關閉或停止其它遠端工作階段，再重試。",
       "clientOffline": "那台電腦離線了，請稍後再試。",
       "unknown": "操作失敗，請稍後重試。"
     },

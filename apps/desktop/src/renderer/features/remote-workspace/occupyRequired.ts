@@ -22,6 +22,11 @@
  *   `registerPsbOccupyConfirmationResolver` 由挂载在 App 的宿主组件注册，
  *   `requestPsbOccupyConfirmationForSession` 让 store 在确认期间挂起这次发送，确认成功后自己重试。
  *   没有宿主（旧 preload / 副窗 / 单测）时返回 `false`：失败照旧落到错误横幅，**不会**静默占用。
+ * - **注册式（发送前预检，2026-11-27 追加）**：`registerPsbOccupyWorkspaceConfirmationResolver`
+ *   注册的是**带失败原因**的 `PsbOccupyWorkspaceConfirmationResolver`（工作区事实由调用方给，
+ *   不必再读 `adminContext`）。发送前预检（`psbSendPreflight.ts`）用它：取消 = `declined`
+ *   （静默不发送），占用失败 = `failed`（带 error，调用方按既有 `PSB_*` 文案给可行动提示）；
+ *   没有宿主时 `requestPsbOccupyConfirmationForWorkspace` 返回 `null`（调用方交给主进程兜底）。
  *
  * ## 失败语义
  *
@@ -79,6 +84,17 @@ export interface PsbOccupyWorkspacePort {
 /** 确认为「占用」这一步的结果；调用方据此决定是否重试发起的那次动作。 */
 export type PsbOccupyConfirmationOutcome = 'occupied' | 'declined' | 'failed';
 
+/**
+ * 「确认 + 占用」的**详细结果**：需要区分「用户取消」与「占用失败」时用。
+ *
+ * 发送前预检（`psbSendPreflight.ts`）必须区分这两者：取消是静默不发送（草稿保留、没有任何
+ * 提示），占用失败要给一句可行动的失败原因。只回 boolean 的旧形状无法区分，会让取消也弹提示。
+ */
+export type PsbOccupyAttemptResult =
+  | { readonly status: 'occupied' }
+  | { readonly status: 'declined' }
+  | { readonly status: 'failed'; readonly error: unknown };
+
 export interface PsbOccupyConfirmParams {
   /** 已本地化的 `t`（调用方持有当前语言）。 */
   readonly t: TFunction;
@@ -113,29 +129,42 @@ export function psbOccupyConfirmCopy(
 }
 
 /**
- * 弹确认框 → 用户确认后显式占用。
+ * 弹确认框 → 用户确认后显式占用（**详细结果**：取消 / 失败可区分）。
  *
  * 不负责重试动作本身（那是调用方的事实：发送 / 启动串流各有自己的通道）；也不负责展示占用
  * 失败文案（同样由调用方接既有 `psbFailureText`）。
  */
-export async function confirmAndOccupyPsbWorkspace(
+export async function confirmAndOccupyPsbWorkspaceDetailed(
   params: PsbOccupyConfirmParams,
-): Promise<PsbOccupyConfirmationOutcome> {
+): Promise<PsbOccupyAttemptResult> {
   const workspaceId = params.workspaceId.trim();
   const bridge = params.bridge ?? tryGetPsbRemoteBridge();
   // 没有桥 = 旧 preload / 非主窗：不能假装占用成功（那会让调用方重试一次必然失败的写入）。
-  if (!workspaceId || !bridge) return 'failed';
+  if (!workspaceId || !bridge) return { status: 'failed', error: null };
 
   const approved = await params.confirm(psbOccupyConfirmCopy(params.t, params.workspaceName));
-  if (!approved) return 'declined';
+  if (!approved) return { status: 'declined' };
 
   try {
     await bridge.occupyWorkspace({ workspaceId });
-  } catch {
-    // 失败原因（被抢 / 离线 / 网络）由调用方接既有文案表展示：这里不再读一遍错误。
-    return 'failed';
+  } catch (error) {
+    // 失败原因（被抢 / 离线 / 网络）由调用方接既有文案表展示：这里原样把 error 交出去。
+    return { status: 'failed', error };
   }
-  return 'occupied';
+  return { status: 'occupied' };
+}
+
+/**
+ * 弹确认框 → 用户确认后显式占用（三态字符串版本，既有调用方使用）。
+ *
+ * 新代码若需要区分取消与失败，用 {@link confirmAndOccupyPsbWorkspaceDetailed}。
+ */
+export async function confirmAndOccupyPsbWorkspace(
+  params: PsbOccupyConfirmParams,
+): Promise<PsbOccupyConfirmationOutcome> {
+  const result = await confirmAndOccupyPsbWorkspaceDetailed(params);
+  if (result.status === 'failed') return 'failed';
+  return result.status;
 }
 
 /* ---------------- 注册式：让「发送」在确认期间挂起并自行重试 ---------------- */
@@ -148,14 +177,15 @@ export async function confirmAndOccupyPsbWorkspace(
 export type PsbOccupyConfirmationResolver = (sessionId: string) => Promise<boolean>;
 
 /**
- * `{workspaceId, workspaceName} → 用户是否同意并已成功占用`。
+ * `{workspaceId, workspaceName} → 确认 + 占用结果`。
  *
- * 给**还没有本地任务**的入口用（新建 / 懒建 PSB 会话：那时只有工作区事实，没有 sessionId）。
+ * 给**手上已有工作区事实**的入口用：懒建 PSB 会话（草稿页首条消息）与**发送前预检**。
+ * 后者需要区分「取消」与「占用失败」——取消静默不发送，失败要带原因给可行动提示。
  */
 export type PsbOccupyWorkspaceConfirmationResolver = (input: {
   workspaceId: string;
   workspaceName: string;
-}) => Promise<boolean>;
+}) => Promise<PsbOccupyAttemptResult>;
 
 let confirmationResolver: PsbOccupyConfirmationResolver | null = null;
 let workspaceConfirmationResolver: PsbOccupyWorkspaceConfirmationResolver | null = null;
@@ -198,20 +228,21 @@ export async function requestPsbOccupyConfirmationForSession(
 }
 
 /**
- * 请求用户确认占用（**还没有本地任务**的入口：懒建 PSB 会话）。
+ * 请求用户确认占用（**手上已有工作区事实**的入口：懒建 PSB 会话 / 发送前预检）。
  *
- * 没有宿主 / 宿主异常 → `false`：调用方按原失败返回（不静默占用）。
+ * 没有宿主 → `null`：调用方按原失败返回（不静默占用）；发送前预检把 `null` 当「预检无法
+ * 确认」交给主进程权威闸门，不在这里拦截。宿主异常 → `{status:'failed'}`（同样不假装成功）。
  */
 export async function requestPsbOccupyConfirmationForWorkspace(input: {
   workspaceId: string;
   workspaceName: string;
-}): Promise<boolean> {
+}): Promise<PsbOccupyAttemptResult | null> {
   const resolver = workspaceConfirmationResolver;
-  if (!resolver) return false;
+  if (!resolver) return null;
   try {
     return await resolver(input);
-  } catch {
-    return false;
+  } catch (error) {
+    return { status: 'failed', error };
   }
 }
 

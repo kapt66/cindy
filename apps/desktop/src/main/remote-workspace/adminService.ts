@@ -83,18 +83,24 @@
  * 新端点可用时这条路径**永不**执行；其它失败（409 没有 running 桌面访问、鉴权、网络、可读
  * 业务错误）不触发回退 —— 那些不是「端点不存在」，静默建会话只会掩盖真实原因。
  *
- * ## 启动前的 `ensureWorkspaceAccess` 不是必经路径
+ * ## 启动串流的必经步骤：占用闸门 → `ensureWorkspaceAccess` → 订阅 → 起观看端
  *
- * `ensureWorkspaceAccess` 是**可选增强**：Cindy 的 Bearer 目前未被 PSB 放行 `/api/remote/**`
- * （403），所以它通常只会白等一次网络往返。旧实现把它 `await` 在订阅之前 —— 每次「启动」都
- * 先付出最多 ~3s 的轮询预算，只为了记一条日志。
+ * CINDY-RW-17（PSB 0.1.183）起，PSB 在 Cindy 命名空间放行了「启动桌面访问」的幂等 ensure
+ * 入口。Cindy 与网页**同一口径**：读 `GET …/access` → 只有终态（none/stopped/failed）才
+ * `POST …/access/start` → 轮询到 `running` → 再 `stream/subscribe`。顺序固定：
  *
- * 现在按**能力位**决定：
- *   - `open`（上一次真的拉起到 running）：前台调用（它可能真的让订阅成功）；
- *   - `closed`（Cindy 入口未开放）：本进程内 TTL 内直接跳过，不再白打；
- *   - `unknown` / `failed` / `timeout`：**后台预热**，不阻塞订阅；
- *   - 结果（含失败码 / PSB 原文）写进工作区能力状态，而不是只写日志；当它**直接导致用户点
- *     「启动」失败**时，失败错误会带上这条可读原因（复用主失败的码，只补 message detail）。
+ *   1. 占用闸门（`ensureWorkspaceLocked`，mine 才放行；空闲返回 `PSB_WORKSPACE_NOT_OCCUPIED`，
+ *      由渲染层弹确认 → 用户确认占用 → 重试同一次启动）；
+ *   2. `ensureWorkspaceAccess`（**必经路径**，不再是「可选增强 / 能力位」）：失败带码抛出
+ *      （未占用 / 被他人占用 / 超时 / 网络），`unsupported`（旧 PSB 没有该路由）才退回直接
+ *      订阅 —— 旧服务端的订阅 409 会给出可行动文案；
+ *   3. 工作区级订阅拿桌面访问会话 id（旧 PSB 才过渡回退内部会话）；
+ *   4. 起观看端。
+ *
+ * 因此 Cindy 用户**不需要再去 PSB 网页启动访问**：`starting` 期间界面显示「正在启动桌面
+ * 访问…」，启动完成后自动进入订阅。旧的「能力位 / 后台预热 / 不阻塞启动」编排已删除：
+ * 它建立在「Cindy Bearer 未被放行、最多得到 403」的历史事实上，会让真机启动串流永远拿不到
+ * 访问，只能等用户去网页点一次。
  *
  * ## 三条不变式
  *
@@ -224,14 +230,14 @@ export interface PsbAdminRemotePort {
    */
   subscribeWorkspaceStream(workspaceId: string): Promise<PsbWorkspaceStreamSubscription>;
   /**
-   * **尽力**拉起该工作区的桌面访问（可选增强；失败一律非致命，**永不抛**）。
+   * 保证该工作区桌面访问到 `running`（CINDY-RW-17，启动串流的**必经路径**）。
    *
-   * 生产 = `PsbRemoteService.ensureWorkspaceAccess`：Cindy 的 Bearer 目前未被 PSB 放行
-   * `/api/remote/**`（403），所以通常返回 `reason:'cindy-entry-not-open'`，此时订阅照常进行，
-   * 由 409 给出可行动文案。旧装配 / 单测 fake 可以完全没有这个方法（可选端口）。
+   * 生产 = `PsbRemoteService.ensureWorkspaceAccess`（网页同款状态机：读 access → 终态才
+   * POST start → 轮询到 running，预算 90s）。失败收敛成可归因结果而非异常：
+   * `not-occupied`（403，等用户确认占用）/ `occupied-by-other`（409）/ `timeout` / `failed`
+   * 由本服务带码抛出；只有 `unsupported`（旧 PSB 没有该路由）退回直接订阅。
    *
-   * 它**不在启动的必经路径上**（见文件头「ensureWorkspaceAccess 不是必经路径」）：能力位为
-   * open 时前台调用，其余情况后台预热。
+   * 可选端口仅为兼容旧装配 / 单测 fake：没有它时按旧路径直接订阅（并记一条 info）。
    */
   ensureWorkspaceAccess?(workspaceId: string): Promise<PsbWorkspaceAccessEnsureOutcome>;
   /**
@@ -460,16 +466,6 @@ interface ContextBucket {
   lastWorkspaceId: string | null;
 }
 
-/** 「尽力拉起桌面访问」的能力位（见文件头）。 */
-type AccessEnsureState = 'unknown' | 'open' | 'closed' | 'failed' | 'timeout';
-
-interface AccessEnsureCapability {
-  readonly state: AccessEnsureState;
-  readonly checkedAt: number;
-  /** 失败时 PSB 的形状（`closed` 也带 403/404 的形状，便于诊断）。 */
-  readonly failure: PsbRemoteFailure | null;
-}
-
 /** 过渡回退创建的内部 Agent 会话（用于回滚 / TTL 清理）。 */
 interface FallbackSessionRecord {
   readonly workspaceId: string;
@@ -496,8 +492,6 @@ const FALLBACK_SESSION_LIMIT = 8;
 /** 写操作闸门对「工作区能不能写」的信任窗口：过旧就先重新解析，而不是拿旧结论永久拦。 */
 const WORKSPACE_STATE_TRUST_MS = 15_000;
 
-/** 「Cindy 拉起入口未开放」能力位的重新探测窗口（避免每次启动都白等一次 403）。 */
-const ACCESS_ENSURE_CAPABILITY_TTL_MS = 10 * 60_000;
 
 /** 过渡回退内部会话的兜底存活上限（仍被绑定引用时，超过它也会被清理）。 */
 const FALLBACK_SESSION_TTL_MS = 30 * 60_000;
@@ -686,10 +680,6 @@ export function createPsbWorkspaceAdminService(
   const contextBuckets = new Map<string, ContextBucket>();
   /** 过渡回退创建的内部 Agent 会话（用于回滚 / TTL 清理，见文件头）。 */
   const fallbackSessions = new Map<string, FallbackSessionRecord>();
-  /** 「拉起桌面访问」的能力位（按工作区；见文件头）。 */
-  const accessEnsureCapabilityByWorkspace = new Map<string, AccessEnsureCapability>();
-  /** 进行中的「尽力拉起桌面访问」（同一工作区不叠加请求）。 */
-  const accessEnsureInFlight = new Map<string, Promise<void>>();
   /** 按工作区的串行队列尾部：start / stop 同一工作区不并发。 */
   const workspaceOperationTail = new Map<string, Promise<void>>();
   /** 按工作区的操作代次：`streamStop` 入队前 +1；`streamStart` 落定后发现它变了就自停。 */
@@ -731,8 +721,6 @@ export function createPsbWorkspaceAdminService(
     lastStatusByWorkspace.clear();
     contextBuckets.clear();
     fallbackSessions.clear();
-    accessEnsureCapabilityByWorkspace.clear();
-    accessEnsureInFlight.clear();
     workspaceOperationTail.clear();
     workspaceGeneration.clear();
     selfStoppedGeneration.clear();
@@ -1458,134 +1446,78 @@ export function createPsbWorkspaceAdminService(
     return binding;
   }
 
-  /* ---------------------- 尽力拉起桌面访问（能力位 + 后台预热） ---------------------- */
+  /* --------------------- 启动访问：网页同款状态机（必经路径） --------------------- */
 
-  /** 当前生效的能力位（过期退回 unknown，下次动作重新探测）。 */
-  function currentAccessEnsureCapability(workspaceId: string): AccessEnsureCapability {
-    const cached = accessEnsureCapabilityByWorkspace.get(workspaceId);
-    if (cached && clock() - cached.checkedAt <= ACCESS_ENSURE_CAPABILITY_TTL_MS) return cached;
-    return { state: 'unknown', checkedAt: 0, failure: null };
-  }
-
-  /** 把一次「拉起访问」的结果写进能力位（失败原因不再只进日志）。 */
-  function recordAccessEnsureOutcome(
+  /**
+   * 确保桌面访问到 `running`（CINDY-RW-17）。**启动串流的必经路径**，失败带码抛出。
+   *
+   * 返回 `'unsupported'` = 旧 PSB 没有这条路由（404/405/`UNIMPLEMENTED`）：调用方退回直接
+   * 订阅，由订阅的 409 给可行动文案；其余结果只可能来自「失败」路径（抛出）。
+   *
+   * 端口协议是「不抛异常、收敛成可行动结果」；这里再兜一层：端口万一违约抛了错，也按
+   * `PSB_UNREACHABLE` 之类的可归因形状往上抛，而不是吞掉（吞掉会让启动串流在访问没起来时
+   * 继续去订阅，回到旧 bug）。
+   */
+  async function ensureWorkspaceAccessOrThrow(
     workspaceId: string,
-    outcome: PsbWorkspaceAccessEnsureOutcome,
-  ): void {
-    accessEnsureCapabilityByWorkspace.set(workspaceId, {
-      // `cindy-entry-not-open` 归到「closed」：本进程内 TTL 窗口不再白打一次 403/404。
-      state: outcome.ok
-        ? 'open'
-        : outcome.reason === 'cindy-entry-not-open'
-          ? 'closed'
-          : outcome.reason,
-      checkedAt: clock(),
-      failure: outcome.ok ? null : outcome.failure,
-    });
-  }
-
-  /**
-   * 真正调用一次「拉起桌面访问」。失败一律非致命（端口约定永不抛，这里再兜一层）。
-   *
-   * 同一工作区同时只发一条；结果写进能力位并记日志（含失败码，便于诊断「入口未放行」）。
-   */
-  function runWorkspaceAccessEnsure(workspaceId: string): Promise<void> {
-    const pending = accessEnsureInFlight.get(workspaceId);
-    if (pending) return pending;
-    // 先声明再赋值：任务内部（`finally`）要用同一个 promise 身份做「只清自己这一票」，
-    // 直接 `const task = (async () => … task …)()` 会命中「变量在赋值前被使用」。
-    let task: Promise<void> | null = null;
-    const run = (async (): Promise<void> => {
-      const port = remote();
-      if (typeof port.ensureWorkspaceAccess !== 'function') return;
-      try {
-        const outcome = await port.ensureWorkspaceAccess(workspaceId);
-        // 账号边界可能在这条请求在途时换了服务实例：旧实例的结论不能写进新账号的能力位。
-        if (currentRemote !== port) return;
-        recordAccessEnsureOutcome(workspaceId, outcome);
-        if (outcome.ok) {
-          deps.log.info('psb admin: workspace access is running before subscribing', {
-            workspaceId,
-            startedByThisCall: outcome.startedByThisCall,
-          });
-        } else {
-          deps.log.info(
-            'psb admin: workspace access ensure did not succeed; continuing to subscribe',
-            { workspaceId, reason: outcome.reason, code: outcome.failure?.code ?? null },
-          );
-        }
-      } catch (error) {
-        const failure = toPsbRemoteFailure(error);
-        if (currentRemote === port) {
-          accessEnsureCapabilityByWorkspace.set(workspaceId, {
-            state: 'failed',
-            checkedAt: clock(),
-            failure,
-          });
-        }
-        deps.log.warn('psb admin: workspace access ensure threw; continuing to subscribe', {
-          workspaceId,
-          code: failure.code,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        if (task !== null && accessEnsureInFlight.get(workspaceId) === task) {
-          accessEnsureInFlight.delete(workspaceId);
-        }
-      }
-    })();
-    task = run;
-    accessEnsureInFlight.set(workspaceId, run);
-    return run;
-  }
-
-  /**
-   * 订阅前的「拉起访问」编排：**不阻塞启动必经路径**（见文件头）。
-   *
-   * - 能力位 `open`：前台调用（它可能真的把访问拉起来，让订阅成功）；
-   * - `closed`：跳过（入口未放行，别每次启动都白打 403）；
-   * - `unknown` / `failed` / `timeout`：后台预热，订阅不等它。
-   */
-  async function prepareWorkspaceAccess(workspaceId: string): Promise<void> {
-    const capability = currentAccessEnsureCapability(workspaceId);
-    if (capability.state === 'closed') return;
-    if (capability.state === 'open') {
-      await runWorkspaceAccessEnsure(workspaceId);
-      return;
+  ): Promise<'ready' | 'unsupported'> {
+    const port = remote();
+    if (typeof port.ensureWorkspaceAccess !== 'function') {
+      // 旧装配 / 旧 fake：没有这个端口就按旧路径直接订阅（生产装配一定有它）。
+      deps.log.info('psb admin: the remote port has no workspace access ensure; subscribing directly', {
+        workspaceId,
+      });
+      return 'ready';
     }
-    void runWorkspaceAccessEnsure(workspaceId);
+    let outcome: PsbWorkspaceAccessEnsureOutcome;
+    try {
+      outcome = await port.ensureWorkspaceAccess(workspaceId);
+    } catch (error) {
+      const failure = toPsbRemoteFailure(error);
+      deps.log.warn('psb admin: workspace access ensure threw', {
+        workspaceId,
+        code: failure.code,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    if (outcome.ok) {
+      deps.log.info('psb admin: workspace access is running before subscribing', {
+        workspaceId,
+        startedByThisCall: outcome.startedByThisCall,
+      });
+      return 'ready';
+    }
+    if (outcome.reason === 'unsupported') {
+      deps.log.info('psb admin: workspace access ensure is unavailable on this PSB; subscribing directly', {
+        workspaceId,
+      });
+      return 'unsupported';
+    }
+    deps.log.info('psb admin: workspace access ensure failed; refusing to subscribe', {
+      workspaceId,
+      reason: outcome.reason,
+      code: outcome.failure?.code ?? null,
+    });
+    throw new PsbClientError(
+      outcome.failure ?? {
+        code: 'PSB_UNKNOWN',
+        messageKey: 'remoteWorkspace.error.unknown',
+        message: null,
+      },
+      null,
+    );
   }
-
-  /**
-   * 启动失败时补一条可读原因：若订阅 / 启动失败自己没带 PSB 原文，而「拉起访问」有失败原话，
-   * 就把原话补进 `message`（码 / messageKey 仍用主失败的那条，不改变可行动语义）。
-   *
-   * 只在用户点「启动」真的失败时发生；启动成功时不打扰用户（结果只记在能力位 / 日志里）。
-   */
-  async function enrichStartFailureWithAccessReason(
-    workspaceId: string,
-    error: unknown,
-  ): Promise<unknown> {
-    if (!(error instanceof PsbClientError)) return error;
-    if (error.failure.message?.trim()) return error;
-    const inflight = accessEnsureInFlight.get(workspaceId);
-    if (inflight) await inflight.catch(() => undefined);
-    const capability = accessEnsureCapabilityByWorkspace.get(workspaceId);
-    const detail = capability?.failure?.message?.trim();
-    if (!detail) return error;
-    return new PsbClientError({ ...error.failure, message: detail }, error.status);
-  }
-
   /**
    * 建立观看绑定：优先工作区级服务接口；**只有端点不可用**（旧 PSB）才过渡回退。
    *
    * 正常路径**不创建任何 Agent 会话**：`subscribeWorkspaceStream` 只解析当前 running 的桌面
    * 访问会话。回退路径必须带 `purpose:'internal'`（见文件头），新端点可用时永不执行。
-   * 订阅前先「拉起访问」（能力位编排，非必经路径，见上）；没有 running 访问会话时 PSB 的
-   * 409 会被客户端解析成 `PSB_STREAM_NO_RUNNING_SESSION` + `state`，原样上抛给渲染层。
+   * **订阅前已经由 `startStreamLocked` 确保访问 running**（CINDY-RW-17 必经路径）：
+   * 这里的 409 只可能是竞态（访问刚被回收），语义仍是可行动的
+   * `PSB_STREAM_NO_RUNNING_SESSION` + `state`，原样上抛给渲染层。
    */
   async function acquireBinding(workspaceId: string): Promise<ViewerBinding> {
-    await prepareWorkspaceAccess(workspaceId);
     let sessionId: string;
     let viaInternalFallback = false;
     try {
@@ -1844,13 +1776,30 @@ export function createPsbWorkspaceAdminService(
       await remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false });
     } catch (error) {
       absorbWriteFailure(workspaceId, error);
-      throw await enrichStartFailureWithAccessReason(workspaceId, error);
+      throw error;
     }
 
     // 占用成功 = 又确认了一次工作区固定信息（名称 / 模板 / 机器不会变）：落盘快照，
     // 下次 PSB 读不到时页面还能显示。值不变 0 次写。
     const observed = lastWorkspaceRowById.get(workspaceId)?.row;
     if (observed) rememberSnapshotFor(observed);
+
+    // **CINDY-RW-17 必经步骤**：确保桌面访问到 running（网页同款状态机；预算是 90s 级，
+    // 期间界面显示「正在启动桌面访问…」）。失败带码抛出（未占用 / 被他人占用 / 超时 / 网络），
+    // 不在访问没起来时继续订阅；只有旧 PSB（没有该路由）才退回直接订阅，由订阅的 409 给
+    // 可行动文案。
+    try {
+      await ensureWorkspaceAccessOrThrow(workspaceId);
+    } catch (error) {
+      // 未占用 / 被他人占用是工作区级事实：与占用闸门同一套失败归因（但**不**吸收成
+      // 「工作区不可见」——那两种码在 bsorbWriteFailure 里本来就不处理）。
+      deps.log.info('psb admin: refusing to start streaming because the workspace access is not ready', {
+        workspaceId,
+        code: toPsbRemoteFailure(error).code,
+        status: error instanceof PsbClientError ? error.status : null,
+      });
+      throw error;
+    }
 
     let started: { binding: ViewerBinding; status: PsbSessionStreamStatus };
     try {
@@ -1867,7 +1816,7 @@ export function createPsbWorkspaceAdminService(
         code: toPsbRemoteFailure(error).code,
         status: error instanceof PsbClientError ? error.status : null,
       });
-      throw await enrichStartFailureWithAccessReason(workspaceId, error);
+      throw error;
     }
 
     const binding = started.binding;

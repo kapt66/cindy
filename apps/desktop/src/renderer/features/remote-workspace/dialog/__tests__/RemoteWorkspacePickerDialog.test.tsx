@@ -327,7 +327,7 @@ describe('RemoteWorkspacePickerDialog', () => {
     expect(bridge.releaseWorkspace).not.toHaveBeenCalled();
   });
 
-  it('新建工作区成功后列表出现该工作区并被选中（provisioning 不弹占用确认）', async () => {
+  it.skip('新建工作区成功后列表出现该工作区并被选中（provisioning 不弹占用确认）【新建工作区页签暂屏蔽：CREATE_WORKSPACE_TAB_ENABLED=false】', async () => {
     const existing = makePsbWorkspace({ id: 'workspace-existing', title: '旧工作区' });
     const created = makePsbWorkspace({
       id: 'workspace-created',
@@ -403,12 +403,14 @@ describe('RemoteWorkspacePickerDialog', () => {
     );
   });
 
-  it('opens directly on the create tab when the draft-page channel entry asks for it', async () => {
+  it('新建工作区页签暂屏蔽：initialTab=create 也落在选择页签且没有页签切换', async () => {
     installPsbBridge();
     renderDialog({ initialTab: 'create' });
-    // 渠道内「新建远程工作区」必须直接落在新建表单，而不是让用户再点一次页签。
-    expect(await screen.findByTestId('psb-workspace-create-form')).toBeTruthy();
-    expect(screen.queryByTestId('psb-workspace-list')).toBeNull();
+    // 2026-11-27 用户要求暂时不提供新建工作区功能（CREATE_WORKSPACE_TAB_ENABLED=false）：
+    // 入口即使要求 create，也只能显示既有工作区选择，且不渲染 tablist / 新建表单。
+    expect(await screen.findByTestId('psb-workspace-list')).toBeTruthy();
+    expect(screen.queryByTestId('psb-workspace-create-form')).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
   });
 
   it('占用被他人抢走时不回调、不关闭、保持未选中，并显示占用人姓名', async () => {
@@ -576,3 +578,4 @@ describe('RemoteWorkspacePickerDialog', () => {
     expect(rowB.getAttribute('data-selected')).toBeNull();
   });
 });
+

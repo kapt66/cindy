@@ -24,6 +24,7 @@ import {
   PSB_OCCUPY_CONFIRM_KEYS,
   PSB_OCCUPY_REQUIRED_IPC_CODE,
   confirmAndOccupyPsbWorkspace,
+  confirmAndOccupyPsbWorkspaceDetailed,
   isPsbOccupyRequiredFailure,
   registerPsbOccupyConfirmationResolver,
   registerPsbOccupyWorkspaceConfirmationResolver,
@@ -39,7 +40,7 @@ const t = i18n.t.bind(i18n);
 afterEach(() => {
   // 注册表是模块级单例：每个用例结束时注销，避免用例之间串味。
   registerPsbOccupyConfirmationResolver(async () => false)();
-  registerPsbOccupyWorkspaceConfirmationResolver(async () => false)();
+  registerPsbOccupyWorkspaceConfirmationResolver(async () => ({ status: 'declined' }))();
 });
 
 it('码名与共享单表一致：渲染层按码名识别，文案键由单表给出', () => {
@@ -148,10 +149,10 @@ it('注册式：没有宿主时不假装成功；注册后按 sessionId / 工作
   expect(await requestPsbOccupyConfirmationForSession('s1')).toBe(false);
   expect(
     await requestPsbOccupyConfirmationForWorkspace({ workspaceId: 'ws-a', workspaceName: '' }),
-  ).toBe(false);
+  ).toBeNull();
 
   const forSession = vi.fn(async () => true);
-  const forWorkspace = vi.fn(async () => false);
+  const forWorkspace = vi.fn(async () => ({ status: 'declined' }) as const);
   const unregisterSession = registerPsbOccupyConfirmationResolver(forSession);
   const unregisterWorkspace = registerPsbOccupyWorkspaceConfirmationResolver(forWorkspace);
 
@@ -159,12 +160,53 @@ it('注册式：没有宿主时不假装成功；注册后按 sessionId / 工作
   expect(forSession).toHaveBeenCalledWith('s1');
   expect(
     await requestPsbOccupyConfirmationForWorkspace({ workspaceId: 'ws-a', workspaceName: 'x' }),
-  ).toBe(false);
+  ).toEqual({ status: 'declined' });
   expect(forWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-a', workspaceName: 'x' });
 
   unregisterSession();
   unregisterWorkspace();
   expect(await requestPsbOccupyConfirmationForSession('s1')).toBe(false);
+  expect(
+    await requestPsbOccupyConfirmationForWorkspace({ workspaceId: 'ws-a', workspaceName: '' }),
+  ).toBeNull();
+});
+
+it('详细结果区分取消与占用失败（发送前预检据此静默 / 给可行动提示）', async () => {
+  // 取消：既不占用，也不带「失败原因」。
+  const declined = await confirmAndOccupyPsbWorkspaceDetailed({
+    t,
+    confirm: async () => false,
+    bridge: { occupyWorkspace: vi.fn() },
+    workspaceId: 'ws-a',
+    workspaceName: 'saga2_project',
+  });
+  expect(declined).toEqual({ status: 'declined' });
+
+  // 占用被抢：保留原始失败（调用方按既有 PSB 文案表展示占用人名）。
+  const occupiedError = new Error('[PSB_WORKSPACE_OCCUPIED_BY_OTHER] 李四');
+  const failed = await confirmAndOccupyPsbWorkspaceDetailed({
+    t,
+    confirm: async () => true,
+    bridge: {
+      occupyWorkspace: async () => {
+        throw occupiedError;
+      },
+    },
+    workspaceId: 'ws-a',
+    workspaceName: 'saga2_project',
+  });
+  expect(failed).toEqual({ status: 'failed', error: occupiedError });
+
+  // 没有桥同样是不带原因（拿不到失败对象）的失败，不假装成功。
+  expect(
+    await confirmAndOccupyPsbWorkspaceDetailed({
+      t,
+      confirm: async () => true,
+      bridge: null,
+      workspaceId: 'ws-a',
+      workspaceName: '',
+    }),
+  ).toEqual({ status: 'failed', error: null });
 });
 
 it('发送路径解析工作区：只用 adminContext 的实时事实；占位身份 / 读取失败 → null', async () => {

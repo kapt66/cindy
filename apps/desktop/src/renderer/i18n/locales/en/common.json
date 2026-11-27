@@ -22692,6 +22692,7 @@
       "workspaceOccupied": "This workspace is in use by someone else. Clear the lock on the PSB website and try again.",
       "occupyRequired": "This workspace is not occupied by you yet. Occupy it first.",
       "agentSessionActive": "A task is still running in this workspace. Finish or stop it before releasing the workspace.",
+"tooManyTunnels": "This remote session has used up the tunnel/viewer slots (4 by default). Close or stop other remote sessions, then try again.",
       "clientOffline": "That computer is offline. Try again later.",
       "unknown": "The action failed. Try again later."
     },
