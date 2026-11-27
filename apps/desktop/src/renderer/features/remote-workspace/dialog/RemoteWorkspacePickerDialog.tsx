@@ -5,9 +5,11 @@
  * 模型在会话草稿页按既有链路选择。所以这里只做三件事：
  *
  *   1. 列出当前身份可用工作区（不可用行显示短状态徽标并禁用，长原因进 tooltip）；
- *   2. 选中一个工作区 = 在 PSB 上把它占用为当前身份（与网页同一把协作锁），占用失败
- *      给出可行动的原因并停在这里；
- *   3. 占用成功后把**工作区级载荷**交给父级（侧栏 → 导航草稿页；草稿页内 → 换目标）。
+ *   2. 选中一个工作区 = 在 PSB 上把它占用为当前身份（与网页同一把协作锁）；**无人占用时先弹
+ *      确认框**（2026-11-27 用户复测：占用会让别人用不了，必须先问一次），确认并占用成功才算
+ *      选中；已是 mine 的行直接选中、不弹确认；占用失败给出可行动的原因并停在这里；
+ *   3. 主按钮「新建任务」把**已占用**的工作区交接给父级（侧栏 → 导航草稿页；草稿页内 →
+ *      换目标），**不再第二次占用**。
  *
  * **不建 PSB 会话**：会话在草稿页首条消息发送时懒创建（引擎取草稿当时的 Harness），
  * 失败不建本地会话、重试复用同一条。这样弹窗与引擎/模型解耦，草稿页完全走原有链路。
@@ -17,6 +19,12 @@
  *     `usePsbWorkspaceSelection()` 里，草稿页下拉与本弹窗共用；
  *   - 行 UI / 徽标 / 键盘与 ARIA 在 `PsbWorkspaceRow` + `usePsbWorkspaceListKeyboard`；
  *   - 本文件只剩壳：页签、新建工作区表单、页头状态、布局与按钮。
+ *
+ * ## 归还（2026-11-27）
+ *
+ * 弹窗里确认占用成功、但用户还没点「新建任务」就换选另一个工作区 / 关闭弹窗 / 卸载时，
+ * 这个工作区由 hook 归还（占用无 TTL，不能留下一把没人接着用的锁）；交接成功后（`onCreated`
+ * 已回调）释放责任转到草稿 / 任务生命周期，弹窗不再归还。
  *
  * ## 忙时怎么退出
  *
@@ -42,6 +50,7 @@ import { useTranslation } from 'react-i18next';
 import { Check, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { ErrorNotice } from '@/components/ui/error-notice';
 import { Input } from '@/components/ui/input';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -61,6 +70,7 @@ import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 import { psbFailureDiagnosticText, readPsbFailure, type PsbFailureInfo } from './psbFailure';
 import { PsbWorkspaceRow } from './PsbWorkspaceRow';
 import type { RemoteWorkspacePickerCreated } from './psbSessionIdentity';
+import { psbWorkspaceRowDisplayName } from './psbWorkspaceDisplay';
 import { usePsbWorkspaceListKeyboard } from './usePsbWorkspaceListKeyboard';
 import { usePsbWorkspaceSelection } from './usePsbWorkspaceSelection';
 
@@ -97,6 +107,7 @@ export function RemoteWorkspacePickerDialog({
   initialTab = 'existing',
 }: RemoteWorkspacePickerDialogProps) {
   const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
   const [tab, setTab] = useState<DialogTab>(initialTab);
   const [status, setStatus] = useState<PsbRemoteStatus | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
@@ -110,6 +121,8 @@ export function RemoteWorkspacePickerDialog({
   const [title, setTitle] = useState('');
   /** 新建工作区在途（与占用在途分开：两者都让整弹窗进入忙态）。 */
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  /** 新建出来就已经 ready、待创建态落下后自动走「确认占用」的工作区。 */
+  const [createdSelectTarget, setCreatedSelectTarget] = useState<PsbRemoteWorkspace | null>(null);
 
   const aliveRef = useRef(true);
   const createDataRequestRef = useRef(false);
@@ -156,6 +169,7 @@ export function RemoteWorkspacePickerDialog({
     setClientId('');
     setTemplateKey('');
     setTitle('');
+    setCreatedSelectTarget(null);
     void loadStatus();
   }, [initialTab, loadStatus, open]);
 
@@ -195,11 +209,17 @@ export function RemoteWorkspacePickerDialog({
   );
   const selectedWorkspace =
     selectedIndex >= 0 ? selection.workspaces[selectedIndex] ?? null : null;
+  // 主按钮只交接**已占用**的选择：行点击在确认 / 占用成功后才设 `selectedWorkspaceId`，
+  // 新建出来但还没占用的行（provisioning）即使被选中也不能交接。
   const canSelect =
-    !!selectedWorkspace && psbWorkspaceHealth(selectedWorkspace).canStartSession;
+    !!selectedWorkspace &&
+    selection.heldWorkspaceId === selectedWorkspace.id &&
+    psbWorkspaceHealth(selectedWorkspace).canStartSession;
 
+  // 弹窗是 `listbox`：激活（Enter/Space/点击）才走确认+占用；方向键只移动焦点。
+  // 不能沿用「焦点跟随选中」的 radio 惯例——那会在键盘浏览时反复弹确认框/占用工作区。
   const keyboard = usePsbWorkspaceListKeyboard({
-    role: 'radiogroup',
+    role: 'listbox',
     ariaLabel: t('remoteWorkspace.dialog.tabExisting'),
     itemCount: selection.workspaces.length,
     isEnabled: (index) => {
@@ -207,29 +227,65 @@ export function RemoteWorkspacePickerDialog({
       return !!workspace && psbWorkspaceHealth(workspace).canStartSession;
     },
     selectedIndex,
-    onMoveFocus: (index) => {
-      const workspace = selection.workspaces[index];
-      if (!workspace) return;
-      setSelectedWorkspaceId(workspace.id);
-      selection.dismissError();
-    },
+    onMoveFocus: () => undefined,
   });
 
   /**
-   * 确认 = 占用工作区（协作锁），成功即把工作区交给父级。
+   * 激活一个工作区行：mine → 直接选中；无人占用 → 先弹确认，确认并占用成功才选中；
+   * 不可选 / 占用失败 → 保持未选中（失败事实由 hook 的 `actionError` / VCS 通知展示）。
+   */
+  const beginWorkspaceSelection = useCallback(
+    async (workspace: PsbRemoteWorkspace) => {
+      // 待确认 / 忙时不再叠第二个确认框（双击行、回车连发都走这里）。
+      if (busy || selection.pendingOccupy) return;
+      const outcome = selection.requestSelect(workspace);
+      if (outcome.kind === 'blocked') return;
+      if (outcome.releasedWorkspaceId) setSelectedWorkspaceId(null);
+      if (outcome.kind === 'selected') {
+        setSelectedWorkspaceId(outcome.created.workspaceId);
+        return;
+      }
+      const name =
+        selection.labels.get(workspace.id)?.name ?? psbWorkspaceRowDisplayName(workspace);
+      const confirmed = await confirm({
+        title: t('remoteWorkspace.dialog.confirmOccupy.title', { name }),
+        description: t('remoteWorkspace.dialog.confirmOccupy.body'),
+        confirmText: t('remoteWorkspace.dialog.confirmOccupy.confirm'),
+        cancelText: t('remoteWorkspace.dialog.confirmOccupy.cancel'),
+      });
+      if (!confirmed) {
+        // 取消 = 不占用、不选中；此前已释放的选择由 outcome.releasedWorkspaceId 清掉选中态。
+        selection.cancelOccupy();
+        return;
+      }
+      const created = await selection.confirmOccupy();
+      if (!created) return;
+      setSelectedWorkspaceId(created.workspaceId);
+    },
+    [busy, confirm, selection, t],
+  );
+
+  const close = useCallback(
+    (next: boolean) => {
+      // 关闭/取消 = 放弃这次选择：在途占用作废（它若之后成功会被立刻释放并记账），
+      // 已占用但还没交接的工作区也在 `cancel()` 里归还。
+      if (!next) selection.cancel();
+      onOpenChange(next);
+    },
+    [onOpenChange, selection],
+  );
+
+  /**
+   * 主按钮 = **交接**已占用的工作区（占用已在行上确认时完成，这里不再 occupy 第二次）。
    * 占用失败**不**回调、不导航（产品验收：占用失败不留在草稿里）。
    */
-  const handleSelectWorkspace = useCallback(async () => {
+  const handleSelectWorkspace = useCallback(() => {
     if (busy) return;
-    const workspace = selection.workspaces.find(
-      (candidate) => candidate.id === selectedWorkspaceId,
-    );
-    if (!workspace) return;
-    const created = await selection.occupy(workspace);
+    const created = selection.handoffSelection();
     if (!created) return;
     onCreated(created);
-    onOpenChange(false);
-  }, [busy, onCreated, onOpenChange, selectedWorkspaceId, selection]);
+    close(false);
+  }, [busy, close, onCreated, selection]);
 
   const canCreateWorkspace = !!clientId && !!templateKey;
 
@@ -253,9 +309,13 @@ export function RemoteWorkspacePickerDialog({
         // 列表请求失败/尚未反映刚建出的行：本地补上，保证用户看得到自己刚建的工作区。
         selection.adoptWorkspace?.(created.workspace);
       }
-      // 新建成功 → 回到列表页并选中它（provisioning 时行上显示「准备中」，要等 ready 才能占用）。
+      // 新建成功 → 回到列表页并选中它。**新建不等于占用**：provisioning 时行上是「准备中」
+      // （等 ready 才能占用）；已经 ready 的等本轮创建态清掉后，走与点击行相同的「确认占用」。
       setSelectedWorkspaceId(created.workspace.id);
       setTab('existing');
+      if (psbWorkspaceHealth(created.workspace).canStartSession) {
+        setCreatedSelectTarget(created.workspace);
+      }
     } catch (error) {
       if (aliveRef.current) setCreateDataError(readPsbFailure(error));
     } finally {
@@ -264,14 +324,14 @@ export function RemoteWorkspacePickerDialog({
     }
   }, [clientId, selection, templateKey, title]);
 
-  const close = useCallback(
-    (next: boolean) => {
-      // 关闭/取消 = 放弃这次选择：在途占用作废，它若之后成功会被立刻释放并记账。
-      if (!next) selection.cancel();
-      onOpenChange(next);
-    },
-    [onOpenChange, selection],
-  );
+  // 新建出来就已经 ready 的工作区：等 `creatingWorkspace` 落下后再弹确认（创建在途时禁用选择，
+  // 同步调用会被 `disabled` 挡掉）。
+  useEffect(() => {
+    if (!open || creatingWorkspace || !createdSelectTarget) return;
+    const workspace = createdSelectTarget;
+    setCreatedSelectTarget(null);
+    void beginWorkspaceSelection(workspace);
+  }, [beginWorkspaceSelection, createdSelectTarget, creatingWorkspace, open]);
 
   const statusReason = status && !status.ready ? status.reasonKey : null;
 
@@ -402,8 +462,7 @@ export function RemoteWorkspacePickerDialog({
                         keyboardProps={keyboard.getItemProps(index)}
                         onActivate={() => {
                           keyboard.noteActivated(index);
-                          setSelectedWorkspaceId(workspace.id);
-                          selection.dismissError();
+                          void beginWorkspaceSelection(workspace);
                         }}
                       />
                     );

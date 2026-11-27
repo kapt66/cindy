@@ -480,8 +480,10 @@ export interface MakerSendTransactionDeps {
    * psb: 远程工作区会话的**发送前占用闸门**（PSB 服务端会拒绝未锁定者的写入）。
    *
    * 在真正下发到 agent-tunnel/远端之前调用：工作区仍由自己占用 → 放行；已被释放（无人占用）
-   * → 自动重新占用后放行；被他人占用 → 抛可行动错误（消息保留、可重试）。实现方按「缓存 +
-   * 足够新的 PSB 快照」控制请求次数（见 `main/remote-workspace/workspaceLock.ts`）。
+   * → 自动重新占用后放行；被他人占用 → 抛可行动错误（消息保留、可重试）。实现方（`register.ts`）
+   * **每条消息都读一次权威事实**（PSB 会话行 + 工作区行，不允许用快照 / 乐观缓存替代，也不允许
+   * 读不到就继续发送；2026-11-27 用户口径：工作区可能被交接）。实现见
+   * `main/remote-workspace/workspaceLock.ts` 的 `requireAuthoritative`。
    * 不是 psb 会话时实现方直接返回（不发请求）。
    */
   preparePsbWorkspaceLock?(sessionId: string): Promise<void>;
@@ -1237,7 +1239,9 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       //  - 已经过了发送前重建：重建出来的新 PSB 身份在库与 createOpts 里已就位，闸门按它判定；
       //  - 还没进 `ensureRemoteReadyForSessionStart` / lazy-create：失败时本轮没有开隧道、没有
       //    落任何远端写入，用户重发即可（消息体仍在草稿/队列里）。
-      // 工作区仍由自己占用 → 放行；已被释放 → 自动重新占用；被他人占用 → 抛可行动失败。
+      // **无条件执行**（不在任何分支里）：直发 / 队列 drain / 手机 / 自动重试都经过本事务，
+      // 因此每条用户消息都会在这里做一次权威占用校验。工作区仍由自己占用 → 放行；已被释放
+      // → 自动重新占用；被他人占用 / 读不到 → 抛可行动失败，本轮不发送。
       if (deps.preparePsbWorkspaceLock) await deps.preparePsbWorkspaceLock(sessionId);
       await deps.ensureRemoteReadyForSessionStart({ session: sess, createOpts });
 

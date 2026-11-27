@@ -22849,7 +22849,14 @@
       "creatingWorkspace": "Création de l'espace de travail…",
       "select": "Créer une tâche",
       "cancel": "Annuler",
-      "working": "Traitement…"
+      "working": "Traitement…",
+      "confirmOccupy": {
+        "title": "Occuper « {{name}} » ?",
+        "body": "Une fois occupé, personne d’autre ne pourra utiliser cet espace de travail distant jusqu’à ce que vous le libériez ou terminiez la tâche.",
+        "confirm": "Occuper",
+        "cancel": "Annuler",
+        "occupying": "Occupation…"
+      }
     },
     "draft": {
       "location": "Espace de travail distant",

@@ -22850,7 +22850,14 @@
       "creatingWorkspace": "Criando espaço de trabalho…",
       "select": "Criar tarefa",
       "cancel": "Cancelar",
-      "working": "Processando…"
+      "working": "Processando…",
+      "confirmOccupy": {
+        "title": "Ocupar “{{name}}”?",
+        "body": "Depois de ocupado, outras pessoas não poderão usar este espaço de trabalho remoto até você liberá-lo ou concluir a tarefa.",
+        "confirm": "Ocupar",
+        "cancel": "Cancelar",
+        "occupying": "Ocupando…"
+      }
     },
     "draft": {
       "location": "Espaço de trabalho remoto",

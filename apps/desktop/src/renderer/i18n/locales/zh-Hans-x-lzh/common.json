@@ -22556,7 +22556,14 @@
       "creatingWorkspace": "方立工作区…",
       "select": "新立差事",
       "cancel": "罢",
-      "working": "方理…"
+      "working": "方理…",
+      "confirmOccupy": {
+        "title": "占「{{name}}」乎？",
+        "body": "占之则他人不得用此远程工作区，待君释占或竟其差事。",
+        "confirm": "占之",
+        "cancel": "罢",
+        "occupying": "方占…"
+      }
     },
     "draft": {
       "location": "远程工作区",

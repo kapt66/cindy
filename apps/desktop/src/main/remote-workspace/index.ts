@@ -80,6 +80,7 @@ import {
 import {
   createPsbWorkspaceLock,
   psbWorkspaceLockFailure,
+  type PsbWorkspaceLockEnsureSessionOptions,
   type PsbWorkspaceLockResult,
 } from './workspaceLock.js';
 
@@ -145,10 +146,15 @@ export interface PsbRemoteService {
   /**
    * 发送前的占用闸门（按 PSB 会话定位工作区）。
    *
-   * 读一次 PSB 会话行（自带工作区快照）判断占用；乐观有效期内命中缓存则零网络请求。
+   * 缺省读一次 PSB 会话行（自带工作区快照）判断占用；乐观有效期内命中缓存则零网络请求。
+   * **发送路径传 `{ requireAuthoritative: true }`**：跳过乐观缓存，每条消息都读一次权威事实
+   * （2026-11-27 用户口径：工作区可能被交接，不能凭本地缓存以为还是我的）。
    * 会话已读不到时按 `PSB_NOT_FOUND` 抛出（调用方先走重建，再重试本轮）。
    */
-  ensureWorkspaceLockedForSession(psbSessionId: string): Promise<void>;
+  ensureWorkspaceLockedForSession(
+    psbSessionId: string,
+    options?: PsbWorkspaceLockEnsureSessionOptions,
+  ): Promise<void>;
   createSession(input: PsbCreateSessionRequest): Promise<PsbCreateSessionResult>;
   /**
    * 订阅某工作区的串流（PSB 0.1.172 工作区级服务接口）。
@@ -343,9 +349,14 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     throwIfWorkspaceLockFailed(await workspaceLock.ensure(workspaceId));
   }
 
-  /** 发送前闸门：乐观有效期内零请求；否则读一次会话行再判断。 */
-  async function ensureWorkspaceLockedForSession(psbSessionId: string): Promise<void> {
-    throwIfWorkspaceLockFailed(await workspaceLock.ensureForSession(psbSessionId));
+  /**
+   * 发送前闸门：缺省乐观有效期内零请求；发送路径（`requireAuthoritative`）每次都读权威事实。
+   */
+  async function ensureWorkspaceLockedForSession(
+    psbSessionId: string,
+    options?: PsbWorkspaceLockEnsureSessionOptions,
+  ): Promise<void> {
+    throwIfWorkspaceLockFailed(await workspaceLock.ensureForSession(psbSessionId, options));
   }
 
   const viewer = createPsbStreamViewer({

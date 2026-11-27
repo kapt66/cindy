@@ -22558,7 +22558,14 @@
       "creatingWorkspace": "正在新建工作区…",
       "select": "新建任务",
       "cancel": "取消",
-      "working": "正在处理…"
+      "working": "正在处理…",
+      "confirmOccupy": {
+        "title": "占用「{{name}}」？",
+        "body": "占用后其他人无法使用这个远程工作区，直到你释放占用或结束任务。",
+        "confirm": "占用",
+        "cancel": "取消",
+        "occupying": "占用中…"
+      }
     },
     "draft": {
       "location": "远程工作区",

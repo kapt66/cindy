@@ -10,7 +10,8 @@
  *   `docs/dev-rules/psb-remote-session-transport.md` §12 与
  *   `docs/product-rules/psb-remote-workspace-sessions.md`「写前锁定」。
  * - 现有覆盖缺口：`sessionRebind.test.ts` 只覆盖「工作区被别人占就不重建」的发送前重建分支，
- *   没有覆盖「未占用时自动占用」「乐观缓存不重复请求」「失败不缓存」「失败 → PSB_* 文案码」。
+ *   没有覆盖「未占用时自动占用」「失败不缓存」「失败 → PSB_* 文案码」，也没有覆盖发送路径的
+ *   权威校验（不吃 1.5s 乐观缓存、权威读不是 mine 时清缓存、读失败不 fail-open）。
  * - 最小失败输入：① 列表里工作区 `occupancy.occupied=false`（应自动占用一次）；
  *   ② `occupy` 抛 `WORKSPACE_OCCUPIED_BY_OTHER`（被抢先）；③ `listWorkspaces` 抛网络错误；
  *   ④ 同一工作区 1.5s 内连续两次 ensure（应只有一次请求）。
@@ -78,6 +79,29 @@ interface HarnessOptions {
   now?: () => number;
 }
 
+/** 一条 PSB 会话行 + 工作区快照（`ensureForSession` 的读口返回值）。 */
+function sessionStatus(
+  psbSessionId: string,
+  workspace: PsbRemoteWorkspace,
+): PsbSessionStatusResult {
+  return {
+    session: {
+      id: psbSessionId,
+      workspaceId: workspace.id,
+      clientId: 'client-pack',
+      title: '用户任务',
+      agentKind: 'pi',
+      status: 'running',
+      statusMessage: null,
+      createdAt: '2026-11-26T01:00:00.000Z',
+      updatedAt: '2026-11-26T01:00:00.000Z',
+      createdBy: { personId: '7', personName: '我', source: 'cindy' },
+      webUrl: null,
+    },
+    workspace,
+  };
+}
+
 function createHarness(options: HarnessOptions = {}) {
   const counts = { list: 0, occupy: 0, session: 0 };
   let clock = 0;
@@ -98,22 +122,7 @@ function createHarness(options: HarnessOptions = {}) {
       readSession: async (psbSessionId) => {
         counts.session += 1;
         if (options.session) return options.session(psbSessionId);
-        return {
-          session: {
-            id: psbSessionId,
-            workspaceId: WORKSPACE_ID,
-            clientId: 'client-pack',
-            title: '用户任务',
-            agentKind: 'pi',
-            status: 'running',
-            statusMessage: null,
-            createdAt: '2026-11-26T01:00:00.000Z',
-            updatedAt: '2026-11-26T01:00:00.000Z',
-            createdBy: { personId: '7', personName: '我', source: 'cindy' },
-            webUrl: null,
-          },
-          workspace: workspaceRow(),
-        };
+        return sessionStatus(psbSessionId, workspaceRow());
       },
     },
     { now: options.now ?? (() => clock) },
@@ -317,22 +326,7 @@ describe('占用闸门：发送前（按 PSB 会话）', () => {
 
   it('会话行显示工作区已被他人占用 → occupied-by-other（人名来自快照），不尝试占用', async () => {
     const harness = createHarness({
-      session: async (psbSessionId) => ({
-        session: {
-          id: psbSessionId,
-          workspaceId: WORKSPACE_ID,
-          clientId: 'client-pack',
-          title: '用户任务',
-          agentKind: 'pi',
-          status: 'running',
-          statusMessage: null,
-          createdAt: '2026-11-26T01:00:00.000Z',
-          updatedAt: '2026-11-26T01:00:00.000Z',
-          createdBy: { personId: '7', personName: '我', source: 'cindy' },
-          webUrl: null,
-        },
-        workspace: occupiedByOther('李四'),
-      }),
+      session: async (psbSessionId) => sessionStatus(psbSessionId, occupiedByOther('李四')),
     });
 
     expect(await harness.lock.ensureForSession('psb-1')).toEqual({
@@ -353,6 +347,110 @@ describe('占用闸门：发送前（按 PSB 会话）', () => {
     await expect(harness.lock.ensureForSession('psb-1')).rejects.toMatchObject({
       failure: { code: 'NOT_FOUND' },
     });
+  });
+});
+
+/**
+ * 发送路径的**权威校验**（2026-11-27 用户复测口径）。
+ *
+ * 测试价值
+ * - 生产入口与可观察结果：`createPsbWorkspaceLock(ports).ensureForSession(id, { requireAuthoritative: true })`
+ *   是发送前闸门（`makerSendTransaction` → `register.preparePsbWorkspaceLock`）的唯一判定入口。
+ *   用户可观察结果：会话创建后工作区被交接给别人时，**下一条消息**被拒（不发送、给可行动文案）；
+ *   被交接回空闲时自动占用后照常发送；PSB 读不到时也是失败而不是「无法确认就继续」。
+ * - Bug／规则依据：旧实现先在 `register` 用 10s 会话快照「在线 + ready + byMe」零请求放行、读不到
+ *   fail-open；`ensureForSession` 又有 1.5s 乐观缓存——两条路径都可能让「别人的工作区」继续收到本端
+ *   写入。用户口径（2026-11-27 人工复测）：每条消息发送前都必须确认当前仍由我占用。
+ * - 现有覆盖缺口：原用例只覆盖「TTL 内零请求」这条**非权威**语义，没有任何用例钉「发送路径不吃
+ *   缓存」「权威读不是 mine 时清缓存」。
+ * - 最小失败输入：① 缓存过 mine、权威读改回 other；② 权威读抛 `PSB_UNREACHABLE`；③ 权威读 free。
+ * - tier：unit（进程内内存 fake，无网络 / 无 Electron）。
+ */
+describe('占用闸门：发送路径的权威校验（requireAuthoritative）', () => {
+  it('权威路径每次都读 PSB 会话行，乐观缓存不再是放行依据', async () => {
+    const harness = createHarness({
+      session: async (psbSessionId) => sessionStatus(psbSessionId, occupiedByMe()),
+    });
+
+    expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: true,
+    });
+    // 第二条消息同样读一次（连续两条 = 两次读取），而不是命中 1.5s 缓存零请求。
+    expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: true,
+    });
+    expect(harness.counts).toEqual({ list: 0, occupy: 0, session: 2 });
+
+    // 对照：不带该选项的既有调用方仍走 TTL（1 次读取后零请求），差异是可观察的。
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({ ok: true });
+    expect(harness.counts.session).toBe(2);
+  });
+
+  it('缓存过「是我的」但权威读为他人占用 → 拒绝，并清掉乐观缓存（下一条不可拿旧态放行）', async () => {
+    let workspace = occupiedByMe();
+    const harness = createHarness({
+      session: async (psbSessionId) => sessionStatus(psbSessionId, workspace),
+    });
+
+    // 普通路径（重绑 / 启动串流等）先把「是我的」记进 1.5s 乐观缓存。
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({ ok: true });
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({ ok: true });
+    expect(harness.counts.session).toBe(1);
+
+    // 工作区在 PSB 侧被交接给别人（用户重新点「新建任务」/ 网页解锁后被占用）。
+    workspace = occupiedByOther('李四');
+    expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: false,
+      reason: 'occupied-by-other',
+      personName: '李四',
+    });
+    // 权威读不是 mine → 缓存已清：非权威调用方也必须重新读，而不是零请求放行。
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({
+      ok: false,
+      reason: 'occupied-by-other',
+      personName: '李四',
+    });
+    expect(harness.counts.session).toBe(3);
+  });
+
+  it('权威读为无人占用（被交接回空闲）→ 自动占用后放行；下一次已是我则只读不占', async () => {
+    let workspace = workspaceRow();
+    const harness = createHarness({
+      session: async (psbSessionId) => sessionStatus(psbSessionId, workspace),
+      occupy: async () => {
+        workspace = occupiedByMe();
+        return workspace;
+      },
+    });
+
+    expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: true,
+    });
+    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 1 });
+
+    expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: true,
+    });
+    // 仍然读一次权威事实，但已是我占用 → 不再 `occupy`。
+    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 2 });
+  });
+
+  it('权威读失败（网络 / 鉴权）→ 抛出，不 fail-open、也不留成功缓存', async () => {
+    const harness = createHarness({
+      session: async () => {
+        throw psbFailure('PSB_UNREACHABLE', '连不上 PSB');
+      },
+    });
+
+    // 旧实现在这里 fail-open 继续发送；现在必须让这一轮拒绝（无法确认 ≠ 可以写）。
+    await expect(
+      harness.lock.ensureForSession('psb-1', { requireAuthoritative: true }),
+    ).rejects.toMatchObject({ failure: { code: 'PSB_UNREACHABLE' } });
+    await expect(
+      harness.lock.ensureForSession('psb-1', { requireAuthoritative: true }),
+    ).rejects.toMatchObject({ failure: { code: 'PSB_UNREACHABLE' } });
+    // 失败不缓存：每次都要重新读（两条消息 = 两次读取）。
+    expect(harness.counts).toEqual({ list: 0, occupy: 0, session: 2 });
   });
 });
 

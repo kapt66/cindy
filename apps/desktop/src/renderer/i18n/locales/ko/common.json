@@ -22558,7 +22558,14 @@
       "creatingWorkspace": "워크스페이스를 만드는 중…",
       "select": "작업 만들기",
       "cancel": "취소",
-      "working": "처리 중…"
+      "working": "처리 중…",
+      "confirmOccupy": {
+        "title": "‘{{name}}’을(를) 점유할까요?",
+        "body": "점유하면 해제하거나 작업을 끝낼 때까지 다른 사람이 이 원격 워크스페이스를 사용할 수 없습니다.",
+        "confirm": "점유",
+        "cancel": "취소",
+        "occupying": "점유 중…"
+      }
     },
     "draft": {
       "location": "원격 워크스페이스",

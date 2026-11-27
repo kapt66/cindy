@@ -19404,32 +19404,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       }
       return psbSessionRebind.prepareForSend(sessionId);
     },
-    // psb: 发送前的占用闸门（PSB 服务端拒绝未锁定者的写入）。非 psb 会话在这里直接返回，
-    // 不发任何请求；psb 会话按「缓存 + 足够新的 PSB 会话快照」控制请求次数。
+    // psb: **每条用户消息**发送前的占用闸门（PSB 服务端拒绝未锁定者的写入）。非 psb 会话在这里
+    // 直接返回，不发任何请求。
+    //
+    // 口径（2026-11-27 用户复测）：会话创建后工作区可能被交接给别人，所以**不能**用 10s 会话快照
+    // 或 1.5s 乐观缓存判断「还是我的」，也**不允许 fail-open**（读不到就继续发送）。每次发送都走
+    // `requireAuthoritative` 的权威校验：读一次 PSB 会话行 + 一次工作区列表（2 次 HTTP），
+    //   - 仍由我占用 → 放行；
+    //   - 此刻无人占用（被交接回空闲）→ 自动占用成功后放行；
+    //   - 被他人占用 / 离线 / 未就绪 → 可行动 `PSB_*` 失败，本轮不发送；
+    //   - 读不到 / 网络 / 鉴权失败 → 同样不发送（无法确认 ≠ 可以写）。
     preparePsbWorkspaceLock: async (sessionId) => {
       const remoteHostId = maker.getSession(sessionId)?.remoteHostId
         ?? (await readSessionRemoteHostIdCached(sessionId));
       const psbSessionId = parsePsbRemoteHostId(remoteHostId ?? null);
       if (!psbSessionId) return;
-      const store = getPsbSessionStatusStore();
-      const lookup = await store?.read(psbSessionId);
-      if (lookup?.ok) {
-        // 快照足够新、工作区在线且**已由我占用** → 闸门已满足，零额外请求（连续对话的常见路径）。
-        const workspace = lookup.snapshot.status.workspace;
-        if (workspace.clientOnline && workspace.state === 'ready' && workspace.occupancy.byMe) {
-          return;
-        }
-      } else if (lookup && lookup.kind === 'unavailable') {
-        // fail-open：控制面读不到时沿用「本轮继续」口径（PSB 服务端仍是最终裁判，
-        // 未锁定者的写入会被它拒绝并给出 PSB_* 码）。
-        log.warn('psb workspace lock: session snapshot unavailable, continuing this send', {
-          sessionId,
-          psbSessionId,
-        });
-        return;
-      }
       try {
-        await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId);
+        await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId, {
+          requireAuthoritative: true,
+        });
       } catch (error) {
         // 跨 IPC 的 `ipcMain.handle` 失败只保留 message（`code` 字段会丢）：不在这一层把
         // `PsbClientError` 收敛成带 `PSB_` 码的 IpcError，渲染层就只剩一段没有码的字符串，

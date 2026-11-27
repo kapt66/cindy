@@ -1,5 +1,5 @@
 /**
- * 工作区选择行的**键盘与 ARIA**（弹窗 `radiogroup` 与草稿页下拉 `listbox` 共用一份实现）。
+ * 工作区选择行的**键盘与 ARIA**（弹窗与草稿页下拉共用一份实现）。
  *
  * 为什么需要共享：两个入口原来是手写的 —— 弹窗只有 `role=radiogroup/radio` 却没有方向键与
  * roving tabindex，草稿页下拉是 `role=listbox/option` 却把焦点留在容器里、方向键完全没处理，
@@ -7,9 +7,12 @@
  *
  *   - Tab 只落在**一个**行上（roving tabindex：选中项，否则第一个可用项），Tab 进出列表一次；
  *   - ↑/↓/←/→ 在**可用行**之间移动（禁用/不可用行跳过，两端环绕），Home/End 到首/尾；
- *   - `radiogroup` 里移动焦点 = 改变选中（radio 惯例，选中不触发占用；占用仍由主按钮确认）；
- *     `listbox` 里移动焦点只移动焦点，Enter/Space 才激活（下拉里选中 = 占用，不能让方向键
- *     顺手把工作区占了）。
+ *   - `radiogroup` 里移动焦点 = 改变选中（radio 惯例，选中不触发占用）；
+ *     `listbox` 里移动焦点只移动焦点，Enter/Space 才激活。
+ *
+ * 2026-11-27 起**两个容器都用 `listbox`**：行激活会先弹「占用确认」并真的占用工作区，
+ * 键盘浏览时焦点跟随选中（radio 惯例）会反复弹确认框/占用行，不符合「先看再决定」。
+ * 行本身仍是原生 `<button>`，Enter/Space 激活由浏览器保证。
  *
  * 行本身是不可用 `disabled` 的（无法聚焦、Tab 跳过）；**在途忙** 的行由容器改用
  * `aria-disabled`（仍可聚焦），这样开始占用的一刹那焦点不会丢到 body。
@@ -20,7 +23,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 're
 export type PsbWorkspaceListRole = 'radiogroup' | 'listbox';
 
 export interface PsbWorkspaceListKeyboardOptions {
-  /** 容器 ARIA 角色（`radiogroup` = 弹窗，`listbox` = 草稿页下拉）。 */
+  /** 容器 ARIA 角色（当前两个选择器容器都用 `listbox`；`radiogroup` 保留给聚焦即选中的场景）。 */
   readonly role: PsbWorkspaceListRole;
   /** 容器可访问名（已本地化）。 */
   readonly ariaLabel: string;

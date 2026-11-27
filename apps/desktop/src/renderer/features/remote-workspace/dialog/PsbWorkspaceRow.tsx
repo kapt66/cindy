@@ -89,6 +89,8 @@ export function PsbWorkspaceRow({
       : null;
   const lockLabel =
     health.lock === 'mine' ? formatWorkspaceOccupancy(workspace.occupancy, t) : null;
+  // 「占用中」只在真正发过占用请求、等 PSB 回包的窗口里出现（行上是 spinner）。
+  const occupyingLabel = occupying ? t('remoteWorkspace.dialog.confirmOccupy.occupying') : null;
 
   return (
     <button
@@ -99,8 +101,9 @@ export function PsbWorkspaceRow({
       data-available={health.canStartSession ? 'true' : 'false'}
       data-lock-state={health.lock}
       data-occupying={occupying ? 'true' : undefined}
-      title={hoverHint ?? undefined}
+      title={hoverHint ?? occupyingLabel ?? undefined}
       disabled={rowDisabled}
+      aria-busy={occupying || undefined}
       aria-disabled={rowDisabled || busy || occupying ? true : undefined}
       onClick={() => {
         if (rowDisabled || busy || occupying) return;

@@ -24,18 +24,23 @@
  * - `ensureForSession()` 不命中缓存 → **2 次 HTTP**：PSB 没有「读单个工作区」路由，读会话行
  *   （`GET …/sessions/:id`）拿到 `workspaceId` 之后必须再读一次列表才能拿到占用/在线/usable
  *   ——会话行只带工作区 id，不带工作区快照（`psbClient.getSession` 的实现里写明了这一点）；
- * - 命中乐观有效期 → **0 次**。
+ * - 命中乐观有效期 → **0 次**（仅**非权威**调用方；发送闸门不适用，见下条）。
  *
  * 调用方已经手上有新鲜工作区行时（例如管理页刚读的列表），用 `snapshot` 传进来即可把
  * 上面两次请求都省掉。
  *
- * ## 缓存与新鲜度（为什么不会每条消息多打一次 HTTP）
+ * ## 缓存与新鲜度（权威校验与 TTL 是两套口径）
  *
  * 只有**成功锁定**会被记住（`PSB_WORKSPACE_LOCK_TTL_MS`，默认 1.5s）；失败一律不缓存。
- * 发送路径先查「本会话的工作区是否在 TTL 内仍由我锁定」，命中就零网络请求；不命中则读一次
- * PSB 会话行 + 一次工作区列表（共 2 次 HTTP，原因见「读口」）再判断。取舍是：**最多 1.5s 的
- * 乐观窗口**——期间若占用被别人拿走，PSB 服务端的闸门才是最终裁判，我们不会替它放行写操作；
- * 反过来，把 TTL 降到 0 等于每条消息多两次 PSB 请求，在连续对话里是明显的退化。
+ *
+ * - **发送闸门必须权威**（2026-11-27 用户口径）：会话创建后工作区可能被交接给别人，所以
+ *   **每条用户消息发送前**都按 `requireAuthoritative: true` 读一次 PSB 会话行 + 一次工作区列表
+ *   （共 2 次 HTTP，原因见「读口」）再判断；无人占用则顺带自动占用。**不允许**用本地快照 /
+ *   乐观缓存替代这次读取——用户要的是「发送前我确实仍占着这个工作区」，不是「1.5s 前是」。
+ * - **其它调用方**保留乐观有效期：工作区级 `ensure()`（发送前重建的建会话、启动串流、管理页占用
+ *   等既有路径）与 `ensureForSession()` 的**缺省**分支都按 TTL 命中零请求（生产上
+ *   `ensureForSession` 目前只有发送闸门调用，且固定传 `requireAuthoritative`）。
+ * - 权威读取失败（网络 / 鉴权）**原样抛**，发送路径据此**不发送**：无法确认就不是「可以写」。
  */
 
 import { createIpcError } from '../../shared/ipc-errors.js';
@@ -96,6 +101,17 @@ export interface PsbWorkspaceLockEnsureOptions {
   readonly snapshot?: PsbWorkspaceLockSnapshot | null;
 }
 
+export interface PsbWorkspaceLockEnsureSessionOptions {
+  /**
+   * `true` = **跳过**乐观缓存，每次都读一次权威事实（PSB 会话行 + 工作区行）。
+   *
+   * 发送路径（`preparePsbWorkspaceLock`）固定用它：用户口径是「**每条消息发送前**都必须确认
+   * 工作区此刻由我占用」，会话创建后被交接出去时不能凭本地缓存继续以为还是我的。
+   * 其它调用方省略该字段，保留 `PSB_WORKSPACE_LOCK_TTL_MS` 的乐观有效期。
+   */
+  readonly requireAuthoritative?: boolean;
+}
+
 export interface PsbWorkspaceLock {
   /**
    * 确保工作区由当前身份占用；必要时自动占用。
@@ -109,12 +125,18 @@ export interface PsbWorkspaceLock {
   /**
    * 发送前闸门（按 PSB 会话定位工作区）。
    *
-   * 乐观有效期内命中「已知工作区 + 已确认锁定」→ 零请求放行；否则读一次会话行
-   * （`readSession`，自带工作区快照）再判断。**会话行读不到（404/403）按异常抛出**：
-   * 发送路径会先走发送前重建，重建后的新会话 id 再进来。
+   * - 缺省（**非权威**）：乐观有效期内命中「已知工作区 + 已确认锁定」→ 零请求放行；否则读一次
+   *    （`readSession`，自带工作区快照）再判断。保留给不走「每条消息权威校验」的调用方。
+   * - `requireAuthoritative: true`（**发送路径**）：跳过乐观缓存，每次都读一次会话行判定；
+   *   读完按事实更新缓存，读出的占用不是「由我占用」时先清掉本地乐观缓存。
+   *
+   * **会话行读不到（404/403）按异常抛出**：发送路径会先走发送前重建，重建后的新会话 id 再进来。
    */
-  ensureForSession(psbSessionId: string): Promise<PsbWorkspaceLockResult>;
-  /** 该工作区是否在乐观有效期内已被确认由我锁定（发送路径用它避开多余请求）。 */
+  ensureForSession(
+    psbSessionId: string,
+    options?: PsbWorkspaceLockEnsureSessionOptions,
+  ): Promise<PsbWorkspaceLockResult>;
+  /** 该工作区是否在乐观有效期内已被确认由我锁定（**非权威**发送路径用它避开多余请求）。 */
   isFresh(workspaceId: string): boolean;
   /** 占用状态被本地动作改变（占用 / 释放）后失效缓存。 */
   invalidate(workspaceId: string): void;
@@ -270,12 +292,15 @@ export function createPsbWorkspaceLock(
       const found = workspaces.find((entry) => entry.id === id) ?? null;
       return decideFrom(found, id);
     },
-    async ensureForSession(psbSessionId) {
+    async ensureForSession(psbSessionId, ensureOptions) {
       const sessionId = psbSessionId.trim();
       if (!sessionId) throw createIpcError('INVALID_PARAMS', 'psbSessionId is required');
-      // 乐观有效期内且知道工作区：零请求放行（连续发送不为每条消息多打一次 PSB）。
-      const known = sessionWorkspaceIds.get(sessionId) ?? null;
-      if (known && isFresh(known)) return { ok: true };
+      // 非权威调用方（发送前重建 / 启动串流等）：乐观有效期内且知道工作区 → 零请求放行。
+      // 发送路径（requireAuthoritative）跳过这一段，每次读权威事实。
+      if (ensureOptions?.requireAuthoritative !== true) {
+        const known = sessionWorkspaceIds.get(sessionId) ?? null;
+        if (known && isFresh(known)) return { ok: true };
+      }
       const readSession = ports.readSession;
       if (!readSession) {
         throw createIpcError(
@@ -283,9 +308,12 @@ export function createPsbWorkspaceLock(
           'the PSB workspace lock is missing its session reader (wiring bug)',
         );
       }
-      // 读一次 PSB 会话（+ 一次工作区列表，见端口注释）：它给出**足够新**的占用事实与工作区。
+      // 读一次 PSB 会话（+ 一次工作区列表，见端口注释）：它给出此刻的占用事实与工作区。
       const status = await readSession(sessionId);
       rememberSessionWorkspace(sessionId, status.workspace.id);
+      // 权威事实不是「由我占用」（无人占用 / 被他人占用 / 未就绪）→ 先清掉该工作区的乐观缓存，
+      // 否则非权威调用方会在 TTL 内继续拿「1.5s 前是我的」放行，交接后仍以为锁还在。
+      if (!status.workspace.occupancy.byMe) lockedUntil.delete(status.workspace.id);
       return decideFrom(status.workspace, status.workspace.id);
     },
     isFresh,

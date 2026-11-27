@@ -92,6 +92,24 @@ export function makeOccupiedByOtherWorkspace(
   });
 }
 
+/** 已被「我」占用、可以直接使用（不弹占用确认）的工作区行。 */
+export function makeOccupiedByMeWorkspace(
+  overrides: Partial<PsbRemoteWorkspace> = {},
+): PsbRemoteWorkspace {
+  return makePsbWorkspace({
+    occupancy: {
+      occupied: true,
+      byMe: true,
+      personId: 'me',
+      personName: '我',
+      occupiedAt: 1,
+    },
+    usable: true,
+    unusableReason: null,
+    ...overrides,
+  });
+}
+
 export function makePsbClient(overrides: Partial<PsbRemoteClient> = {}): PsbRemoteClient {
   return {
     id: 'client-1',

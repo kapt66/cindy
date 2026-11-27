@@ -58,6 +58,17 @@ import {
   type AgentSwitchSessionRow,
   type MakerSessionAgentSwitchHandlerDeps,
 } from '../sessionAgentSwitchHandler';
+// 发送前占用闸门的真实判据（`register.preparePsbWorkspaceLock` 的接线对象）：用 fake PSB 端口
+// 驱动权威校验，验证「每条消息都重新确认」在事务里真的生效。
+import {
+  createPsbWorkspaceLock,
+  psbWorkspaceLockFailure,
+} from '../../remote-workspace/workspaceLock';
+import {
+  psbIpcCodeForFailure,
+  type PsbRemoteFailure,
+  type PsbRemoteWorkspace,
+} from '../../../shared/psb-remote-workspace';
 
 function ordinaryUserMessage(content: string): { type: 'user'; content: string } {
   return { type: 'user', content };
@@ -5499,5 +5510,125 @@ describe('psb workspace lock before dispatch', () => {
     await createMakerSendTransaction(deps).sendToAgentAccepted('session-1', 'hello');
 
     expect(preparePsbWorkspaceLock).toHaveBeenCalledWith('session-1');
+  });
+
+  it('连续两条消息各过一次闸门 —— 每条都在派发前重新校验，不吃上一条的结果', async () => {
+    const preparePsbWorkspaceLock = vi.fn(async () => {});
+    const { deps, session } = createDeps({ preparePsbWorkspaceLock });
+    const transaction = createMakerSendTransaction(deps);
+
+    await transaction.sendToAgentAccepted('session-1', '第一条');
+    await transaction.sendToAgentAccepted('session-1', '第二条');
+
+    expect(preparePsbWorkspaceLock).toHaveBeenCalledTimes(2);
+    expect(session.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('权威读为他人占用 → 第二条不派发、不落库（上一条放行过也不例外）', async () => {
+    // 真实判据：fake PSB 的会话行先把工作区从「无人占用」自动占用成功，随后被交接给李四。
+    const WORKSPACE_ID = 'ws-saga2';
+    const workspace = (occupancy: PsbRemoteWorkspace['occupancy']): PsbRemoteWorkspace => ({
+      id: WORKSPACE_ID,
+      title: 'saga2_project',
+      clientId: 'client-pack',
+      clientName: '打包机',
+      clientOnline: true,
+      clientPlatform: 'win32',
+      state: 'ready',
+      templateKey: 'saga2',
+      templateTitle: 'Saga2',
+      directoryName: 'saga2_project-2',
+      clientPath: 'D:\\psb\\saga2_project-2',
+      occupancy,
+      usable: true,
+      unusableReason: null,
+      sessionCount: 0,
+      webUrl: null,
+      sessionsWebUrl: null,
+    });
+    let current = workspace({
+      occupied: false,
+      byMe: false,
+      personId: null,
+      personName: '',
+      occupiedAt: null,
+    });
+    const lock = createPsbWorkspaceLock({
+      listWorkspaces: async () => [current],
+      occupyWorkspace: async () => {
+        current = workspace({
+          occupied: true,
+          byMe: true,
+          personId: '7',
+          personName: '我',
+          occupiedAt: 1,
+        });
+        return { workspace: current, vcs: null };
+      },
+      readSession: async (psbSessionId) => ({
+        session: {
+          id: psbSessionId,
+          workspaceId: WORKSPACE_ID,
+          clientId: 'client-pack',
+          title: '用户任务',
+          agentKind: 'pi',
+          status: 'running',
+          statusMessage: null,
+          createdAt: '2026-11-27T01:00:00.000Z',
+          updatedAt: '2026-11-27T01:00:00.000Z',
+          createdBy: { personId: '7', personName: '我', source: 'cindy' },
+          webUrl: null,
+        },
+        workspace: current,
+      }),
+    });
+    const { deps, session } = createDeps({
+      // 与 `register.preparePsbWorkspaceLock` 同口径：每条消息按权威事实判定，失败抛可行动失败。
+      preparePsbWorkspaceLock: async () => {
+        const result = await lock.ensureForSession('psb-1', { requireAuthoritative: true });
+        const failure = psbWorkspaceLockFailure(result);
+        if (failure) throw failure;
+      },
+    });
+    const transaction = createMakerSendTransaction(deps);
+
+    await expect(
+      transaction.sendToAgentAccepted(
+        'session-1',
+        '第一条',
+        undefined,
+        { persistUserMessage: { clientId: 'input-1', content: '第一条' } },
+      ),
+    ).resolves.toMatchObject({ accepted: true });
+    expect(session.send).toHaveBeenCalledOnce();
+
+    // 工作区被交接给别人：下一条消息必须重新读 PSB，而不是拿上一条的放行结果。
+    current = workspace({
+      occupied: true,
+      byMe: false,
+      personId: '9',
+      personName: '李四',
+      occupiedAt: 2,
+    });
+    const rejection = await transaction
+      .sendToAgentAccepted(
+        'session-1',
+        '第二条',
+        undefined,
+        { persistUserMessage: { clientId: 'input-2', content: '第二条' } },
+      )
+      .then(
+        () => null,
+        (error: unknown) => error as { failure?: PsbRemoteFailure },
+      );
+
+    expect(rejection?.failure?.code).toBe('WORKSPACE_OCCUPIED_BY_OTHER');
+    // 跨 IPC 的落点：可行动失败保留 PSB 命名空间码（带占用人名供文案插值）。
+    expect(psbIpcCodeForFailure(rejection!.failure!)).toBe('PSB_WORKSPACE_OCCUPIED_BY_OTHER');
+    expect(rejection?.failure?.message).toBe('李四');
+    // 第二条既不派发也不落库：调用方（草稿 / 队列）保留内容供用户重试。
+    expect(session.send).toHaveBeenCalledOnce();
+    expect(deps.createDbMessage).toHaveBeenCalledOnce();
+    expect(deps.ensureRemoteReadyForSessionStart).toHaveBeenCalledOnce();
   });
 });

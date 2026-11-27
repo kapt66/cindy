@@ -22558,7 +22558,14 @@
       "creatingWorkspace": "ワークスペースを作成中…",
       "select": "タスクを作成",
       "cancel": "キャンセル",
-      "working": "処理中…"
+      "working": "処理中…",
+      "confirmOccupy": {
+        "title": "「{{name}}」を占有しますか？",
+        "body": "占有すると、解放するかタスクを終えるまで、他の人はこのリモートワークスペースを使えません。",
+        "confirm": "占有する",
+        "cancel": "キャンセル",
+        "occupying": "占有中…"
+      }
     },
     "draft": {
       "location": "リモートワークスペース",

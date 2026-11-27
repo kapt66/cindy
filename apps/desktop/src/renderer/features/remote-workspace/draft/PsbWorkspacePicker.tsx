@@ -11,11 +11,17 @@
  *   · 行 UI、状态徽标、键盘/ARIA、占用链路与失败文案和弹窗**共用同一份实现**
  *     （`PsbWorkspaceRow` / `WorkspaceStatusBadge` / `usePsbWorkspaceListKeyboard` /
  *     `usePsbWorkspaceSelection`），两个容器只留壳；不再有第二套逐行同构的代码。
- *   · 选中即占用（与弹窗一致）：占用失败给出可读原因且**不选中**（不能带着一个注定发不出
- *     消息的工作区进草稿）。
+ *   · 选中即占用（与弹窗一致）：无人占用时**先弹确认框**（占用会让别人用不了），确认并占用
+ *     成功才回调上层；已是 mine 的行直接选中、不弹确认；占用失败给出可读原因且**不选中**
+ *     （不能带着一个注定发不出消息的工作区进草稿）。
  *
  * 新建入口不在这里重复实现表单：直接回调上层打开弹窗的「新建工作区」页签（同一份客户端 /
  * 模板表单），成功后弹窗回调把新工作区落进同一个 `psbTarget`。
+ *
+ * ## 归还（2026-11-27）
+ *
+ * 下拉里确认占用成功后立刻 `onSelect` 交接（交接后由草稿 / 任务负责释放）；如果确认占用成功
+ * 却在交接前被卸载 / 关闭（父层收不到结果），hook 会把这次新占用的工作区归还并记账。
  *
  * ## 版本控制检查通知（CINDY-RW-10）
  *
@@ -26,9 +32,11 @@
  * 有内联通知时不再叠加通用错误条（同一事实）。
  */
 
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Plus, RefreshCw } from 'lucide-react';
 
+import { useConfirmDialog } from '@/components/ui/confirm-dialog-provider';
 import { ErrorNotice } from '@/components/ui/error-notice';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
@@ -42,6 +50,7 @@ import { WorkspaceVcsNoticeView } from '../vcs/WorkspaceVcsNoticeView';
 import { psbFailureDiagnosticText } from '../dialog/psbFailure';
 import { PsbWorkspaceRow } from '../dialog/PsbWorkspaceRow';
 import type { RemoteWorkspacePickerCreated } from '../dialog/psbSessionIdentity';
+import { psbWorkspaceRowDisplayName } from '../dialog/psbWorkspaceDisplay';
 import { usePsbWorkspaceListKeyboard } from '../dialog/usePsbWorkspaceListKeyboard';
 import { usePsbWorkspaceSelection } from '../dialog/usePsbWorkspaceSelection';
 
@@ -66,6 +75,7 @@ export function PsbWorkspacePicker({
   disabled = false,
 }: PsbWorkspacePickerProps) {
   const { t } = useTranslation();
+  const { confirm } = useConfirmDialog();
   const selection = usePsbWorkspaceSelection({ open, disabled });
 
   const selectedIndex = selection.workspaces.findIndex(
@@ -84,6 +94,42 @@ export function PsbWorkspacePicker({
     // 下拉里方向键只移动焦点：选中 = 占用，不能顺手把工作区占了。
     onMoveFocus: () => undefined,
   });
+
+  /**
+   * 激活一个工作区行：mine → 直接交接；无人占用 → 先确认，确认并占用成功才交接；
+   * 取消 / 占用失败 → 不选中、不回调（失败文案由 hook 的 actionError / VCS 通知展示）。
+   */
+  const handleActivate = useCallback(
+    async (workspace: PsbRemoteWorkspace) => {
+      // 待确认 / 忙时不再叠第二个确认框（双击行、回车连发都走这里）。
+      if (disabled || selection.pendingOccupy) return;
+      const outcome = selection.requestSelect(workspace);
+      if (outcome.kind === 'blocked') return;
+      if (outcome.kind === 'selected') {
+        const created = selection.handoffSelection();
+        if (created) onSelect(created);
+        return;
+      }
+      const name =
+        selection.labels.get(workspace.id)?.name ?? psbWorkspaceRowDisplayName(workspace);
+      const confirmed = await confirm({
+        title: t('remoteWorkspace.dialog.confirmOccupy.title', { name }),
+        description: t('remoteWorkspace.dialog.confirmOccupy.body'),
+        confirmText: t('remoteWorkspace.dialog.confirmOccupy.confirm'),
+        cancelText: t('remoteWorkspace.dialog.confirmOccupy.cancel'),
+      });
+      if (!confirmed) {
+        selection.cancelOccupy();
+        return;
+      }
+      const created = await selection.confirmOccupy();
+      if (!created) return;
+      // 交接成功 = 释放责任交给草稿 / 任务；父层会随之关闭下拉。
+      const handoff = selection.handoffSelection();
+      if (handoff) onSelect(handoff);
+    },
+    [confirm, disabled, onSelect, selection, t],
+  );
 
   return (
     <div data-testid="psb-workspace-picker" className="flex flex-col">
@@ -160,10 +206,7 @@ export function PsbWorkspacePicker({
             onActivate={() => {
               if (disabled) return;
               keyboard.noteActivated(index);
-              void selection.occupy(workspace).then((created) => {
-                if (!created) return;
-                onSelect(created);
-              });
+              void handleActivate(workspace);
             }}
           />
         ))}

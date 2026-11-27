@@ -238,6 +238,12 @@ describe('PSB 远程工作区 IPC 接线', () => {
     );
     expect(gateBlock).toContain('if (isIpcError(error)) throw error;');
     expect(gateBlock).toContain('psbIpcCodeForFailure(failure) ?? \'INTERNAL\'');
+    // 2026-11-27 用户复测：每条消息都必须权威校验（工作区可能已被交接），
+    // 发送闸门不得再走 10s 会话快照快路径、也不得 fail-open（读不到就继续发送）。
+    expect(gateBlock).toContain('requireAuthoritative: true');
+    expect(gateBlock).not.toContain('getPsbSessionStatusStore');
+    expect(gateBlock).not.toContain('store?.read');
+    expect(gateBlock).not.toContain('clientOnline');
   });
 
   it('管理页串流多窗口：引用计数账本与帧定向投递接线在位', () => {
@@ -307,11 +313,14 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(lockCall).toBeLessThan(remoteReady);
 
     // 4) 接线：register 里的发送前闸门与发送前重建都走同一个 PSB 服务（重建的建会话因此同样
-    //    被 createSession 的闸门覆盖，不另开一条绕过路径）。
+    //    被 createSession 的闸门覆盖，不另开一条绕过路径）。发送闸门固定要权威校验：
+    //    `requireAuthoritative: true` 是「每条消息都读 PSB」的唯一开关，缺了它会静默退回
+    //    乐观缓存放行（交接后仍以为锁还在）。
     expect(registerSource, 'register 未接线发送前占用闸门').toContain(
       'preparePsbWorkspaceLock: async (sessionId) =>',
     );
-    expect(registerSource).toContain('ensureWorkspaceLockedForSession(psbSessionId)');
+    expect(registerSource).toContain('ensureWorkspaceLockedForSession(psbSessionId, {');
+    expect(registerSource).toContain('requireAuthoritative: true');
     expect(registerSource, '重绑建会话未走带闸门的 PSB 服务').toContain(
       'getPsbRemoteService().createSession(input)',
     );

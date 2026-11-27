@@ -694,7 +694,7 @@ export function FolderPickerPopover({
           <MekaRemoteSessionPicker open={open} onSelect={onSelectRemoteSession} />
         ) : null}
 
-        {/* 远程工作区渠道：项目胶囊 = PSB 工作区下拉（选中即占用，失败不选中）+ 新建入口。 */}
+        {/* 远程工作区渠道：项目胶囊 = PSB 工作区下拉（选定即占用，无人占用先确认、失败不选中）+ 新建入口。 */}
         {isProjectPicker && psbRemoteOnly ? (
           <PsbWorkspacePicker
             open={open}

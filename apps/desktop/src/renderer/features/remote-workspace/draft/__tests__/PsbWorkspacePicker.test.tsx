@@ -2,29 +2,35 @@
 /**
  * 测试价值
  * - 生产入口与可观察结果：真实渲染 `PsbWorkspacePicker`（草稿页位置渠道「远程工作区」的项目
- *   胶囊内容），通过 `window.electronAPI.psbRemote` 注入 PSB 桥，断言：可用行选中时**先占用**
- *   再回传工作区级载荷；不可用行（他人占用/离线）禁用、原因进 tooltip、占用表达不重复三遍；
+ *   胶囊内容），通过 `window.electronAPI.psbRemote` 注入 PSB 桥，并挂**真实的**
+ *   `ConfirmDialogProvider`（占用确认复用现有确认弹窗能力），断言：无人占用行点击**先弹确认**、
+ *   取消不占用不回调、确认后占用一次并回传工作区级载荷；**mine 行直接交接、不弹确认、
+ *   不调用 occupy**；不可用行（他人占用 / 离线）禁用、原因进 tooltip、占用表达不重复三遍；
  *   占用失败**不选中**且错误带占用人名；「新建远程工作区」入口回调上层；上层传 `disabled`
  *   （发送 / 目录恢复在途）时行与新建入口都点不动；主标题是**工作区名称**（缺名才回退机器-短 id）。
  * - 与弹窗共用同一份实现后的边界：
- *   ① **listbox 键盘**：方向键只移动焦点（不触发占用），Enter/Space 才激活；
+ *   ① **listbox 键盘**：方向键只移动焦点（既不触发占用也不弹确认），Enter/Space 才激活；
  *   ② **忙不丢焦点**：占用在途的行改用 `aria-disabled`（不是原生 disabled），焦点留在行上；
  *   ③ **卸载即放弃**：下拉在占用在途时被卸载，迟到的成功会被 `releaseWorkspace` 还回去
- *      （占用无 TTL，不能留下没有 UI 主人的锁）。
- * - Bug／规则依据：产品口径 2026-11-25（远程工作区 = 位置渠道；选中即占用，失败不留在草稿里）
- *   + docs/product-rules/psb-remote-workspace-sessions.md §2.3/§2.5；VCS 场景见 §2.7。
+ *      （占用无 TTL，不能留下没有 UI 主人的锁）；交接成功（onSelect 已回调）则不释放。
+ * - Bug／规则依据：产品口径 2026-11-27（工作区列表按占用状态区分选择流程：无人占用先确认占用、
+ *   别人占用不可选、mine 直接可选）；产品 §2.3（远程工作区 = 位置渠道；选中即占用，失败不留在
+ *   草稿里）+ §2.5（占用无 TTL、放弃选择必须归还）；VCS 场景见 §2.7。
  * - 现有覆盖缺口：草稿页路由太大不能挂载，工作区下拉是草稿页唯一的换工作区入口。
- * - 最小失败输入：省略 `occupyWorkspace` 直接回传（用户带着未占用工作区进草稿）；占用失败仍
- *   回调（注定发不出消息的草稿）；方向键顺手触发占用（键盘用户误占工作区）。
+ * - 最小失败输入：无人占用行不确认就占用；mine 行还弹确认/再 occupy 一次；取消后仍回调
+ *   （用户带着未占用工作区进草稿）；占用失败仍回调（注定发不出消息的草稿）；卸载后不释放；
+ *   方向键顺手触发占用。
  * - tier：unit（jsdom + 内存 fake bridge，无网络/进程）。
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmDialogProvider } from '@/components/ui/confirm-dialog-provider';
 import type { PsbOccupyWorkspaceResult } from '../../../../../shared/psb-remote-workspace';
 import {
   deferred,
   installPsbBridge,
   makeLegacyVcsNotice,
+  makeOccupiedByMeWorkspace,
   makeOccupiedByOtherWorkspace,
   makePsbWorkspace,
   occupiedByMeResult,
@@ -45,19 +51,30 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+const CONFIRM_TITLE_KEY = 'remoteWorkspace.dialog.confirmOccupy.title';
+const CONFIRM_CONFIRM_KEY = 'remoteWorkspace.dialog.confirmOccupy.confirm';
+const CONFIRM_CANCEL_KEY = 'remoteWorkspace.dialog.confirmOccupy.cancel';
+
 function renderPicker(overrides: Partial<Parameters<typeof PsbWorkspacePicker>[0]> = {}) {
   const onSelect = vi.fn();
   const onCreate = vi.fn();
   const utils = render(
-    <PsbWorkspacePicker
-      open
-      selectedWorkspaceId={null}
-      onSelect={onSelect}
-      onCreate={onCreate}
-      {...overrides}
-    />,
+    <ConfirmDialogProvider>
+      <PsbWorkspacePicker
+        open
+        selectedWorkspaceId={null}
+        onSelect={onSelect}
+        onCreate={onCreate}
+        {...overrides}
+      />
+    </ConfirmDialogProvider>,
   );
   return { onSelect, onCreate, ...utils };
+}
+
+async function acceptOccupyPrompt() {
+  const dialog = await screen.findByRole('alertdialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: CONFIRM_CONFIRM_KEY }));
 }
 
 beforeEach(() => {
@@ -70,7 +87,7 @@ afterEach(() => {
 });
 
 describe('PsbWorkspacePicker', () => {
-  it('lists workspaces, then occupies the picked one before handing back workspace-level payload', async () => {
+  it('无人占用：点击先弹占用确认，确认后占用一次并回传工作区级载荷', async () => {
     const workspace = makePsbWorkspace({});
     const bridge = installPsbBridge({
       listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
@@ -80,9 +97,15 @@ describe('PsbWorkspacePicker', () => {
     const row = await screen.findByTestId('psb-picker-workspace-row-workspace-1');
     // 当前选中的工作区行显示选中态（渠道切换后用户能确认当前工作区）。
     expect(row.getAttribute('aria-selected')).toBe('true');
+
     fireEvent.click(row);
+    const prompt = await screen.findByRole('alertdialog');
+    expect(within(prompt).getByText(`${CONFIRM_TITLE_KEY}#SAGA2 设计`)).toBeTruthy();
+    expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.click(within(prompt).getByRole('button', { name: CONFIRM_CONFIRM_KEY }));
     await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
-    expect(bridge.occupyWorkspace).toHaveBeenCalledWith({ workspaceId: 'workspace-1' });
+    expect(bridge.occupyWorkspace).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace-1' });
     // 0.1.180：占用成功可能带 advisory（检出脏）→ 兜底读一次（推送已覆盖时幂等）。
     await waitFor(() =>
       expect(bridge.workspaceVcsNotice).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
@@ -97,8 +120,42 @@ describe('PsbWorkspacePicker', () => {
     });
   });
 
+  it('取消占用确认：不发 occupy、不回调、不选中', async () => {
+    const workspace = makePsbWorkspace({});
+    const bridge = installPsbBridge({
+      listWorkspaces: vi.fn(async () => ({ workspaces: [workspace] })),
+      occupyWorkspace: vi.fn(async () => occupiedByMeResult(workspace)),
+    });
+    const { onSelect } = renderPicker();
+    fireEvent.click(await screen.findByTestId('psb-picker-workspace-row-workspace-1'));
+    const prompt = await screen.findByRole('alertdialog');
+    fireEvent.click(within(prompt).getByRole('button', { name: CONFIRM_CANCEL_KEY }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('mine 行直接交接：不弹占用确认、不调用 occupy', async () => {
+    const mine = makeOccupiedByMeWorkspace({});
+    const bridge = installPsbBridge({
+      listWorkspaces: vi.fn(async () => ({ workspaces: [mine] })),
+    });
+    const { onSelect } = renderPicker();
+    fireEvent.click(await screen.findByTestId('psb-picker-workspace-row-workspace-1'));
+    await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith({
+      workspaceId: 'workspace-1',
+      clientId: 'client-1',
+      clientName: '设计机-01',
+      workspaceTitle: 'SAGA2 设计',
+      directoryName: 'saga2_design',
+    });
+  });
+
   it('keeps unavailable workspaces visible but disabled, with the reason in the row tooltip', async () => {
-    installPsbBridge({
+    const bridge = installPsbBridge({
       listWorkspaces: vi.fn(async () => ({
         workspaces: [
           makeOccupiedByOtherWorkspace(),
@@ -112,7 +169,7 @@ describe('PsbWorkspacePicker', () => {
       })),
     });
 
-    renderPicker();
+    const { onSelect } = renderPicker();
     const other = await screen.findByTestId('psb-picker-workspace-row-workspace-other');
     expect((other as HTMLButtonElement).disabled).toBe(true);
     expect(other.getAttribute('data-available')).toBe('false');
@@ -124,6 +181,12 @@ describe('PsbWorkspacePicker', () => {
     const offline = screen.getByTestId('psb-picker-workspace-row-workspace-offline');
     expect((offline as HTMLButtonElement).disabled).toBe(true);
     expect(offline.textContent).toContain('remoteWorkspace.badge.offline');
+
+    fireEvent.click(other);
+    fireEvent.click(offline);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it('does not select anything when occupying is rejected (shows readable error with occupier)', async () => {
@@ -137,6 +200,7 @@ describe('PsbWorkspacePicker', () => {
 
     const { onSelect } = renderPicker();
     fireEvent.click(await screen.findByTestId('psb-picker-workspace-row-workspace-1'));
+    await acceptOccupyPrompt();
 
     await waitFor(() => expect(bridge.occupyWorkspace).toHaveBeenCalledTimes(1));
     expect(onSelect).not.toHaveBeenCalled();
@@ -164,6 +228,7 @@ describe('PsbWorkspacePicker', () => {
 
     const { onSelect } = renderPicker();
     fireEvent.click(await screen.findByTestId('psb-picker-workspace-row-workspace-1'));
+    await acceptOccupyPrompt();
 
     const inline = await screen.findByTestId('workspace-vcs-notice');
     expect(inline.dataset['variant']).toBe('inline');
@@ -185,17 +250,20 @@ describe('PsbWorkspacePicker', () => {
   });
 
   it('disables every row and the create entry while the draft has an in-flight operation', async () => {
-    installPsbBridge({
+    const bridge = installPsbBridge({
       listWorkspaces: vi.fn(async () => ({ workspaces: [makePsbWorkspace({})] })),
     });
     // 发送 / 目录恢复 / worktree 创建在途时上层传 `disabled`：此时选择和新建都必须点不动
     // （占用动作不能与在途发送并发，否则换目标会把刚占用的工作区留在草稿外）。
-    renderPicker({ disabled: true });
+    const { onSelect } = renderPicker({ disabled: true });
     const row = await screen.findByTestId('psb-picker-workspace-row-workspace-1');
     expect((row as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('psb-picker-create-workspace') as HTMLButtonElement).disabled).toBe(
       true,
     );
+    fireEvent.click(row);
+    expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it('shows list loading and empty states (no silent blank dropdown)', async () => {
@@ -249,7 +317,7 @@ describe('PsbWorkspacePicker', () => {
     expect(renamed.textContent).not.toContain('目录：');
   });
 
-  it('listbox 方向键只移动焦点，不会顺手占用工作区', async () => {
+  it('listbox 方向键只移动焦点：不占用、不弹确认、不回调', async () => {
     const workspaceA = makePsbWorkspace({ id: 'workspace-a', title: 'A' });
     const workspaceB = makePsbWorkspace({ id: 'workspace-b', title: 'B' });
     const bridge = installPsbBridge({
@@ -265,6 +333,7 @@ describe('PsbWorkspacePicker', () => {
     // listbox：方向键只移动焦点；占用必须由 Enter/Space（原生按钮激活）显式触发。
     await waitFor(() => expect(document.activeElement).toBe(rowB));
     expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(onSelect).not.toHaveBeenCalled();
     expect(rowB.getAttribute('tabindex')).toBe('0');
   });
@@ -280,10 +349,12 @@ describe('PsbWorkspacePicker', () => {
     const row = await screen.findByTestId('psb-picker-workspace-row-workspace-1');
     row.focus();
     fireEvent.click(row);
+    await acceptOccupyPrompt();
     await waitFor(() => expect(row.getAttribute('aria-disabled')).toBe('true'));
     // 忙不丢焦点：行没有被原生 disabled 掉（否则焦点会掉回 body）。
     expect((row as HTMLButtonElement).disabled).toBe(false);
-    expect(document.activeElement).toBe(row);
+    expect(row.getAttribute('aria-busy')).toBe('true');
+    expect(row.getAttribute('title')).toBe('remoteWorkspace.dialog.confirmOccupy.occupying');
     unmount();
     pending.resolve(occupiedByMeResult(workspace));
     await waitFor(() =>
