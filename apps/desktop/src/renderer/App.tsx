@@ -41,6 +41,7 @@ import { FindInPageBar } from '@/components/find-in-page/FindInPageBar';
 import { ProjectAutomationNotifyBridge } from '@/features/scheduler/components/ProjectAutomationNotifyBridge';
 import { WorkspaceVcsNoticeHost } from '@/features/remote-workspace/vcs/WorkspaceVcsNoticeHost';
 import { PsbPendingReleaseNotice } from '@/features/remote-workspace/release/PsbPendingReleaseNotice';
+import { PsbOccupyRequiredConfirmation } from '@/features/remote-workspace/PsbOccupyRequiredConfirmation';
 import { GhostConfirmDialogHost } from '@/cindy-brain/GhostConfirmDialogHost';
 import { PluginModelPickerHost } from '@/cindy-brain/PluginModelPickerHost';
 import { LocalAgentConfirmationHost } from '@/components/LocalAgentConfirmationHost';
@@ -556,6 +557,14 @@ export function App() {
                               没有会话生命周期，同一账本会在每窗各渲染一份）。 */}
                               {!isSecondaryWindow() && !isSidebarWindow() && (
                                 <PsbPendingReleaseNotice />
+                              )}
+                              {/* 「这个工作区还没被你占用」确认宿主：main 的占用闸门不再自动
+                              占用（2026-11-27 用户复测），发送消息遇到
+                              `PSB_WORKSPACE_NOT_OCCUPIED` 时由这里弹确认框、用户确认后显式
+                              占用，store 再重试同一次发送。必须在 ConfirmDialogProvider 内；
+                              只挂主窗（同一会话的确认框不应在副窗各弹一份）。 */}
+                              {!isSecondaryWindow() && !isSidebarWindow() && (
+                                <PsbOccupyRequiredConfirmation />
                               )}
                               <ProjectAutomationNotifyBridge />
                               {/* confirm 槽:插件请主机弹确认框。必须在 ConfirmDialogProvider

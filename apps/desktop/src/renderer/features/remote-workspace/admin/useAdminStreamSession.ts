@@ -45,6 +45,12 @@
 import { useCallback, useEffect, useReducer, useRef, type RefObject } from 'react';
 import type { TFunction } from 'i18next';
 
+import { useOptionalConfirmDialog } from '@/components/ui/confirm-dialog-provider';
+import {
+  confirmAndOccupyPsbWorkspace,
+  isPsbOccupyRequiredFailure,
+  type PsbOccupyConfirmationOutcome,
+} from '../occupyRequired';
 import {
   readPsbAdminStreamStatus,
   type PsbWorkspaceAdminStreamStatus,
@@ -205,6 +211,12 @@ function eventFailureMessage(
 export interface AdminStreamSessionInput {
   readonly bridge: PsbWorkspaceAdminBridge | null;
   readonly workspaceId: string;
+  /**
+   * 工作区显示名（确认占用弹窗用；`null` = 还不知道名字，用中性标题）。
+   *
+   * 名字来自 `adminContext.title`（页头同源），这里不让 hook 再读一遍上下文。
+   */
+  readonly workspaceName?: string | null;
   /** stale 时启动 / 停止的可行动原因 key（`null` = 工作区事实可用）。 */
   readonly blockedActionKey: string | null;
   /** 当前 PSB 观看端绑定（`context.viewerSessionId`）：跨窗口 stop / 重绑时用来回 `idle`。 */
@@ -251,6 +263,16 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
   /** 本次用户点「启动」是否已经自动重试过（每轮用户操作最多一次）。 */
   const retriedStartingRef = useRef(false);
   const lastInputFailureAtRef = useRef(0);
+  /**
+   * 「需要占用」确认框（2026-11-27 用户复测：main 的占用闸门不再替用户占用）。
+   *
+   * 用**可选**读法：管理页也能被裸渲染（单测 / 旧壳），没有 Provider 时降级为「不给确认框、
+   * 按普通失败展示」，而不是抛错整页崩。
+   */
+  const confirmDialog = useOptionalConfirmDialog();
+  /** 工作区显示名（确认框标题）；`null` 时用中性标题，不编造名字。 */
+  const workspaceNameRef = useRef(input.workspaceName ?? '');
+  workspaceNameRef.current = input.workspaceName ?? '';
 
   /** 回调经 ref 取最新：事件订阅 / 定时器不因闭包或依赖变化重挂。 */
   const onFrameRef = useRef(input.onFrame);
@@ -302,10 +324,12 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
   /* -------------------------------- 启动 -------------------------------- */
 
   const start = useCallback(
-    async (options?: { readonly auto?: boolean }) => {
+    async (options?: { readonly auto?: boolean; readonly resume?: boolean }) => {
       const phase = phaseRef.current;
-      if (!bridge || phase === 'starting' || phase === 'stopping') return;
-      if (adminStreamPhaseConnected(phase)) return;
+      // `resume` = 用户刚确认占用、由这次启动自己重试一次：此时相位仍是 `starting`，不能当作
+      // 重复点击拦掉（否则「确认占用成功后自动重试启动」永远不生效）。
+      if (!bridge || phase === 'stopping') return;
+      if (!options?.resume && (phase === 'starting' || adminStreamPhaseConnected(phase))) return;
       // 用户亲自点「启动」= 新一轮尝试：允许再自动重试一次（自动重试自己不会重置这个标记）。
       if (!options?.auto) {
         retriedStartingRef.current = false;
@@ -374,6 +398,36 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
         // `input.translate` 是「取当下语言的 t」的 getter（不是 t 本身）：先取再调用，
         // 否则把 key 当参数传给 getter 会得到 t 函数本身（2026-11-26 自测发现的真 bug）。
         const t = translateRef.current();
+        // 占用待确认（2026-11-27 用户复测）：main 的占用闸门不再替用户占用，空闲时返回
+        // `PSB_WORKSPACE_NOT_OCCUPIED`（与 PSB 守卫契约同码）。用户确认 → 显式占用成功 →
+        // **重试本次启动一次**；取消 → 不启动并给一句可行动原因；占用失败 → 落到通用失败。
+        if (!options?.resume && isPsbOccupyRequiredFailure(rawFailure)) {
+          const outcome: PsbOccupyConfirmationOutcome = confirmDialog
+            ? await confirmAndOccupyPsbWorkspace({
+                t,
+                confirm: confirmDialog.confirm,
+                bridge,
+                workspaceId,
+                workspaceName: workspaceNameRef.current,
+              })
+            : 'failed';
+          if (!mountedRef.current) return;
+          if (outcome === 'occupied') {
+            void startRef.current?.({ auto: options?.auto, resume: true });
+            return;
+          }
+          if (outcome === 'declined') {
+            // 用户取消 = 不占用、不启动：给一句能照做的原因（不是通用「操作失败」）。
+            emit({
+              type: 'start-failed',
+              failure: {
+                text: t('remoteWorkspace.error.occupyRequired'),
+                detail: null,
+              },
+            });
+            return;
+          }
+        }
         const notice = psbStreamAccessFailureNotice(t, rawFailure);
         if (notice) {
           emit({
@@ -407,7 +461,7 @@ export function useAdminStreamSession(input: AdminStreamSessionInput): AdminStre
         });
       }
     },
-    [blockedActionKey, bridge, clearStartingRetry, emit, releaseOwnership, workspaceId],
+    [blockedActionKey, bridge, clearStartingRetry, confirmDialog, emit, releaseOwnership, workspaceId],
   );
   /** 自动重试定时器必须调用**最新**的 `start`：存到 ref，避免定时器闭包捕获旧版本。 */
   const startRef = useRef<typeof start | null>(null);

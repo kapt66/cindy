@@ -22607,6 +22607,8 @@
       "unreachable": "连接不上 PSB，请检查网络后重试。",
       "occupiedByOther": "「{{name}}」正在占用此工作区，请在 PSB 网页解除占用后再试。",
       "workspaceOccupied": "这个工作区正被他人占用，请在 PSB 网页解除占用后再试。",
+      "occupyRequired": "这个工作区还没被你占用，需要先占用。",
+      "agentSessionActive": "这个工作区里还有任务正在输出，先结束或停止它，再释放占用。",
       "clientOffline": "那台电脑离线了，稍后再试。",
       "unknown": "操作失败，请稍后重试。"
     },

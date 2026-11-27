@@ -22690,6 +22690,8 @@
       "unreachable": "Could not reach PSB. Check your network and try again.",
       "occupiedByOther": "“{{name}}” is using this workspace. Clear the lock on the PSB website and try again.",
       "workspaceOccupied": "This workspace is in use by someone else. Clear the lock on the PSB website and try again.",
+      "occupyRequired": "This workspace is not occupied by you yet. Occupy it first.",
+      "agentSessionActive": "A task is still running in this workspace. Finish or stop it before releasing the workspace.",
       "clientOffline": "That computer is offline. Try again later.",
       "unknown": "The action failed. Try again later."
     },

@@ -591,6 +591,21 @@ export const PSB_ERROR_CODES = {
   authExpired: 'AUTH_EXPIRED',
   identityNotLinked: 'IDENTITY_NOT_LINKED',
   occupiedByOther: 'WORKSPACE_OCCUPIED_BY_OTHER',
+  /**
+   * 工作区**还没被当前身份占用**（PSB 2026-11-27 新增守卫契约）。
+   *
+   * PSB 对「新建 / 继续 Agent 会话」的守卫：空闲工作区 → `403 WORKSPACE_NOT_OCCUPIED`。
+   * Cindy 的占用闸门在**发请求之前**就返回同一语义（本地 `PsbRemoteFailure.code` 用同一个码名，
+   * 不另造词），因此渲染层对两条来源只有一条处置：弹「需要占用这个工作区」确认框 → 用户确认 →
+   * 显式占用 → 重试本次动作。PSB 上线后语义不变。
+   */
+  workspaceNotOccupied: 'WORKSPACE_NOT_OCCUPIED',
+  /**
+   * 会话正在输出，此刻不能释放工作区占用（PSB 2026-11-27 新增守卫契约，409）。
+   *
+   * 下一步是**先结束 / 停止那条会话**再释放；不是「去 PSB 网页处理」，也不是可自动重试的竞态。
+   */
+  agentSessionActive: 'AGENT_SESSION_ACTIVE',
   clientOffline: 'CLIENT_OFFLINE',
   notFound: 'NOT_FOUND',
   /** 403「不是归属人」：与 `NOT_FOUND` 同一个处置（不泄漏存在性），单表里按同一 IPC 码映射。 */
@@ -655,6 +670,15 @@ export type PsbFailureNextStep =
   | 'refresh'
   /** 先启动观看，再把输入发出去（本端还没有活动串流连接）。 */
   | 'start-stream'
+  /**
+   * 先由**用户确认占用**这个工作区，再重试本次动作（2026-11-27 用户复测口径）。
+   *
+   * 隐式写路径（发送 / 启动串流 / 建会话）不再自动占用；工作区空闲时它们返回
+   * `PSB_WORKSPACE_NOT_OCCUPIED`，渲染层据此弹确认框 → 用户确认 → 显式占用 → 重试。
+   */
+  | 'confirm-occupy'
+  /** 先结束 / 停止正在输出的会话，再重试本动作（释放占用被 `AGENT_SESSION_ACTIVE` 拒绝）。 */
+  | 'stop-session'
   /** 去 PSB 网页处理（例如被他人占用时解除占用）。 */
   | 'open-web'
   /** 没有可行动入口（只能读原因 / 联系管理员）。 */
@@ -825,6 +849,35 @@ export const PSB_FAILURE_DESCRIPTORS = {
     state: null,
     nextStep: 'wait',
     writableReason: 'workspace-not-ready',
+  },
+  PSB_WORKSPACE_NOT_OCCUPIED: {
+    /**
+     * 工作区此刻**无人占用**，但这次调用不是用户的显式占用动作（发送 / 启动串流 / 建会话），
+     * 所以占用闸门不替用户占用，返回本码（2026-11-27 用户复测：任何占用都必须由用户确认）。
+     *
+     * 与 PSB 2026-11-27 的守卫契约**同码同形**：PSB 对「新建 / 继续 Agent 会话」也返回
+     * `403 WORKSPACE_NOT_OCCUPIED`。两边都映射到本 IPC 码，渲染层只有一条处置：弹确认框 →
+     * 用户确认 → 显式占用（`psb-remote:occupy-workspace`）→ 重试发起的那次动作。
+     * `nextStep: 'confirm-occupy'` 就是这个流程的机器可读标注。
+     */
+    psbCode: PSB_ERROR_CODES.workspaceNotOccupied,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.occupyRequired',
+    state: null,
+    nextStep: 'confirm-occupy',
+  },
+  PSB_AGENT_SESSION_ACTIVE: {
+    /**
+     * 会话正在输出，此刻不能释放工作区占用（PSB 409 `AGENT_SESSION_ACTIVE`）。
+     *
+     * 下一步是**先结束 / 停止那条会话**再释放（释放入口给可行动文案，不自动重试：
+     * 重试只会得到同一个 409）。
+     */
+    psbCode: PSB_ERROR_CODES.agentSessionActive,
+    noticeCode: null,
+    messageKey: 'remoteWorkspace.error.agentSessionActive',
+    state: null,
+    nextStep: 'stop-session',
   },
   PSB_AGENT_UNSUPPORTED: {
     // PSB `unusableReason='agent-unsupported'`（`psbWorkspaceWritable` 与发送前重建都遇到）。

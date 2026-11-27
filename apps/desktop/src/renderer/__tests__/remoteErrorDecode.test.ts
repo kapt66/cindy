@@ -146,6 +146,70 @@ describe('decodeRemoteErrorMessage', () => {
       '[PSB_SOMETHING_NEW] 未知失败',
     );
   });
+  // 2026-11-27 用户复测：工作区空闲时 main 的占用闸门**不替用户占用**，返回
+  // `PSB_WORKSPACE_NOT_OCCUPIED`（与 PSB 守卫契约同码）。渲染层必须先让用户确认、显式占用，
+  // 成功后才**重试同一次发送**（同一份载荷）；取消 → 不占用、不发送、失败落到错误横幅。
+  it('PSB 占用待确认：确认+占用后重试同一次发送；取消则不占用不重试', async () => {
+    const occupiedRequired = () =>
+      new Error(
+        "Error invoking remote method 'maker:input:enqueue': Error: [PSB_WORKSPACE_NOT_OCCUPIED] 空闲",
+      );
+    const projection = (sessionId: string) => ({
+      sessionId,
+      pendingQueue: [],
+      steeringQueueClientIds: [],
+      queuePaused: false,
+      queueExpanded: false,
+      queueInteractionLocks: [],
+      queueEditLocks: [],
+      queueAbortPending: false,
+      error: null,
+      recovery: null,
+      errorRetryText: null,
+      credentialSwitchWait: null,
+    });
+    const enqueue = vi.fn();
+    vi.stubGlobal('window', {
+      dispatchEvent: vi.fn(),
+      electronAPI: {
+        maker: {
+          input: { enqueue },
+          autoTitle: vi.fn().mockResolvedValue({ applied: true, done: true }),
+        },
+      },
+    });
+    const { registerPsbOccupyConfirmationResolver } = await import(
+      '@/features/remote-workspace/occupyRequired'
+    );
+    try {
+      // ① 用户取消：不占用、不重发，失败照常落到错误横幅（composer 由调用方恢复草稿）。
+      const unregisterDeclined = registerPsbOccupyConfirmationResolver(async () => false);
+      enqueue.mockRejectedValueOnce(occupiedRequired());
+      expect(
+        await makerChatStore.sendMessage('psb-declined', 'continue', 'm', 'medium', 'auto', '/test'),
+      ).toBe(false);
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(makerChatStore.getSnapshot('psb-declined').error).toBe(
+        i18n.t('remoteWorkspace.error.occupyRequired'),
+      );
+      unregisterDeclined();
+
+      // ② 用户确认并占用成功：用**同一份载荷**重发一次，成功后视为已受理。
+      const unregisterAccepted = registerPsbOccupyConfirmationResolver(async () => true);
+      enqueue.mockReset();
+      enqueue.mockRejectedValueOnce(occupiedRequired()).mockResolvedValueOnce(projection('psb-occupied'));
+      expect(
+        await makerChatStore.sendMessage('psb-occupied', 'continue', 'm', 'medium', 'auto', '/test'),
+      ).toBe(true);
+      expect(enqueue).toHaveBeenCalledTimes(2);
+      // 两次都是同一条消息（同 clientId）——这是「重试同一次发送」而不是新消息。
+      expect(enqueue.mock.calls[1][1].clientId).toBe(enqueue.mock.calls[0][1].clientId);
+      expect(makerChatStore.getSnapshot('psb-occupied').error).toBeNull();
+      unregisterAccepted();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('remote session limit guidance', () => {

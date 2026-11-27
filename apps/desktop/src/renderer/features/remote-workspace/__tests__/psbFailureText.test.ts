@@ -48,6 +48,14 @@ describe('psbFailureText（渲染层唯一失败文案出口）', () => {
     expect(psbFailureText(t, createIpcError('PSB_WORKSPACE_VCS_DIRTY', '有未提交修改'))).toBe(
       'remoteWorkspace.vcs.dirty',
     );
+    // 2026-11-27 两类新失败同样是可行动文案，不是通用「操作失败」：
+    // 「还没被你占用」（与 PSB 守卫契约同码）与「会话正在输出，先停再释放」。
+    expect(psbFailureText(t, createIpcError('PSB_WORKSPACE_NOT_OCCUPIED', ''))).toBe(
+      'remoteWorkspace.error.occupyRequired',
+    );
+    expect(psbFailureText(t, createIpcError('PSB_AGENT_SESSION_ACTIVE', '会话正在输出'))).toBe(
+      'remoteWorkspace.error.agentSessionActive',
+    );
   });
 
   it('占用失败拿不到人名时回落无名字的同一句，不会显示未插值的 {{name}}', () => {

@@ -1,12 +1,17 @@
 /**
- * 工作区选择器的**显示口径**（弹窗行 / 草稿页下拉行 / 项目胶囊同源，唯一实现）。
+ * 工作区选择器的**显示口径**（弹窗行 / 草稿页下拉行 / 项目胶囊 / 管理页页头同源，唯一实现）。
  *
- * 2026-11-26 用户实机反馈：主标签直接显示**工作区名称**（PSB 的 `title`，如 `saga2_project`；
- * 用户可改名）。机器与短 id 只在名称缺失（老数据 / PSB 还没回填标题 / 手改脏数据）时兜底。
+ * 2026-11-27 用户人工复测：**实例名是工作区自己的目录名**（PSB `directoryName`，如
+ * `saga2_project-3`），**模板名只是模板**（`templateTitle`，如 `saga2_project`）。同一个模板可以
+ * 建出多个工作区，把模板名当主标签会让这些工作区在列表 / 页头 / 胶囊里看起来一模一样。
  *
- * 同一个名称可以出现在多台机器（同名工作区）：区分先交给**单行次要信息**
- * （优先目录，目录与名称同名时退回机器名），两者都撞时由 `psbWorkspaceRowLabels` 追加短 id
- * 消歧——否则两行在用户看来完全一样，选错工作区的代价是占用/会话落到别人记录上。
+ * 主标签优先级：`directoryName`（trim 非空）→ `title` → `<机器>-<短 id>` → 短 id。模板名与机器名
+ * 只作**次要信息**（`psbWorkspaceSecondaryText`，固定顺序「模板名 · 机器名」）。目录名缺失只可能是
+ * 老数据 / PSB 还没回填 / 手改脏数据，此时回退 `title`（旧口径，不新增兜底）。
+ *
+ * 同一个目录名可以出现在多台机器（同一模板在两个客户端各建一次）：区分先交给次要行的机器名；
+ * 主标题与次要行**都撞**时由 `psbWorkspaceRowLabels` 追加短 id 消歧——否则两行在用户看来完全一样，
+ * 选错工作区的代价是占用 / 会话落到别人的记录上。
  */
 
 import type { PsbRemoteWorkspace, PsbWorkspaceHealth } from '../../../../shared/psb-remote-workspace';
@@ -22,25 +27,67 @@ export function shortPsbWorkspaceId(workspaceId: string): string {
   return value.length > 8 ? `${value.slice(0, 8)}…` : value;
 }
 
+/** 次要信息（模板名 / 机器名）的连接符：中性分隔，**不进翻译**（两侧都是 PSB 事实）。 */
+export const PSB_WORKSPACE_SECONDARY_SEPARATOR = ' · ';
+
 /** 工作区选择器的显示名输入（弹窗行 / 下拉行 / 项目胶囊共用）。 */
 export interface PsbWorkspaceDisplayParts {
   clientName: string;
   workspaceId: string;
   workspaceTitle?: string;
+  /** 工作区目录名 = **实例名**（PSB `directoryName`）；缺失时回退 `workspaceTitle`。 */
+  directoryName?: string | null;
 }
 
 /**
- * 工作区选择器的**显示名**口径（名称优先；缺失才 `<机器>-<短 id>`，再短 id）。
+ * 工作区**实例名**的唯一口径：目录名优先，缺失回退标题（两者都 trim，空串表示没有）。
+ *
+ * 只有这一层决定「显示名从哪来」；`psbWorkspaceDisplayName` 与 `psbWorkspaceRowDisplayName` 都
+ * 经它取实例名，管理页页头也用它（页头的空值占位由调用方补，不用短 id 兜底）。
+ */
+export function psbWorkspaceInstanceName(input: {
+  directoryName?: string | null;
+  workspaceTitle?: string | null;
+}): string {
+  const directoryName = input.directoryName?.trim() ?? '';
+  if (directoryName) return directoryName;
+  return input.workspaceTitle?.trim() ?? '';
+}
+
+/**
+ * 工作区选择器的**显示名**口径（实例名优先；缺失才 `<机器>-<短 id>`，再短 id）。
  *
  * 胶囊只承载当前选中的那一个，不需要消歧；列表行由 `psbWorkspaceRowLabels` 统一消歧。
  */
 export function psbWorkspaceDisplayName(parts: PsbWorkspaceDisplayParts): string {
-  const title = parts.workspaceTitle?.trim() ?? '';
-  if (title) return title;
+  const instanceName = psbWorkspaceInstanceName(parts);
+  if (instanceName) return instanceName;
   const shortId = shortPsbWorkspaceId(parts.workspaceId);
   const clientName = parts.clientName.trim();
   if (clientName && shortId) return `${clientName}-${shortId}`;
   return shortId || parts.workspaceId;
+}
+
+/**
+ * 工作区次要信息（**模板名 · 机器名**）：单行、去重、` · ` 连接。
+ *
+ * `primaryName` = 主标签（实例名）。与主标签相同的值不再重复写一遍（模板名通常就是工作区标题的
+ * 来源，去掉它才对得上「实例名是目录名、模板名只是模板」）；模板 / 机器都为空或都被去重掉时
+ * 返回 `null` —— 主标签已经是目录名，再输出「目录：<同一个目录名>」只是重复。
+ */
+export function psbWorkspaceTemplateMachineText(input: {
+  templateTitle?: string | null;
+  clientName?: string | null;
+  primaryName?: string | null;
+}): string | null {
+  const primaryName = input.primaryName?.trim() ?? '';
+  const parts: string[] = [];
+  for (const raw of [input.templateTitle, input.clientName]) {
+    const value = raw?.trim() ?? '';
+    if (!value || value === primaryName || parts.includes(value)) continue;
+    parts.push(value);
+  }
+  return parts.length > 0 ? parts.join(PSB_WORKSPACE_SECONDARY_SEPARATOR) : null;
 }
 
 /** PSB 工作区行 → 选择器显示名（唯一映射：弹窗 / 下拉 / 项目胶囊同源）。 */
@@ -49,36 +96,50 @@ export function psbWorkspaceRowDisplayName(workspace: PsbRemoteWorkspace): strin
     clientName: workspace.clientName,
     workspaceId: workspace.id,
     workspaceTitle: workspace.title,
+    directoryName: workspace.directoryName,
   });
 }
 
 /**
- * 工作区行的**唯一**次要信息（单行、去重）：优先目录名 —— 它才是本机上唯一区分同名工作区的
- * 那一份目录；没有目录名时退回机器名 / 模板名，且同一字符串只出现一次。
+ * 草稿页 PSB 目标（`psbTarget`，已持久化 / 跨重启恢复）→ 项目胶囊显示名。
  *
- * 历史上这里同时渲染 `title` 与 `directoryName`，同名时变成「saga2_project saga2_project」
- * 两遍；模板名再叠进来会三遍。所以次要行固定由本函数产出，调用方不得再自行拼接。
- *
- * 「目录」前缀走 i18n（`remoteWorkspace.dialog.directorySecondary`），**不在这里写死中文**：
- * 这个函数被 12 个 locale 的弹窗与草稿页下拉共用，写死中文会让非中文界面出现中文行。
- * 目录名本身不是文案（PSB 的服务端事实），只作为 `{{directory}}` 插入。
+ * 它与 `psbWorkspaceRowDisplayName` 必须同一口径：胶囊显示什么，下拉行就显示什么。目标载荷里的
+ * `directoryName` 是**加性可空**字段（旧草稿 / 旧路由 state 没有它），缺失时回退标题。
  */
-export function psbWorkspaceSecondaryText(
-  workspace: PsbRemoteWorkspace,
-  t: (key: string, options?: Record<string, string>) => string,
-): string | null {
-  const title = workspace.title.trim();
-  const directory = workspace.directoryName?.trim() ?? '';
-  if (directory && directory !== title) {
-    return t('remoteWorkspace.dialog.directorySecondary', { directory });
-  }
-  // 名称缺失：主标题已经是「机器-短 id」，输出与主标签 / 短 id 重复的值没有意义。
-  if (!title) return null;
-  const clientName = workspace.clientName.trim();
-  if (clientName && clientName !== title) return clientName;
-  const template = workspace.templateTitle?.trim() ?? '';
-  if (template && template !== title) return template;
-  return null;
+export function psbWorkspaceTargetDisplayName(target: {
+  workspaceId: string;
+  clientName: string;
+  workspaceTitle: string;
+  directoryName?: string | null;
+}): string {
+  return psbWorkspaceDisplayName({
+    clientName: target.clientName,
+    workspaceId: target.workspaceId,
+    workspaceTitle: target.workspaceTitle,
+    directoryName: target.directoryName,
+  });
+}
+
+/**
+ * 工作区行的**唯一**次要信息（单行、去重）：模板名 · 机器名。
+ *
+ * 历史沿革：主标签还是「工作区名称」时，这里显示过目录（`目录：<directoryName>`，i18n key
+ * `remoteWorkspace.dialog.directorySecondary`）。现在主标签就是目录名（实例名），目录不再出现在
+ * 次要行——同一个词写两遍只会让用户以为选错了工作区。旧 i18n key 因此在本口径下不再被引用。
+ *
+ * 次要行固定由本函数产出，调用方不得再自行拼接模板名 / 机器名。
+ */
+export function psbWorkspaceSecondaryText(workspace: PsbRemoteWorkspace): string | null {
+  const instanceName = psbWorkspaceInstanceName({
+    directoryName: workspace.directoryName,
+    workspaceTitle: workspace.title,
+  });
+  return psbWorkspaceTemplateMachineText({
+    templateTitle: workspace.templateTitle,
+    // 没有实例名时主标签已退回「机器-短 id」（或短 id）：机器名就在主标签里，不再重复。
+    clientName: instanceName ? workspace.clientName : '',
+    primaryName: instanceName || psbWorkspaceRowDisplayName(workspace),
+  });
 }
 
 /**
@@ -115,20 +176,19 @@ export interface PsbWorkspaceRowLabels {
 /**
  * 按**整个列表**计算每行标签，并消除「主标题 + 次要信息」完全相同的碰撞。
  *
- * 冲突只发生在极端情况：两台机器上同名、同目录（或都拿不到目录/机器）的工作区。这时给
- * 冲突行追加 `-<短 id>`（与名称缺失时的兜底同一分隔符，不新增 i18n 句式）：优先短 id，
- * 仍撞（理论上 8 位前缀相同）时用完整 id，保证最终每行主标题唯一。
+ * 实例名（目录名）通常唯一，冲突只发生在极端情况：两台机器上同目录、同模板且都拿不到机器名
+ * （或老数据都没有目录名与标题）。这时给冲突行追加 `-<短 id>`（与名称缺失时的兜底同一分隔符，
+ * 不新增 i18n 句式）：优先短 id，仍撞（理论上 8 位前缀相同）时用完整 id，保证最终每行主标题唯一。
  *
  * 不冲突时**不**改名字：跨机器的同名工作区仍靠次要行的机器名区分，主标题保持干净。
  */
 export function psbWorkspaceRowLabels(
   workspaces: readonly PsbRemoteWorkspace[],
-  t: (key: string, options?: Record<string, string>) => string,
 ): ReadonlyMap<string, PsbWorkspaceRowLabels> {
   const rows = workspaces.map((workspace) => ({
     workspace,
     name: psbWorkspaceRowDisplayName(workspace),
-    secondary: psbWorkspaceSecondaryText(workspace, t),
+    secondary: psbWorkspaceSecondaryText(workspace),
   }));
 
   const groups = new Map<string, typeof rows>();

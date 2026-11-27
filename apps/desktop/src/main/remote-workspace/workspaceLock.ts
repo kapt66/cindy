@@ -4,11 +4,13 @@
  * ## 为什么需要它（Cindy 侧口径，2026-11-26）
  *
  * PSB 服务端会对工作区写操作做占用闸门：**不属于自己的锁定就拒绝写入**。Cindy 因此在
- * 「开新会话 / 启动串流 / 发送消息」之前都必须自己确认（必要时自己占用），而不是等 PSB 拒绝
- * 后再把一句不可行动的失败转给用户。三条入口共用这一个助手，口径只有一处：
+ * 「开新会话 / 启动串流 / 发送消息」之前都必须自己确认，而不是等 PSB 拒绝后再把一句不可
+ * 行动的失败转给用户。三条入口共用这一个助手，口径只有一处：
  *
- * - 未占用 → **自动占用**（幂等）。用户已确认「发送前检查、要自己锁定」。
  * - 已由自己占用 → 放行。
+ * - 工作区空闲 → **不自动占用**（2026-11-27 用户复测口径：**任何工作区占用都必须由用户
+ *   确认**）。缺省返回 `occupy-required`；只有显式用户动作的调用点（例如用户已确认的选择 /
+ *   占用流程）才可传 `allowAutoOccupy: true`，此时才幂等占用一次。
  * - 被他人占用 → `occupied-by-other`（带占用人名，供文案插值）。
  * - 客户端离线 / 工作区不可用（未就绪、已不可见）→ 对应 reason，让调用方给可行动的下一步。
  * - 网络 / 鉴权失败 → **原样抛**（沿用 `PSB_*` 映射），不静默当成「可以写」。
@@ -25,6 +27,7 @@
  *   （`GET …/sessions/:id`）拿到 `workspaceId` 之后必须再读一次列表才能拿到占用/在线/usable
  *   ——会话行只带工作区 id，不带工作区快照（`psbClient.getSession` 的实现里写明了这一点）；
  * - 命中乐观有效期 → **0 次**（仅**非权威**调用方；发送闸门不适用，见下条）。
+ * - `allowAutoOccupy: false` 且工作区空闲 → **0 次占用请求**（只有读口那 1/2 次 HTTP）。
  *
  * 调用方已经手上有新鲜工作区行时（例如管理页刚读的列表），用 `snapshot` 传进来即可把
  * 上面两次请求都省掉。
@@ -35,8 +38,9 @@
  *
  * - **发送闸门必须权威**（2026-11-27 用户口径）：会话创建后工作区可能被交接给别人，所以
  *   **每条用户消息发送前**都按 `requireAuthoritative: true` 读一次 PSB 会话行 + 一次工作区列表
- *   （共 2 次 HTTP，原因见「读口」）再判断；无人占用则顺带自动占用。**不允许**用本地快照 /
- *   乐观缓存替代这次读取——用户要的是「发送前我确实仍占着这个工作区」，不是「1.5s 前是」。
+ *   （共 2 次 HTTP，原因见「读口」）再判断；无人占用 → `occupy-required`（**不**自动占用）。
+ *   **不允许**用本地快照 / 乐观缓存替代这次读取——用户要的是「发送前我确实仍占着这个工作区」，
+ *   不是「1.5s 前是」。
  * - **其它调用方**保留乐观有效期：工作区级 `ensure()`（发送前重建的建会话、启动串流、管理页占用
  *   等既有路径）与 `ensureForSession()` 的**缺省**分支都按 TTL 命中零请求（生产上
  *   `ensureForSession` 目前只有发送闸门调用，且固定传 `requireAuthoritative`）。
@@ -49,7 +53,7 @@ import type {
   PsbRemoteWorkspace,
   PsbSessionStatusResult,
 } from '../../shared/psb-remote-workspace.js';
-import { psbWorkspaceWritable } from '../../shared/psb-remote-workspace.js';
+import { PSB_ERROR_CODES, psbWorkspaceWritable } from '../../shared/psb-remote-workspace.js';
 import { PsbClientError } from './psbClient.js';
 import type { PsbWorkspaceOperationOutcome } from './psbClient.js';
 
@@ -62,9 +66,16 @@ export type PsbWorkspaceLockSnapshot = Pick<
 >;
 
 export type PsbWorkspaceLockResult =
-  /** 工作区此刻由当前身份占用（可能是本次自动占用的）。 */
+  /** 工作区此刻由当前身份占用（可能是本次显式允许的自动占用）。 */
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: 'occupied-by-other'; readonly personName: string }
+  /**
+   * 工作区空闲，但本次调用**不是用户的显式占用动作**（`allowAutoOccupy: false` 的缺省口径）。
+   *
+   * 占用闸门**没有**发出任何占用请求：渲染层据此弹「需要占用这个工作区」确认框，用户确认后
+   * 走显式占用（`psb-remote:occupy-workspace`）再重试发起的那次动作。
+   */
+  | { readonly ok: false; readonly reason: 'occupy-required' }
   | { readonly ok: false; readonly reason: 'offline' }
   | {
       readonly ok: false;
@@ -99,6 +110,15 @@ export interface PsbWorkspaceLockPorts {
 export interface PsbWorkspaceLockEnsureOptions {
   /** 调用方刚读到的、**足够新**的工作区快照（优先于列表/缓存）。 */
   readonly snapshot?: PsbWorkspaceLockSnapshot | null;
+  /**
+   * 工作区空闲时是否允许闸门**替用户占用**。缺省 `false`（2026-11-27 用户复测口径：
+   * 所有工作区占用都必须由用户通过弹窗确认，禁止任何默认/自动占用）。
+   *
+   * 只有**显式用户动作**（用户已确认的占用 / 选择流程）的调用点才可以传 `true`；发送 /
+   * 启动串流 / 建会话这类隐式写路径必须保持 `false`，空闲时返回 `occupy-required`，
+   * 由渲染层弹确认框、用户确认后再走显式占用入口。
+   */
+  readonly allowAutoOccupy?: boolean;
 }
 
 export interface PsbWorkspaceLockEnsureSessionOptions {
@@ -110,11 +130,16 @@ export interface PsbWorkspaceLockEnsureSessionOptions {
    * 其它调用方省略该字段，保留 `PSB_WORKSPACE_LOCK_TTL_MS` 的乐观有效期。
    */
   readonly requireAuthoritative?: boolean;
+  /**
+   * 工作区空闲时是否允许闸门**替用户占用**。缺省 `false`，语义与
+   * {@link PsbWorkspaceLockEnsureOptions.allowAutoOccupy} 相同；发送闸门必须保持 `false`。
+   */
+  readonly allowAutoOccupy?: boolean;
 }
 
 export interface PsbWorkspaceLock {
   /**
-   * 确保工作区由当前身份占用；必要时自动占用。
+   * 确保工作区由当前身份占用；`allowAutoOccupy` 时才可能自动占用一次。
    *
    * 返回结果描述「为什么不能写」；**网络/鉴权失败以异常抛出**（不静默）。
    */
@@ -198,6 +223,7 @@ export function createPsbWorkspaceLock(
   async function decideFrom(
     workspace: PsbWorkspaceLockSnapshot | null,
     workspaceId: string,
+    allowAutoOccupy: boolean,
   ): Promise<PsbWorkspaceLockResult> {
     if (!workspace) {
       return { ok: false, reason: 'workspace-unavailable', missing: true, state: null };
@@ -238,7 +264,12 @@ export function createPsbWorkspaceLock(
       return { ok: true };
     }
 
-    // 未占用 → 自动占用（PSB 幂等；并发下最坏是别人先占到，下面按返回行重新判定）。
+    // 未占用：**只有调用方显式允许**（用户已确认的占用 / 选择流程）才自动占用。
+    // 隐式写路径（发送 / 启动串流 / 建会话）在这里停下，交给渲染层让用户确认：
+    // 不发任何 `POST …/occupy`，也不记乐观缓存（用户还没答应）。
+    if (!allowAutoOccupy) return { ok: false, reason: 'occupy-required' };
+
+    // 用户已确认 → 幂等占用（PSB 幂等；并发下最坏是别人先占到，下面按返回行重新判定）。
     let occupied: PsbWorkspaceOperationOutcome;
     try {
       occupied = await ports.occupyWorkspace(workspaceId);
@@ -283,14 +314,15 @@ export function createPsbWorkspaceLock(
       const id = workspaceId.trim();
       if (!id) throw createIpcError('INVALID_PARAMS', 'workspaceId is required');
       const snapshot = ensureOptions?.snapshot ?? null;
+      const allowAutoOccupy = ensureOptions?.allowAutoOccupy === true;
       if (!snapshot && isFresh(id)) return { ok: true };
       if (snapshot) {
         // 快照即使超过乐观有效期也要用：它比缓存新（调用方刚读的），用它判断不额外花请求。
-        return decideFrom(snapshot, id);
+        return decideFrom(snapshot, id, allowAutoOccupy);
       }
       const workspaces = await ports.listWorkspaces();
       const found = workspaces.find((entry) => entry.id === id) ?? null;
-      return decideFrom(found, id);
+      return decideFrom(found, id, allowAutoOccupy);
     },
     async ensureForSession(psbSessionId, ensureOptions) {
       const sessionId = psbSessionId.trim();
@@ -314,7 +346,11 @@ export function createPsbWorkspaceLock(
       // 权威事实不是「由我占用」（无人占用 / 被他人占用 / 未就绪）→ 先清掉该工作区的乐观缓存，
       // 否则非权威调用方会在 TTL 内继续拿「1.5s 前是我的」放行，交接后仍以为锁还在。
       if (!status.workspace.occupancy.byMe) lockedUntil.delete(status.workspace.id);
-      return decideFrom(status.workspace, status.workspace.id);
+      return decideFrom(
+        status.workspace,
+        status.workspace.id,
+        ensureOptions?.allowAutoOccupy === true,
+      );
     },
     isFresh,
     invalidate(workspaceId) {
@@ -330,15 +366,24 @@ export function createPsbWorkspaceLock(
 /**
  * 锁定失败 → 可跨 IPC 的失败形状。
  *
- * 只把三种**可行动**失败收成 `PsbClientError`（IPC 层映射成 `PSB_*` 码，渲染层按码取文案）：
- * 被他人占用（带人名）、客户端离线、工作区不可用/未就绪。网络与鉴权失败不经过这里 ——
- * 它们在 `ensure` 里已经原样抛出。
+ * 只把四种**可行动**失败收成 `PsbClientError`（IPC 层映射成 `PSB_*` 码，渲染层按码取文案）：
+ * 需要用户确认占用（工作区空闲且本次不允许自动占用）、被他人占用（带人名）、客户端离线、
+ * 工作区不可用/未就绪。网络与鉴权失败不经过这里 —— 它们在 `ensure` 里已经原样抛出。
  */
 export function psbWorkspaceLockFailureError(
   result: Exclude<PsbWorkspaceLockResult, { ok: true }>,
 ): PsbClientError {
   const failure: PsbRemoteFailure = (() => {
     switch (result.reason) {
+      case 'occupy-required':
+        // 与 PSB 2026-11-27 的守卫契约同码同形（`403 WORKSPACE_NOT_OCCUPIED`）：本机在发请求
+        // 之前就给出同一语义，渲染层对两条来源只有一条处置（弹确认框 → 显式占用 → 重试）。
+        // message 留空（文案由 messageKey 决定）。
+        return {
+          code: PSB_ERROR_CODES.workspaceNotOccupied,
+          messageKey: 'remoteWorkspace.error.occupyRequired',
+          message: null,
+        };
       case 'occupied-by-other':
         return {
           code: 'WORKSPACE_OCCUPIED_BY_OTHER',

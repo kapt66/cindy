@@ -251,9 +251,16 @@ export interface PsbAdminRemotePort {
   stopStream(sessionId: string): Promise<void>;
   /**
    * 写操作前的占用闸门（`streamStart` 用）：失败抛 `PSB_*` 失败码（被他人占用带人名），
-   * 成功即保证工作区由当前身份锁定（必要时已自动占用）。
+   * 成功即保证工作区由当前身份锁定。
+   *
+   * **空闲时不会自动占用**（2026-11-27 用户复测口径）：缺省返回
+   * `PSB_WORKSPACE_NOT_OCCUPIED`，渲染层弹确认框、用户确认后走显式占用再重试
+   * `streamStart`。只有显式用户动作的调用点才可传 `allowAutoOccupy: true`。
    */
-  ensureWorkspaceLocked(workspaceId: string): Promise<void>;
+  ensureWorkspaceLocked(
+    workspaceId: string,
+    options?: { allowAutoOccupy?: boolean },
+  ): Promise<void>;
   /**
    * 键鼠输入（唯一的上行业务消息 `{kind:'input', event}`）。
    *
@@ -1830,10 +1837,11 @@ export function createPsbWorkspaceAdminService(
     }
 
     // 串流 = 工作区写操作（订阅当前桌面访问会话 / 过渡回退建内部会话）：PSB 会对未锁定者拒绝，
-    // 所以先确保工作区由自己占用（未占用则自动占用）。失败在这里就给出可行动原因，不建立订阅。
-    // 读状态（`streamStatus`）不受此限。
+    // 所以先确认工作区由自己占用。**不自动占用**（2026-11-27 用户复测口径）：空闲时这里返回
+    // `PSB_WORKSPACE_NOT_OCCUPIED`，渲染层弹确认框、用户确认后显式占用再重试本次启动；
+    // 失败在这里就给出可行动原因，不建立订阅。读状态（`streamStatus`）不受此限。
     try {
-      await remote().ensureWorkspaceLocked(workspaceId);
+      await remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false });
     } catch (error) {
       absorbWriteFailure(workspaceId, error);
       throw await enrichStartFailureWithAccessReason(workspaceId, error);

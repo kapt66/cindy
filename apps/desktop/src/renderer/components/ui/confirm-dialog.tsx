@@ -124,7 +124,10 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   onTertiary,
-  zIndex = 10000,
+  // 确认框是「对当前动作的追问」，可能从一个模态里发起（如选择工作区 → 确认占用），
+  // 必须盖在普通模态内容（本仓约定 z-[10000]/[10001]，个别面板到 10020）之上，
+  // 否则会出现「遮罩变黑、确认框被底层弹窗挡住、点什么都没反应」。仍低于 Toast(10100)。
+  zIndex = 10090,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
   // describeContent 用:让 aria-describedby 覆盖整个「description + content」滚动区。

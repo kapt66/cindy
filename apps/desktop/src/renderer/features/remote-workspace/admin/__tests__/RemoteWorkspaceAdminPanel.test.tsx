@@ -3,9 +3,10 @@
  * 测试价值
  * - 生产入口与可观察结果：`RemoteWorkspaceAdminPanel`（「远程工作区」全局页签的真实页面主体）。
  *   可观察的是「页面围绕**工作区**工作，不围绕当前任务」这件事：
- *     ① 页头是**单行 ≤40px**：**工作区名称最显眼**（13px + 中粗）→ 模板 · 机器 → 占用，三块
- *        **靠左紧凑**、固定 16px 间距依次紧挨（不撑开），逐段截断、不换行；**不显示目录**；
- *        右侧通用操作（占用 / 解除占用 / 在网页打开）靠右且不被窄窗口挤压；
+ *     ① 页头是**单行 ≤40px**：**工作区实例名（目录名）最显眼**（13px + 中粗）→ 模板名 · 机器名
+ *        → 占用，三块**靠左紧凑**、固定 16px 间距依次紧挨（不撑开），逐段截断、不换行；
+ *        目录名就是主标题，**不再单独显示目录段**；右侧通用操作（占用 / 解除占用 / 在网页打开）
+ *        靠右且不被窄窗口挤压；
  *     ② 分类导航左对齐紧凑排列（inline 轨道、不拉伸铺满、不参与 space-between）；
  *     ③ 三个分类（远程连接 / 版本控制 / 设置）可切换，后两个是统一占位空态、没有假按钮；
  *     ④ 远程连接横条控制区（启动 / 停止是同一个按钮切换、详情浮层、串流信息、全屏 + 状态文案）
@@ -166,6 +167,19 @@ vi.mock('@/lib/toast', () => ({
     loading: vi.fn(),
     dismiss: vi.fn(),
   },
+}));
+
+/**
+ * 「需要先占用」确认框的替身。
+ *
+ * 页面本身不用 `useConfirmDialog`（VCS 清理走内联确认），但串流的占用待确认路径经
+ * `useOptionalConfirmDialog` 取全局确认框；裸渲染没有 Provider 时它会返回 null（降级成普通失败）。
+ * 这里给一个可断言的替身，钉住「确认 → 占用 → 重试」与「取消 → 不占用不重试」两条路径。
+ */
+const confirmDialogMock = vi.hoisted(() => ({ confirm: vi.fn(async () => true) }));
+vi.mock('@/components/ui/confirm-dialog-provider', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/ui/confirm-dialog-provider')>()),
+  useOptionalConfirmDialog: () => ({ confirm: confirmDialogMock.confirm }),
 }));
 
 const STREAM_ACTIVE: PsbWorkspaceAdminStreamStatus = {
@@ -338,6 +352,9 @@ function ctx(sessionId: string, remoteHostId: string | null): TabKindHostContext
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // 占用确认框替身每个用例复位（`clearAllMocks` 不清实现）：默认「用户点了确认」。
+  confirmDialogMock.confirm.mockReset();
+  confirmDialogMock.confirm.mockResolvedValue(true);
   pushContext = null;
   streamEventHandlers.clear();
   vcsNoticeHandlers.clear();
@@ -488,14 +505,13 @@ it('renders the workspace header as one compact left-aligned line with right-ali
   expect(info.children[0]).toBe(name);
   expect(info.children[1]).toBe(meta);
   expect(info.children[2]).toBe(occupancy);
-  // 不再显示目录：DOM 里既没有目录段，也没有目录值。
+  // 不再有独立目录段：目录名就是主标题，页头里只出现一次（`proj-a`）。
   expect(screen.queryByTestId('remote-workspace-admin-workspace-directory')).toBeNull();
-  expect(screen.queryByText('proj-a')).toBeNull();
   // 页头行同时包含信息组与右侧操作（同一行，不是内容区里的独立浮层）。
   const actions = screen.getByTestId('remote-workspace-admin-actions');
   expect(within(line).getByTestId('remote-workspace-admin-actions')).toBe(actions);
-  // 内容 = 名称 / 模板 · 机器 / 占用（自己占用时显示 PSB 回的名字并追加「（你）」）。
-  expect(name.textContent).toBe('Workspace A');
+  // 内容 = 实例名（目录名）/ 模板名 · 机器名 / 占用（自己占用时显示 PSB 回的名字并追加「（你）」）。
+  expect(name.textContent).toBe('proj-a');
   expect(meta.textContent).toBe('Saga2 · Machine A');
   expect(occupancy.textContent).toBe(
     i18n.t('remoteWorkspace.admin.occupancyValue', {
@@ -515,9 +531,7 @@ it('omits the template segment from the header when PSB has no template title', 
   await renderPanel();
   // 模板为空时只显示机器，不会留下「· 打包机」或空占位。
   expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe('Machine A');
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
 });
 
 it('keeps the category navigation as one tablist inside a dedicated nav row', async () => {
@@ -1336,10 +1350,8 @@ it('follows the pushed workspace change and releases the previous workspace view
   // 旧工作区的观看名额随连接区卸载释放；播放器实例被 dispose（也清掉旧画面）。
   expect(bridge.adminStreamStop).toHaveBeenCalledWith({ workspaceId: 'ws-a' });
   expect(playerMock.dispose).toHaveBeenCalled();
-  // 页头跟随新工作区：名称是 PSB 的 title，模板 · 机器在名称之后。
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace B',
-  );
+  // 页头跟随新工作区：主标题是目录名（实例名），模板名 · 机器名在名称之后。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-b');
   expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
     'Saga2 · Machine B',
   );
@@ -1411,9 +1423,7 @@ it('offers a real retry when the context read fails and then recovers', async ()
   await act(async () => {
     fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.dialog.refresh') }));
   });
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
 });
 
 it('does not start on entry, starts only on demand, and still releases the viewer when hidden', async () => {
@@ -1481,6 +1491,56 @@ it('surfaces a manual start failure without auto-retrying', async () => {
   // 已知错误码显示可行动文案（网络问题 →「检查网络后重试」），不是通用「操作失败」。
   expect(screen.getByRole('alert').textContent).toContain(
     i18n.t('remoteWorkspace.error.unreachable'),
+  );
+});
+
+/* ============ 占用待确认（2026-11-27 用户复测：占用一律由用户确认） ============ */
+
+const OCCUPY_REQUIRED = () =>
+  new Error('[PSB_WORKSPACE_NOT_OCCUPIED] 这个工作区还没有被占用');
+
+it('启动串流遇到「需要先占用」→ 用户确认后占用一次并重试启动一次', async () => {
+  confirmDialogMock.confirm.mockResolvedValue(true);
+  bridge.adminStreamStart
+    .mockRejectedValueOnce(OCCUPY_REQUIRED())
+    .mockResolvedValueOnce({
+      status: STREAM_ACTIVE,
+      workspaceId: 'ws-a',
+      viewerSessionId: 'viewer-a',
+    });
+  await renderPanel();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  // 确认 → 恰好显式占用一次 → 用同一个工作区重发这一次启动。
+  expect(confirmDialogMock.confirm).toHaveBeenCalledOnce();
+  expect(bridge.occupyWorkspace).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws-a' });
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(2);
+  expect(bridge.adminStreamStart).toHaveBeenLastCalledWith({ workspaceId: 'ws-a' });
+  // 重试成功 = 进入已连接等待画面，不是错误条。
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.getByTestId('remote-workspace-admin-stream-status').textContent).toBe(
+    i18n.t('remoteWorkspace.session.streamWaiting'),
+  );
+});
+
+it('启动串流遇到「需要先占用」→ 用户取消：不占用、不重试，给可行动原因', async () => {
+  confirmDialogMock.confirm.mockResolvedValue(false);
+  bridge.adminStreamStart.mockRejectedValueOnce(OCCUPY_REQUIRED());
+  await renderPanel();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('remoteWorkspace.session.start') }));
+  });
+
+  expect(confirmDialogMock.confirm).toHaveBeenCalledOnce();
+  expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
+  expect(bridge.adminStreamStart).toHaveBeenCalledTimes(1);
+  // 取消 ≠ 通用失败：正文是「需要先占用」的可行动原因。
+  expect(screen.getByRole('alert').textContent).toContain(
+    i18n.t('remoteWorkspace.error.occupyRequired'),
   );
 });
 
@@ -1884,9 +1944,7 @@ it('explains why starting did nothing when PSB says streaming is not capable', a
 
 it('ignores context pushes resolved for another window’s task', async () => {
   await renderPanel();
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
   // 广播是发给所有受信窗口的：`localSessionId` 不匹配 = 这条是别的窗口（主窗 / 独立页签窗口）
   // 的读取结果，丢弃，不能把本页换成另一个任务的工作区（否则写操作会落到别人的工作区上）。
   await act(async () => {
@@ -1895,19 +1953,15 @@ it('ignores context pushes resolved for another window’s task', async () => {
       localSessionId: 'local-other-window',
     });
   });
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
-  // 本窗口任务 id 的推送照常生效。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
+  // 本窗口任务 id 的推送照常生效（换目录名 = 换实例）。
   await act(async () => {
     pushContext?.({
-      context: context({ workspaceId: 'ws-b', title: 'Workspace B' }),
+      context: context({ workspaceId: 'ws-b', title: 'Workspace B', directoryName: 'proj-b' }),
       localSessionId: 'local-a',
     });
   });
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace B',
-  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-b');
 });
 
 it('keeps showing the fixed workspace details when the workspace is stale, instead of the empty state', async () => {
@@ -1916,10 +1970,8 @@ it('keeps showing the fixed workspace details when the workspace is stale, inste
   bridge.adminContext.mockResolvedValue({ context: staleContext() });
   await renderPanel();
 
-  // 固定信息全在：名称、模板 · 机器。
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  // 固定信息全在：实例名（目录名）、模板名 · 机器名。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
   expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
     'Saga2 · Machine A',
   );
@@ -1958,10 +2010,8 @@ it('distinguishes a deleted workspace from a temporary read failure', async () =
   const notice = screen.getByTestId('remote-workspace-admin-stale-notice');
   expect(notice.getAttribute('data-stale-availability')).toBe('missing');
   expect(within(notice).getByText(i18n.t('remoteWorkspace.admin.staleMissingTitle'))).toBeTruthy();
-  // 名称 / 模板 / 机器照旧。
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  // 名称 / 模板 / 机器照旧（主标题是目录名）。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
   expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
     'Saga2 · Machine A',
   );
@@ -1969,9 +2019,10 @@ it('distinguishes a deleted workspace from a temporary read failure', async () =
   expect(screen.queryByTestId('remote-workspace-admin-stale-detail')).toBeNull();
 });
 
-it('falls back to the directory segment for historical sessions without template or machine', async () => {
+it('keeps the directory name as the instance name for historical sessions without template or machine', async () => {
   bridge.adminContext.mockResolvedValue({
     context: staleContext({
+      // 历史会话种子：本机只有目录名这一条能确认「哪个工作区」的线索；任务标题不得冒充工作区名。
       title: '修一下检出脚本',
       templateTitle: null,
       clientName: '',
@@ -1980,13 +2031,12 @@ it('falls back to the directory segment for historical sessions without template
     }),
   });
   await renderPanel();
+  // 主标题 = 目录名（实例名），不是任务标题、也不是模板名。
   expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    '修一下检出脚本',
-  );
-  // 模板 / 机器都拿不到时显示目录名（唯一还能确认工作区的字段），不留「—」。
-  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe(
     'saga2_project-9',
   );
+  // 模板 / 机器都拿不到：次要不留空行也不重复目录名，显示占位「—」。
+  expect(screen.getByTestId('remote-workspace-admin-workspace-meta').textContent).toBe('—');
   expect(screen.queryByTestId('remote-workspace-admin-no-workspace')).toBeNull();
 });
 
@@ -2320,9 +2370,7 @@ it('does not read the workspace context while the tab is hidden, and loads as so
   await act(async () => {});
   // 重新可见：立即补读，不等下一档轮询。
   expect(bridge.adminContext).toHaveBeenCalledTimes(1);
-  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe(
-    'Workspace A',
-  );
+  expect(screen.getByTestId('remote-workspace-admin-workspace-name').textContent).toBe('proj-a');
 });
 
 it('ships localized copy for the new page actions and details fields', () => {

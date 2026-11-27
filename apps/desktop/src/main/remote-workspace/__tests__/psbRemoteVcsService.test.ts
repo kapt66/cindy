@@ -165,17 +165,33 @@ describe('占用 / 释放的 advisory（0.1.180 主路径）', () => {
     expect(harness.service.readWorkspaceVcsNotice('ws-1')).toBeNull();
   });
 
-  it('自动占用（ensureWorkspaceLocked）同样把 advisory 广播出去（operation=ensure）', async () => {
+  it('显式允许的占用（ensureWorkspaceLocked + allowAutoOccupy）同样把 advisory 广播出去（operation=ensure）', async () => {
     const harness = createHarness([
-      // ensure 先读工作区列表：空闲 → 自动占用并返回 advisory。
+      // ensure 先读工作区列表：空闲 → 用户已确认的那条路径才自动占用并返回 advisory。
       () => jsonResponse(200, { data: { workspaces: [workspaceRow({ occupancy: { occupied: false, byMe: false, personId: null, personName: '', occupiedAt: null } })] } }),
       () => jsonResponse(200, { data: { workspace: workspaceRow(), vcs: ADVISORY_VCS } }),
     ]);
 
-    await harness.service.ensureWorkspaceLocked('ws-1');
+    await harness.service.ensureWorkspaceLocked('ws-1', { allowAutoOccupy: true });
 
     expect(harness.emitted).toHaveLength(1);
     expect(harness.emitted[0]).toMatchObject({ operation: 'ensure', notice: { advisory: true } });
+  });
+
+  it('隐式写路径（缺省 ensureWorkspaceLocked）在空闲工作区上不占用：0 次 occupy 请求 + OCCUPY_REQUIRED', async () => {
+    const harness = createHarness([
+      () => jsonResponse(200, { data: { workspaces: [workspaceRow({ occupancy: { occupied: false, byMe: false, personId: null, personName: '', occupiedAt: null } })] } }),
+    ]);
+
+    const error = await harness.service.ensureWorkspaceLocked('ws-1').catch((cause: unknown) => cause);
+
+    expect((error as PsbClientError).failure).toMatchObject({
+      code: 'WORKSPACE_NOT_OCCUPIED',
+      messageKey: 'remoteWorkspace.error.occupyRequired',
+    });
+    // 用户没确认 = 不得发 `POST …/occupy`；只有那一次列表读取。
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls.filter((call) => call.method === 'POST')).toHaveLength(0);
   });
 });
 

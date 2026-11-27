@@ -22605,6 +22605,8 @@
       "unreachable": "PSB 不可達，請察網路而後再試。",
       "occupiedByOther": "「{{name}}」正佔此工作區，請於 PSB 網頁解其佔而後再試。",
       "workspaceOccupied": "此工作區為他人所佔，請於 PSB 網頁解其佔而後再試。",
+      "occupyRequired": "此工作區尚未由君佔用，須先佔之。",
+      "agentSessionActive": "此工作區尚有差事輸出未竟，待竟之或止之，方可釋佔。",
       "clientOffline": "彼電腦失聯，請稍後再試。",
       "unknown": "事未成，請稍後再試。"
     },

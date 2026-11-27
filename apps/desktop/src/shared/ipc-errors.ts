@@ -440,6 +440,14 @@ const IPC_ERROR_CODES = {
   // deleting）：等它就绪后重发即可。与「工作区不存在」「客户端离线」是不同的下一步，
   // 所以单独一个码，而不是并进 PSB_NOT_FOUND。
   PSB_WORKSPACE_NOT_READY: true,
+  // 工作区此刻空闲，但这**不是用户的显式占用动作**：占用闸门不替用户占用（2026-11-27 用户
+  // 复测口径：所有工作区占用都必须由用户确认）。与 PSB 2026-11-27 的守卫契约**同码同形**
+  // （`403 WORKSPACE_NOT_OCCUPIED`）：渲染层据此弹确认框 → 用户确认 → 显式占用 → 重试本次动作
+  // （发送 / 启动串流 / 建会话）。与「被他人占用」是不同的下一步（那个只能等 / 去网页），所以单列。
+  PSB_WORKSPACE_NOT_OCCUPIED: true,
+  // 释放占用时该工作区里仍有正在输出的会话（PSB 409 `AGENT_SESSION_ACTIVE`）：先结束 / 停止
+  // 那条会话再释放。不是可自动重试的竞态，也不引导用户去 PSB 网页兜底。
+  PSB_AGENT_SESSION_ACTIVE: true,
   // 远端客户端没有该 Agent 的运行时（PSB `unusableReason='agent-unsupported'`）：下一步是
   // 升级那台电脑上的客户端，与「等它就绪」（PSB_WORKSPACE_NOT_READY）不同，所以单独一个码。
   PSB_AGENT_UNSUPPORTED: true,

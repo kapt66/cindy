@@ -22899,6 +22899,8 @@
       "unreachable": "Não foi possível acessar o PSB. Verifique sua rede e tente novamente.",
       "occupiedByOther": "“{{name}}” está usando este espaço de trabalho. Remova o bloqueio no site do PSB e tente novamente.",
       "workspaceOccupied": "Este espaço de trabalho está em uso por outra pessoa. Remova o bloqueio no site do PSB e tente novamente.",
+      "occupyRequired": "Você ainda não ocupou este espaço de trabalho. Ocupe-o primeiro.",
+      "agentSessionActive": "Ainda há uma tarefa em execução neste espaço de trabalho. Encerre ou pare a tarefa antes de liberá-lo.",
       "clientOffline": "Esse computador está offline. Tente novamente mais tarde.",
       "unknown": "A ação falhou. Tente novamente mais tarde."
     },

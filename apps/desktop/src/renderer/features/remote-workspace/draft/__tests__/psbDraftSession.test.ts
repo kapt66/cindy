@@ -170,6 +170,57 @@ describe('createPsbSessionGate', () => {
     expect(result).toMatchObject({ ok: true, session: { sessionId: 'psb-existing' } });
     expect(createSession).not.toHaveBeenCalled();
   });
+
+  // 2026-11-27 用户复测：懒建会话同样受「占用必须由用户确认」约束。main 的 createSession
+  // 占用闸门在空闲时不替用户占用，返回 `PSB_WORKSPACE_NOT_OCCUPIED`；渲染层确认并显式占用
+  // 成功后才重试同一次建会话（同一 clientRequestId），取消则不建、不占用。
+  it('占用待确认：用户确认后重试同一次建会话（同一去重键）；取消则不建、不静默占用', async () => {
+    const { registerPsbOccupyWorkspaceConfirmationResolver } = await import(
+      '../../occupyRequired'
+    );
+    const occupyRequired = () =>
+      new Error(
+        "Error invoking remote method 'maker:remote-workspace:create-session': Error: [PSB_WORKSPACE_NOT_OCCUPIED] 空闲",
+      );
+
+    // ① 取消：一次 createSession，失败按原样返回（不建本地会话、不占用）。
+    const unregisterDeclined = registerPsbOccupyWorkspaceConfirmationResolver(async () => false);
+    const declinedCreate = vi.fn(async () => {
+      throw occupyRequired();
+    });
+    const declined = await createPsbSessionGate().ensure(
+      ensureInput({ bridge: createBridge({ createSession: declinedCreate as never }) }),
+    );
+    expect(declined).toMatchObject({ ok: false, reason: 'failed' });
+    expect(declinedCreate).toHaveBeenCalledOnce();
+    unregisterDeclined();
+
+    // ② 确认并占用成功：用同一个 clientRequestId 重试一次，成功建出会话。
+    const requested: { workspaceId: string; workspaceName: string }[] = [];
+    const unregisterAccepted = registerPsbOccupyWorkspaceConfirmationResolver(async (input) => {
+      requested.push(input);
+      return true;
+    });
+    const acceptedCreate = vi
+      .fn()
+      .mockRejectedValueOnce(occupyRequired())
+      .mockResolvedValueOnce({ session: { id: 'psb-1' } });
+    const accepted = await createPsbSessionGate().ensure(
+      ensureInput({ bridge: createBridge({ createSession: acceptedCreate as never }) }),
+    );
+    expect(accepted).toMatchObject({ ok: true, session: { sessionId: 'psb-1' } });
+    expect(acceptedCreate).toHaveBeenCalledTimes(2);
+    const firstRequest = (acceptedCreate.mock.calls[0] as unknown[])[0] as {
+      clientRequestId: string;
+    };
+    const secondRequest = (acceptedCreate.mock.calls[1] as unknown[])[0] as {
+      clientRequestId: string;
+    };
+    expect(secondRequest.clientRequestId).toBe(firstRequest.clientRequestId);
+    // 确认框拿到的是草稿目标的工作区事实（名字来自弹窗交接载荷）。
+    expect(requested).toEqual([{ workspaceId: 'ws-1', workspaceName: 'saga2_project' }]);
+    unregisterAccepted();
+  });
 });
 
 describe('releasePsbDraftTarget', () => {

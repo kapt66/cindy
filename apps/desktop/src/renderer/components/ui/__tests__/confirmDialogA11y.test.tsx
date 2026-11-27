@@ -128,3 +128,23 @@ describe('ConfirmDialog action layout', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: '稍后处理' }));
   });
 });
+
+describe('ConfirmDialog stacking', () => {
+  it('确认框层级高于普通模态内容，且仍低于 Toast', () => {
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={() => {}}
+        title="占用「saga2_project」？"
+        confirmText="占用"
+      />,
+    );
+    const dialog = screen.getByRole('alertdialog');
+    const zIndex = Number(dialog.style.zIndex || '0');
+    // 本仓普通模态内容最高到 z-[10020]（各 Dialog 的 modal-panel 类）；确认框可能从
+    // 一个模态里发起（选择工作区 → 确认占用），必须盖在它上面，否则遮罩变黑、点不动。
+    expect(zIndex).toBeGreaterThan(10020);
+    // Toast(10100) 仍在确认框之上：确认框不该盖住系统级提示。
+    expect(zIndex).toBeLessThan(10100);
+  });
+});

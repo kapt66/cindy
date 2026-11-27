@@ -5452,12 +5452,14 @@ describe('psb remote session rebind before dispatch', () => {
  * 测试价值
  * - 生产入口与可观察结果：`sendToAgentAccepted`（直发 / 队列 drain / 手机全部经过）。
  *   用户可观察结果：工作区被别人占用时这一轮不派发、消息留着可重试并给出可行动失败；
- *   仍由自己锁定（或已自动重新占用）时消息照常发出。
- * - Bug／规则依据：PSB 服务端对工作区写操作校验占用，Cindy 必须在写入前自己锁定/校验；
- *   见 `docs/dev-rules/psb-remote-session-transport.md` §12。
+ *   工作区空闲时**不自动占用**（2026-11-27 用户复测），而是返回「需要先占用」的码，等用户在
+ *   确认框里确认后走显式占用、再由用户重发；仍由自己锁定时消息照常发出。
+ * - Bug／规则依据：PSB 服务端对工作区写操作校验占用，Cindy 必须在写入前自己校验；
+ *   占用一律由用户确认（2026-11-27）。见 `docs/dev-rules/psb-remote-session-transport.md` §12。
  * - 现有覆盖缺口：`workspaceLock.test.ts` 覆盖判据本身，但看不到事务里「闸门在派发之前、
  *   失败时既不写库也不调 session.send」这层接线。
- * - 最小失败输入：注入一个抛 `PSB_WORKSPACE_OCCUPIED_BY_OTHER` 的 `preparePsbWorkspaceLock`。
+ * - 最小失败输入：注入一个抛 `PSB_WORKSPACE_OCCUPIED_BY_OTHER` / 返回空闲工作区的
+ *   `preparePsbWorkspaceLock`。
  * - tier：unit（依赖全注入）。
  */
 describe('psb workspace lock before dispatch', () => {
@@ -5524,8 +5526,9 @@ describe('psb workspace lock before dispatch', () => {
     expect(session.send).toHaveBeenCalledTimes(2);
   });
 
-  it('权威读为他人占用 → 第二条不派发、不落库（上一条放行过也不例外）', async () => {
-    // 真实判据：fake PSB 的会话行先把工作区从「无人占用」自动占用成功，随后被交接给李四。
+  it('权威读为无人占用 → 发送前返回 OCCUPY_REQUIRED（不占用、不派发）；用户确认占用后同一条才发出', async () => {
+    // 真实判据：fake PSB 的会话行先说「无人占用」。2026-11-27 用户复测：这种状态**不得**
+    // 自动占用（占用必须由用户确认），事务必须以 `PSB_WORKSPACE_NOT_OCCUPIED` 阻止本轮派发。
     const WORKSPACE_ID = 'ws-saga2';
     const workspace = (occupancy: PsbRemoteWorkspace['occupancy']): PsbRemoteWorkspace => ({
       id: WORKSPACE_ID,
@@ -5546,23 +5549,27 @@ describe('psb workspace lock before dispatch', () => {
       webUrl: null,
       sessionsWebUrl: null,
     });
-    let current = workspace({
+    const freeOccupancy = {
       occupied: false,
       byMe: false,
       personId: null,
       personName: '',
       occupiedAt: null,
-    });
+    };
+    const mineOccupancy = {
+      occupied: true,
+      byMe: true,
+      personId: '7',
+      personName: '我',
+      occupiedAt: 1,
+    };
+    let current = workspace(freeOccupancy);
+    let occupyCalls = 0;
     const lock = createPsbWorkspaceLock({
       listWorkspaces: async () => [current],
       occupyWorkspace: async () => {
-        current = workspace({
-          occupied: true,
-          byMe: true,
-          personId: '7',
-          personName: '我',
-          occupiedAt: 1,
-        });
+        occupyCalls += 1;
+        current = workspace(mineOccupancy);
         return { workspace: current, vcs: null };
       },
       readSession: async (psbSessionId) => ({
@@ -5585,13 +5592,39 @@ describe('psb workspace lock before dispatch', () => {
     const { deps, session } = createDeps({
       // 与 `register.preparePsbWorkspaceLock` 同口径：每条消息按权威事实判定，失败抛可行动失败。
       preparePsbWorkspaceLock: async () => {
-        const result = await lock.ensureForSession('psb-1', { requireAuthoritative: true });
+        const result = await lock.ensureForSession('psb-1', {
+          requireAuthoritative: true,
+          allowAutoOccupy: false,
+        });
         const failure = psbWorkspaceLockFailure(result);
         if (failure) throw failure;
       },
     });
     const transaction = createMakerSendTransaction(deps);
 
+    const blocked = await transaction
+      .sendToAgentAccepted(
+        'session-1',
+        '第一条',
+        undefined,
+        { persistUserMessage: { clientId: 'input-1', content: '第一条' } },
+      )
+      .then(
+        () => null,
+        (error: unknown) => error as { failure?: PsbRemoteFailure },
+      );
+
+    expect(blocked?.failure?.code).toBe('WORKSPACE_NOT_OCCUPIED');
+    expect(psbIpcCodeForFailure(blocked!.failure!)).toBe('PSB_WORKSPACE_NOT_OCCUPIED');
+    // 用户还没确认：一条占用请求都没有；本轮不派发、不落库。
+    expect(occupyCalls).toBe(0);
+    expect(session.send).not.toHaveBeenCalled();
+    expect(deps.createDbMessage).not.toHaveBeenCalled();
+
+    // 用户在确认框里点了「占用」→ 渲染层走显式占用入口（这条路径才允许自动占用），
+    // 之后的发送闸门看到「由我占用」放行。
+    expect(await lock.ensureForSession('psb-1', { allowAutoOccupy: true })).toEqual({ ok: true });
+    expect(occupyCalls).toBe(1);
     await expect(
       transaction.sendToAgentAccepted(
         'session-1',

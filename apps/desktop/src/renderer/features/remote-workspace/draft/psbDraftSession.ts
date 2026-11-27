@@ -36,6 +36,10 @@ import {
 import type { PsbRemoteBridge } from '../bridge';
 import { readPsbFailure, type PsbFailureInfo } from '../dialog/psbFailure';
 import { createPsbClientRequestId } from '../dialog/psbSessionIdentity';
+import {
+  isPsbOccupyRequiredFailure,
+  requestPsbOccupyConfirmationForWorkspace,
+} from '../occupyRequired';
 import { releasePsbWorkspaceOccupancy } from './psbPendingReleaseLedger';
 
 /** 一个已确定身份的 PSB 会话（本地会话行要用它做 remoteHostId / 虚拟 workingDir）。 */
@@ -127,14 +131,34 @@ export function createPsbSessionGate(): PsbSessionGate {
       const requestId = clientRequestId;
       const workspaceId = target.workspaceId;
       const ticket: object = {};
-      const session = (async (): Promise<PsbEnsureResult> => {
+      // 懒建也一样受「占用必须由用户确认」约束（2026-11-27 用户复测）：main 的 createSession
+      // 占用闸门在空闲时不替用户占用，而是返回 `PSB_WORKSPACE_NOT_OCCUPIED`。这里请求用户
+      // 确认并显式占用成功后**重试同一次建会话**（同一 `clientRequestId`，PSB 侧仍去重）；
+      // 取消 / 占用失败 → 按原失败返回，不建会话、不静默占用。
+      const createSessionOnce = async (
+        retrying: boolean,
+      ): Promise<Awaited<ReturnType<PsbRemoteBridge['createSession']>>> => {
         try {
-          const created = await bridge.createSession({
+          return await bridge.createSession({
             workspaceId,
             agentKind,
             clientRequestId: requestId,
             ...(title?.trim() ? { title: title.trim() } : {}),
           });
+        } catch (error) {
+          if (!retrying && isPsbOccupyRequiredFailure(error)) {
+            const approved = await requestPsbOccupyConfirmationForWorkspace({
+              workspaceId,
+              workspaceName: target.workspaceTitle ?? '',
+            });
+            if (approved) return createSessionOnce(true);
+          }
+          throw error;
+        }
+      };
+      const session = (async (): Promise<PsbEnsureResult> => {
+        try {
+          const created = await createSessionOnce(false);
           const sessionId = created.session.id;
           if (!isCurrentTarget()) {
             // 目标已被换掉：这条会话没人接手，尽力停掉避免远端残留无名进程。

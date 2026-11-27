@@ -113,7 +113,8 @@ describe('RemoteWorkspacePickerDialog', () => {
 
     // 确认框复用全局 ConfirmDialog，文案走 remoteWorkspace.dialog.confirmOccupy.*。
     const prompt = await screen.findByRole('alertdialog');
-    expect(within(prompt).getByText(`${CONFIRM_TITLE_KEY}#SAGA2 设计`)).toBeTruthy();
+    // 确认框标题带**实例名**（目录名，与行主标题同一口径），不是模板名。
+    expect(within(prompt).getByText(`${CONFIRM_TITLE_KEY}#saga2_design`)).toBeTruthy();
     expect(within(prompt).getByText(CONFIRM_BODY_KEY)).toBeTruthy();
     expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
 
@@ -362,38 +363,44 @@ describe('RemoteWorkspacePickerDialog', () => {
     expect((screen.getByTestId('psb-start-session') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('labels workspace rows with the workspace name, keeping directory/machine as secondary text', async () => {
+  it('labels workspace rows with the directory name, keeping template · machine as secondary text', async () => {
     installPsbBridge({
       listWorkspaces: vi.fn(async () => ({
         workspaces: [
+          // 用户实机形状：`title` 与模板名同词（`saga2_project`），目录名才是这个实例自己的名字。
           makePsbWorkspace({
             id: '9c747178aabbccdd',
             title: 'saga2_project',
+            templateTitle: 'saga2_project',
+            directoryName: 'saga2_project-3',
             clientName: '打包机',
-            directoryName: 'saga2_project',
           }),
-          // 名称与目录不同：次要行继续显示目录。
+          // 旧数据没有目录名：主标题回退标题，模板名仍在次要行。
           makePsbWorkspace({
             id: 'aa11bb22cc33',
             title: '我的项目',
+            templateTitle: 'SAGA2 设计',
+            directoryName: null,
             clientName: '打包机',
-            directoryName: 'saga2_design',
           }),
         ],
       })),
     });
     renderDialog();
     const row = await screen.findByTestId('psb-workspace-row-9c747178aabbccdd');
-    // 主标题 = 工作区名称（`title` 属性仍是完整 id，悬停可取）；名称与目录同名时不重复渲染。
-    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project');
-    expect(row.textContent).toContain('打包机');
+    // 主标题 = 工作区目录名（`title` 属性仍是完整 id，悬停可取）；模板名只进次要行。
+    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project-3');
+    expect(row.querySelector('[title="saga2_project · 打包机"]')?.textContent).toBe(
+      'saga2_project · 打包机',
+    );
+    // 目录名已是主标题：不再渲染「目录：<同一个目录名>」（旧 i18n 前缀在本口径下退休）。
     expect(row.textContent).not.toContain('remoteWorkspace.dialog.directorySecondary');
-    expect(row.textContent?.match(/saga2_project/g) ?? []).toHaveLength(1);
-    const renamed = screen.getByTestId('psb-workspace-row-aa11bb22cc33');
-    expect(renamed.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
-    // 前缀是 i18n key（12 locale 各自翻译），目录名作为占位符值传入，不再写死中文。
-    expect(renamed.textContent).toContain('remoteWorkspace.dialog.directorySecondary#saga2_design');
-    expect(renamed.textContent).not.toContain('目录：');
+    expect(row.textContent).not.toContain('目录：');
+    const legacy = screen.getByTestId('psb-workspace-row-aa11bb22cc33');
+    expect(legacy.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
+    expect(legacy.querySelector('[title="SAGA2 设计 · 打包机"]')?.textContent).toBe(
+      'SAGA2 设计 · 打包机',
+    );
   });
 
   it('opens directly on the create tab when the draft-page channel entry asks for it', async () => {

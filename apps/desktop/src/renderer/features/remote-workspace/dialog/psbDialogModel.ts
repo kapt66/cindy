@@ -12,10 +12,14 @@
  */
 
 export {
+  PSB_WORKSPACE_SECONDARY_SEPARATOR,
   psbWorkspaceDisplayName,
+  psbWorkspaceInstanceName,
   psbWorkspaceRowDisplayName,
   psbWorkspaceRowLabels,
   psbWorkspaceSecondaryText,
+  psbWorkspaceTargetDisplayName,
+  psbWorkspaceTemplateMachineText,
   psbWorkspaceUnavailableReason,
   shortPsbWorkspaceId,
   type PsbWorkspaceDisplayParts,

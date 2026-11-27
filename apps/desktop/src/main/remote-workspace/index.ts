@@ -137,18 +137,27 @@ export interface PsbRemoteService {
     confirm?: boolean;
   }): Promise<PsbRunWorkspaceVcsActionResponse>;
   /**
-   * 写操作前的占用闸门：确保工作区由当前身份锁定（未占用则自动占用）。
+   * 写操作前的占用闸门：确保工作区由当前身份锁定。
    *
-   * 失败抛 `PsbClientError`（被他人占用带人名 / 离线 / 工作区不可用 → 对应 `PSB_*` 码；
-   * 网络与鉴权失败原样抛）。口径见 `main/remote-workspace/workspaceLock.ts`。
+   * **空闲时不会自动占用**（2026-11-27 用户复测口径：所有工作区占用都必须由用户通过弹窗
+   * 确认）。缺省返回 `PSB_WORKSPACE_NOT_OCCUPIED`，渲染层弹确认框、用户确认后再走显式
+   * 占用入口（`psb-remote:occupy-workspace`）。只有显式用户动作的调用点才可传
+   * `allowAutoOccupy: true`；发送 / 启动串流 / 建会话一律不传（或传 `false`）。
+   *
+   * 失败抛 `PsbClientError`（占用待确认 / 被他人占用带人名 / 离线 / 工作区不可用 → 对应
+   * `PSB_*` 码；网络与鉴权失败原样抛）。口径见 `main/remote-workspace/workspaceLock.ts`。
    */
-  ensureWorkspaceLocked(workspaceId: string): Promise<void>;
+  ensureWorkspaceLocked(
+    workspaceId: string,
+    options?: { allowAutoOccupy?: boolean },
+  ): Promise<void>;
   /**
    * 发送前的占用闸门（按 PSB 会话定位工作区）。
    *
    * 缺省读一次 PSB 会话行（自带工作区快照）判断占用；乐观有效期内命中缓存则零网络请求。
    * **发送路径传 `{ requireAuthoritative: true }`**：跳过乐观缓存，每条消息都读一次权威事实
    * （2026-11-27 用户口径：工作区可能被交接，不能凭本地缓存以为还是我的）。
+   * 工作区空闲时返回 `PSB_WORKSPACE_NOT_OCCUPIED`（**不自动占用**，等用户确认）。
    * 会话已读不到时按 `PSB_NOT_FOUND` 抛出（调用方先走重建，再重试本轮）。
    */
   ensureWorkspaceLockedForSession(
@@ -344,19 +353,32 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
     if (failure) throw failure;
   }
 
-  /** 工作区级闸门（新会话创建 / 管理页启动串流等写操作）。 */
-  async function ensureWorkspaceLocked(workspaceId: string): Promise<void> {
-    throwIfWorkspaceLockFailed(await workspaceLock.ensure(workspaceId));
+  /** 工作区级闸门（新会话创建 / 管理页启动串流等写操作）；空闲时**不自动占用**。 */
+  async function ensureWorkspaceLocked(
+    workspaceId: string,
+    options?: { allowAutoOccupy?: boolean },
+  ): Promise<void> {
+    throwIfWorkspaceLockFailed(
+      await workspaceLock.ensure(workspaceId, {
+        allowAutoOccupy: options?.allowAutoOccupy === true,
+      }),
+    );
   }
 
   /**
    * 发送前闸门：缺省乐观有效期内零请求；发送路径（`requireAuthoritative`）每次都读权威事实。
+   * 工作区空闲时返回 `PSB_WORKSPACE_NOT_OCCUPIED`（**不自动占用**）。
    */
   async function ensureWorkspaceLockedForSession(
     psbSessionId: string,
     options?: PsbWorkspaceLockEnsureSessionOptions,
   ): Promise<void> {
-    throwIfWorkspaceLockFailed(await workspaceLock.ensureForSession(psbSessionId, options));
+    throwIfWorkspaceLockFailed(
+      await workspaceLock.ensureForSession(psbSessionId, {
+        requireAuthoritative: options?.requireAuthoritative === true,
+        allowAutoOccupy: options?.allowAutoOccupy === true,
+      }),
+    );
   }
 
   const viewer = createPsbStreamViewer({
@@ -519,14 +541,17 @@ export function createPsbRemoteService(deps: PsbRemoteServiceDeps): PsbRemoteSer
 
     ensureWorkspaceLocked,
 
-    async ensureWorkspaceLockedForSession(psbSessionId) {
-      await ensureWorkspaceLockedForSession(psbSessionId);
+    async ensureWorkspaceLockedForSession(psbSessionId, options) {
+      // 选项必须原样转发：漏传会让发送闸门退回 1.5s 乐观缓存（等于放弃每条消息的权威校验）。
+      await ensureWorkspaceLockedForSession(psbSessionId, options);
     },
 
     async createSession(input) {
-      // 新会话属于工作区写操作：PSB 会对未锁定者拒绝写入，Cindy 必须自己先锁定。
-      // 占用人名/离线/未就绪都会在这里变成可行动的 PSB_* 失败，且不建会话、不落库。
-      await ensureWorkspaceLocked(input.workspaceId);
+      // 新会话属于工作区写操作：PSB 会对未锁定者拒绝写入，Cindy 必须自己先确认锁定。
+      // **不自动占用**（2026-11-27 用户复测口径）：工作区空闲时返回
+      // `PSB_WORKSPACE_NOT_OCCUPIED`，由渲染层弹确认框、用户确认后显式占用再重试。
+      // 占用人名/离线/未就绪同样在这里变成可行动的 PSB_* 失败，且不建会话、不落库。
+      await ensureWorkspaceLocked(input.workspaceId, { allowAutoOccupy: false });
       const result = await api.createSession(input);
       // 会话数是工作区行的投影（列表徽标），创建成功后其他窗口也要看到。
       // `purpose: 'internal'` 的会话按 PSB 口径不进列表/计数，PSB 返回的工作区行也不会把它算进去。

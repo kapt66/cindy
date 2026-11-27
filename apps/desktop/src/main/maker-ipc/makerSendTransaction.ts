@@ -1241,7 +1241,8 @@ export function createMakerSendTransaction(deps: MakerSendTransactionDeps): Make
       //    落任何远端写入，用户重发即可（消息体仍在草稿/队列里）。
       // **无条件执行**（不在任何分支里）：直发 / 队列 drain / 手机 / 自动重试都经过本事务，
       // 因此每条用户消息都会在这里做一次权威占用校验。工作区仍由自己占用 → 放行；已被释放
-      // → 自动重新占用；被他人占用 / 读不到 → 抛可行动失败，本轮不发送。
+      // （空闲）→ **不自动占用**，抛 `PSB_WORKSPACE_NOT_OCCUPIED`（2026-11-27 用户复测：
+      // 占用必须由用户确认）；被他人占用 / 读不到 → 抛可行动失败，本轮不发送。
       if (deps.preparePsbWorkspaceLock) await deps.preparePsbWorkspaceLock(sessionId);
       await deps.ensureRemoteReadyForSessionStart({ session: sess, createOpts });
 

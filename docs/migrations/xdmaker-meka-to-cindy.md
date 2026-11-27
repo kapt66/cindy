@@ -8447,7 +8447,7 @@ PSB 远端客户端机器的**工作区目录**里。工作区、
    主进程在同一工作区新建 PSB 会话、先落库新 `remote_host_id` 再推送 `sessions-rebound`，继续这一轮
    （远端原生上下文不延续、文案只写「可能不会延续」）。新建会话 / 启动串流都过
    `workspaceLock.ts` 的占用闸门（其它调用方 TTL 只缓存成功）；**每条用户消息发送前固定做权威
-   校验**（读 PSB 会话行 + 工作区列表；mine 放行、free 自动占用、他人占用 / 离线 / 未就绪 /
+   校验**（读 PSB 会话行 + 工作区列表；mine 放行、**free 不占用**（返回 `PSB_WORKSPACE_NOT_OCCUPIED`，渲染层确认后显式占用并重试）、他人占用 / 离线 / 未就绪 /
    读不到一律不发送并给可行动失败；非 `psb:` 会话 0 次 PSB 请求）。占用无 TTL，退出登录不释放
    （见产品规则 §2.5）。
 7. **maker-host 的接入形状**：`remote-session-routing.ts` 新增 `'psb'` 分类与
@@ -8528,6 +8528,26 @@ force 校验 + ≤32 有界缓存 + 广播）、`runWorkspaceVcsAction`（渲染
 （18 files / 257 tests）与 `pnpm --filter desktop run typecheck` 实跑通过；i18n 无新增 key。
 **真机复测待做**（新建任务首页胶囊显示 `saga2_project`、选工作区弹窗主标题同名、缺名回退机器-短 id）。
 
+**2026-11-27 实例名改显示工作区目录名（人工复测修正，实现事实）**：上一条的「主标签 = `workspace.title`」
+在真机数据上仍显示模板名——`title` 与 `templateTitle` 同词，同一模板的多个工作区（`saga2_project-3` /
+`saga2_project-4`）在主标签上完全一样。用户口径：工作区实例的显示名应该是工作区自己的名称（PSB
+`directoryName`），不是模板名。实现：`psbWorkspaceDisplayName` / `psbWorkspaceRowDisplayName` 主标签
+优先级改为 `directoryName`（trim 非空）→ `title` → `<客户端名>-<短 id>` → 短 id（新增
+`psbWorkspaceInstanceName` 单点取实例名，管理页页头 / VCS 横幅共用）；新增
+`psbWorkspaceTargetDisplayName(psbTarget)` 作为草稿页项目胶囊的唯一入口（接整个 PSB 目标载荷，路由
+里不再手写第二份拼接）；`psbWorkspaceSecondaryText` 改为 **模板名 · 机器名**
+（`psbWorkspaceTemplateMachineText`：去重、单行、中性 `' · '`、不翻译），不再输出「目录：<同一个
+目录名>」（`directorySecondary` key 不再被引用），没有实例名时机器名含在主标签里也不再重复。管理页
+页头主标题 = `directoryName`（缺失回退 `title`）、第二段 = `templateTitle · clientName`（去重），
+不再有独立目录段；同名冲突消歧（主标题 + 次要行都撞才追加短 id）保留。**字段链路无需改协议**：
+`RemoteWorkspacePickerCreated` / `psbTarget` / 路由 state / 草稿持久化本来都带 `directoryName`
+（加性可空，旧数据缺失时回退 `title`），本批只补胶囊调用点。产品规则 §2.3 / §3 / §7-5 / §8.1 与工程
+契约 §9.7 / §11.2 已同步。测试证据：
+`vitest run src/renderer/features/remote-workspace src/renderer/features/cc-agent src/renderer/__tests__/newMakerProjectPicker.test.ts`
+（158 files / 2284 tests 全绿）与 `pnpm --filter desktop run typecheck` 实跑通过；`pnpm check:i18n` /
+`pnpm check:i18n-glossary` / `pnpm check:dev-docs` 实跑通过；i18n 无新增 key。**真机复测待做**（胶囊 /
+选择器行 / 管理页页头显示 `saga2_project-3` 而不是模板名）。
+
 **2026-11-26 订阅 409 `NO_RUNNING_SESSION` 的处置（真机事故修复，实现事实）**：真机在工作区访问
 未运行时点「启动串流」只得到「串流失败：操作失败，请稍后重试。」（PSB 0.1.180 的 409
 `details.code/state` 未被解析）。现在 main 把 `details.code='NO_RUNNING_SESSION'` +
@@ -8548,7 +8568,7 @@ src/renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel
 已删，`PSB_REMOTE_CHANNELS` 由 17（14 invoke + 3 push）扩到 **21（17 invoke + 4 push）**（跨组集成
 波次新增会话结束释放 3 个 invoke + 待释放账本变更 1 个 push，见工程契约 §16.4），加管理页 8（6+2）
 = **23 invoke / 6 push**；
-`ipc-errors.ts` 单表派生、`PSB_*` 21 码，`PSB_FAILURE_DESCRIPTORS` 派生失败文案 / banner / VCS /
+`ipc-errors.ts` 单表派生、`PSB_*` 23 码（第三轮复测新增 2 条「占用待确认 / 会话输出中禁止释放」），`PSB_FAILURE_DESCRIPTORS` 派生失败文案 / banner / VCS /
 串流访问；`resolvePsbUrl` 是唯一出网 URL 判据（origin + 归一化 pathname + `/api/cindy/remote/`
 前缀），VCS action 按 kind 走固定 path+method；agent-tunnel 就绪帧改**进程级能力探测** + 就绪期
 有界回放，失败抛 `PsbTunnelError`；`createSession` 先读工作区再建、`getSession` / `ensureForSession`
@@ -8561,7 +8581,8 @@ cursor 定向 + 主动关闭补发 `closed(superseded/client-stopped)`，重启�
 
 **2026-11-27 第二轮复审残余修复（wave2，实现事实，文档已同步）**：
 
-- **失败码映射收敛为单表**：`PSB_FAILURE_DESCRIPTORS` 是唯一手写处（**21 行** = 21 个 `PSB_*` 码），
+- **失败码映射收敛为单表**：`PSB_FAILURE_DESCRIPTORS` 是唯一手写处（第三轮复测后 **23 行** = 23 个 `PSB_*` 码，
+  新增 `PSB_WORKSPACE_NOT_OCCUPIED` / `PSB_AGENT_SESSION_ACTIVE`），
   `PSB_IPC_FAILURE_MESSAGE_KEYS`（旧名保留，由单表 `Object.fromEntries` 生成）/ 可写判据表 /
   串流访问分档 / `psbIpcCodeForFailure` 反查全是它的投影；`alsoPsbCodes`（历史别名）、
   `whenMessageKey`（AUTH 鉴别）、`writableReason` / `inputMessageKey` / `occupantName` 把原来散在代码
@@ -8599,6 +8620,45 @@ cursor 定向 + 主动关闭补发 `closed(superseded/client-stopped)`，重启�
   `remoteWorkspace.session.streamUnsupported`；`remoteWorkspace.input.occupiedByOther` → 输入禁用的
   真实映射（`PSB_WORKSPACE_WRITABLE_FAILURES.inputMessageKey`：`error.workspaceOccupied` /
   `error.clientOffline` / `input.workspaceNotReady`）（产品规则 §2.4 / 工程契约 §13.4）。
+
+**2026-11-27 第三轮人工复测：占用一律用户确认，禁止自动占用（实现事实，文档已同步）**：
+
+- **隐式写路径不再自动占用**：`workspaceLock` 的 `ensure()` / `ensureForSession()` 新增
+  `allowAutoOccupy`（**默认 `false`**）；工作区空闲且不允许自动占用 → 返回
+  `{ ok:false, reason:'occupy-required' }`，映射 `PSB_WORKSPACE_NOT_OCCUPIED`（与 PSB 2026-11-27
+  守卫契约 `403 WORKSPACE_NOT_OCCUPIED` **同码同形**：`PsbRemoteFailure.code` 直接用
+  `WORKSPACE_NOT_OCCUPIED`）+ `remoteWorkspace.error.occupyRequired`（12 locale），且**不发任何
+  `POST …/occupy`**。三个接入点（发送闸门 `preparePsbWorkspaceLock`、管理页 `streamStart`、
+  `createSession`）一律 `allowAutoOccupy:false`；只有**用户确认后**的显式占用入口
+  （`psb-remote:occupy-workspace`，含选择流程确认）才产生占用。顺带修正
+  `PsbRemoteService.ensureWorkspaceLockedForSession` 未把 `requireAuthoritative` 转发到锁的接线
+  漏洞（此前发送闸门实际退回 1.5s 乐观缓存）。
+- **PSB `AGENT_SESSION_ACTIVE` 纳入单表**：释放占用时 PSB 返回 `409 AGENT_SESSION_ACTIVE` →
+  `PSB_AGENT_SESSION_ACTIVE` + `remoteWorkspace.error.agentSessionActive`（12 locale，语义「这个
+  工作区里还有任务正在输出，先结束或停止它，再释放占用」）；不自动重试、不新增「去 PSB」降级提示
+  （用户明确反对用提示掩盖契约缺口）。`PSB_FAILURE_DESCRIPTORS` 由 21 行增到 **23 行**。
+- **渲染层三条入口统一「确认 → 显式占用 → 重试同一次动作」**：唯一实现
+  `renderer/features/remote-workspace/occupyRequired.ts` + 宿主
+  `PsbOccupyRequiredConfirmation.tsx`（App 主窗、`ConfirmDialogProvider` 内；确认框复用
+  `remoteWorkspace.dialog.confirmOccupy.*` 五键，z-index 修复不变）。发送（`makerChatStore` 的
+  enqueue / steer catch，**同一 `clientId` 载荷重发一次**）、启动串流（`useAdminStreamSession.start`
+  以 `resume` 重跑一次）、懒建会话（`psbDraftSession.ensure`，**同一 `clientRequestId`**）都只调用
+  它；取消不占用不执行，占用失败不重试（按既有 `PSB_*` 文案）。没有宿主（旧 preload / 副窗 /
+  单测）时 resolver 返回 `false`：失败落横幅，不静默占用、不假装成功。
+- 文档：产品规则 §2.2 / §2.5 / §2.6、工程契约 §9.7 / §13（13.1–13.4 + 新增 §13.6）与验证清单已改；
+  定点校验见下方「验证证据」。
+
+**验证证据（2026-11-27 第三轮，实跑）**：
+`pnpm --filter desktop exec vitest run src/main/remote-workspace/__tests__/workspaceLock.test.ts
+src/main/remote-workspace/__tests__/psbRemoteVcsService.test.ts
+src/main/remote-workspace/__tests__/psbRemoteIpcWiring.guard.test.ts
+src/main/maker-ipc/__tests__/makerSendTransaction.test.ts
+src/renderer/features/remote-workspace/__tests__/occupyRequired.test.ts
+src/renderer/features/remote-workspace/__tests__/psbFailureText.test.ts
+src/renderer/features/remote-workspace/admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx
+src/renderer/features/remote-workspace/draft/__tests__/psbDraftSession.test.ts
+src/renderer/__tests__/remoteErrorDecode.test.ts` + `pnpm --filter desktop run typecheck` +
+`check:i18n` / `check:i18n-glossary` / `check:dev-docs` / `check:test-hygiene`（结果以本轮报告为准）。
 
 **未验证 / 风险（如实登记）**：
 

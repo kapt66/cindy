@@ -196,6 +196,8 @@ export function RemoteWorkspaceAdminConnection({
   const session = useAdminStreamSession({
     bridge,
     workspaceId,
+    // 确认占用弹窗的标题用页头同源的工作区名（不让 hook 再读一遍上下文）。
+    workspaceName: context.title,
     blockedActionKey,
     contextViewerSessionId: context.viewerSessionId,
     visible: active !== false && shellVisible !== false,

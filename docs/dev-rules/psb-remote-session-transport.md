@@ -539,8 +539,12 @@ dev 实例，所以本功能不引入 migration。`sessionRebind.ts` 的 `PsbSes
     `main/maker-ipc/__tests__/makerSendTransaction.test.ts` 的 rebind 接线用例 +
     `main/localDb/ipc/__tests__/sessionRemoteHostIdReader.test.ts` 的缓存失效用例；
   - 发送前占用闸门（**每条消息权威校验**，2026-11-27）：`main/remote-workspace/__tests__/workspaceLock.test.ts`
-    （TTL 路径 vs `requireAuthoritative`、缓存失效、free → 自动占用、读失败抛出）+
+    （TTL 路径 vs `requireAuthoritative`、缓存失效、**空闲 → `occupy-required` 且 0 次占用请求**、
+    显式 `allowAutoOccupy:true` 才占用、读失败抛出）+
     `makerSendTransaction.test.ts` 的闸门接线用例（连续两条各校验一次、失败不派发不落库）+
+    `renderer/features/remote-workspace/__tests__/occupyRequired.test.ts`（确认 + 显式占用 + 重试的
+    唯一实现）+ `remoteErrorDecode.test.ts` / `RemoteWorkspaceAdminPanel.test.tsx` /
+    `psbDraftSession.test.ts` 的「确认后重试同一次动作、取消不占用」三条入口用例 +
   - IPC 面接线守卫（preload ↔ handler ↔ bridge 三处一致）。
 - 纯文档改动：`pnpm check:dev-docs`。
 - 实机联调顺序（PSB 侧同样要求逐段留证据，见 PSB 仓 `协作需求.md` §3A.5）：**测试部署** →
@@ -673,14 +677,29 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
   （main 账本 + 工作区级账本，按 `workspaceId` 跨源去重展示；同一工作区重试由 main 代表），
   唯一 UI 消费方是常驻提示条
   `features/remote-workspace/release/PsbPendingReleaseNotice.tsx`（见 §16.4）。
+- **工作区显示名 / 次要行**：`features/remote-workspace/dialog/psbWorkspaceDisplay.ts` 是唯一实现——
+  **实例名 = 工作区目录名**（PSB `directoryName`，如 `saga2_project-3`；trim 非空优先，缺失回退
+  `title`，再回退 `<客户端名>-<短 id>` / 短 id，由 `psbWorkspaceInstanceName` 单点取）；**模板名不是
+  实例名**，模板名 · 机器名只作次要行（`psbWorkspaceTemplateMachineText`：去重、`' · '` 连接、不进
+  翻译；主标签已是目录名时不再输出「目录：…」重复行）。选择器行用 `psbWorkspaceRowLabels`（按整个
+  列表消歧，主标题 + 次要行都撞才追加短 id）；草稿页项目胶囊用 `psbWorkspaceTargetDisplayName(psbTarget)`
+  （接整个 PSB 目标载荷，路由里禁止手写第二份「目标 → 显示名」拼接）；管理页页头 / VCS 横幅用同一对
+  helper。产品口径见产品规则 §2.3 / §3。
 - **工作区选择 / 占用确认**：`renderer/features/remote-workspace/dialog/usePsbWorkspaceSelection.ts`
   是弹窗与草稿页下拉唯一的**选择引擎**（`requestSelect` / `confirmOccupy` / `cancelOccupy` /
   `handoffSelection` / `cancel`；确认弹窗走宿主 `useConfirmDialog`，行 UI / 徽标 / 键盘 / 失败
   文案同源）。容器不再自己判定「要不要占用 / 要不要确认 / 谁负责归还」；状态机、`held.newlyOccupied`
   归还边界与两个入口的交接时机见 §9.8。
+- **隐式写路径的占用确认（2026-11-27 复测）**：`features/remote-workspace/occupyRequired.ts` 是
+  「用户确认 → 显式占用 → 调用方重试同一次动作」的**唯一实现**（码识别 /
+  `confirmAndOccupyPsbWorkspace` / 两个注册式 resolver / `adminContext` 解析 workspaceId）；
+  宿主 `PsbOccupyRequiredConfirmation.tsx`（App 主窗挂一次）只做「注册 resolver + 取全局确认框」。
+  发送（`makerChatStore` 的 enqueue / steer catch）、启动串流（`useAdminStreamSession.start`）、
+  懒建会话（`psbDraftSession.ensure`）只调用它，不再各自判定占用或自行占用（见 §13.6）。
 
 定向测试：`psbDraftTarget.test.ts` / `psbDraftSession.test.ts`（目标归约与草稿生命周期）、
-`remoteWorkspaceAdminEntry.test.tsx`（右栏「+」菜单单入口）、`psbFailureText.test.ts`（码表 /
+`psbWorkspaceDisplay.test.ts`（实例名 = 目录名 / 模板名只进次要行 / 同名消歧 / 交接载荷 → 胶囊同一
+口径）、`remoteWorkspaceAdminEntry.test.tsx`（右栏「+」菜单单入口）、`psbFailureText.test.ts`（码表 /
 包装剥离 / 人名插值）、`psbOccupancyRelease.test.ts`（main 单权威探测 / 旧 main 兼容补投）、
 `PsbPendingReleaseNotice.test.tsx`（跨源去重 / 单一重试 / 失败码归一 / 关闭 / 旧 preload 降级）、`psbStreamLifecycle.test.ts` /
 `RemoteWorkspaceAdminPanel.test.tsx`（状态机 / 保活 / watchdog）、`vcsNoticeStore.test.ts` /
@@ -847,6 +866,7 @@ video 帧按需把 Annex-B 转 AVCC 后喂解码器。观看端连接带客户�
 | E11 | 侧栏状态缓存：手列 14 字段比较、TTL 与轮询间隔同一常量、释放引用后清空却不 publish | 改为「行投影」比较（只含渲染字段）；`REFRESH_TTL_MS=12s` 与 `POLL_INTERVAL_MS=15s` 拆开；释放时清空后 `publish` 让行上的标签/锁立即消失；会话→工作区反查加带 revision 的单次解析缓存（一行两个装饰不再各扫一遍表） |
 | E12 | 串流播放器 `submittedAt` 无上限（解码器只吃输入不产出的窗口里随串流时长增长）；播放器无行为测试 | 待配对提交样本上限 `PSB_STREAM_MAX_PENDING_SUBMISSIONS=64`；`psbStreamPlayer.test.ts` 用 fake `VideoDecoder`/canvas 钉住重建、丢 delta、统计与上限 |
 | E13 | `psbDraftTarget` 脏 history state 无测试；测试夹具在两个入口重复 | 新增 `psbDraftTarget.test.ts`（脏目录名/消费语义）；`__tests__/psbTestFixtures.ts` 统一 `makePsbWorkspace` / `installPsbBridge` 等夹具，删掉两个入口各自的复制 |
+| E14 | 确认占用弹窗从工作区选择弹窗里发起时被下层模态挡住：确认框 zIndex 缺省 10000 低于选择弹窗内容 z-[10001]，只看到遮罩变黑、确认框不可见、页面点什么都没反应 | `ConfirmDialog` 缺省层级提升到 `10090`（高于普通模态内容最高档 `z-[10020]`、仍低于 Toast `10100`），可盖在任何弹窗之上；`confirmDialogA11y.test.tsx` 增加层级回归断言，并在 `confirm-dialog.tsx` 注释写明嵌套模态约定 |
 
 定向测试：`vitest run src/renderer/features/remote-workspace`（23 files / 236 tests 全通过）；
 渲染层类型检查 `tsc --noEmit -p tsconfig.renderer.json` 通过（整包 `pnpm --filter desktop run typecheck`
@@ -1036,7 +1056,8 @@ maker-core 走 `event loop ended unexpectedly (likely remote daemon shutdown)` �
   `inferred: true`）：**不写** `会话→工作区`映射、**不写**固定信息快照、**不推进**
   `lastWorkspaceId`。只有 `sessionStatus` 详情返回的 workspace id 才是权威身份，才持久化映射；
   猜错的代价是把任务永久指向别人的工作区，远大于一次列表请求。
-  列表读失败或确实匹配不到时才用降级种子：名称 = 目录名（**任务标题不是工作区名称，禁止冒充**），
+  列表读失败或确实匹配不到时才用降级种子：名称 = 目录名（**任务标题不是工作区名称，禁止冒充**；
+  渲染层页头也把目录名当实例名、模板名只作次要信息，见 §9.7），
   机器 / 模板拿不到就留空；`workspaceIdKnown: false` 的占位身份拒绝写操作。列表刚失败时
   不再重复请求一次（避免双倍超时），种子带上 PSB 原话；
 - 写操作闸门（2026-11-26 审查修复）：`streamStart` 在已知 stale / 占位身份时直接抛可行动失败，
@@ -1776,23 +1797,30 @@ canvas 会收到一次伪造的 `pointerleave`，只按边界事件会在整个�
 真机验收点见产品规则 §8.2（文本区 I-beam / 窗口边缘 resize / 忙碌 loading / 移出画面恢复宿主默认 /
 HUD 与按钮不受影响）。
 
-## 13. 写操作前的占用闸门（2026-11-26 用户口径）
+## 13. 写操作前的占用闸门（2026-11-26 用户口径；2026-11-27 复测改「一律用户确认」）
 
 PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消息）做占用校验：不是自己锁定的写入会被
-拒绝。Cindy 因此在主进程里自己先锁定/校验，而不是等 PSB 拒绝后再把一句不可行动的失败转给用户。
+拒绝。Cindy 因此在主进程里自己先校验，而不是等 PSB 拒绝后再把一句不可行动的失败转给用户。
+
+> **2026-11-27 人工复测（用户口径，最高优先级）**：**所有工作区占用都必须由用户通过弹窗确认，
+> 禁止任何默认 / 自动占用**。闸门因此不再「看到空闲就替用户占用」：空闲时返回
+> `PSB_WORKSPACE_NOT_OCCUPIED`（与 PSB 2026-11-27 守卫契约 `403 WORKSPACE_NOT_OCCUPIED` **同码
+> 同形**），渲染层弹确认框 → 用户确认 → **显式占用**（`psb-remote:occupy-workspace`）→ 重试发起
+> 的那次动作。`allowAutoOccupy`（默认 `false`）是唯一开关，只有显式用户动作的调用点可以传 `true`。
 
 ### 13.1 唯一助手
 
 `main/remote-workspace/workspaceLock.ts` 的 `createPsbWorkspaceLock(ports)`（生产装配在
 `index.ts` 的 `PsbRemoteService` 里，一处 TTL 缓存全会话共享）。「能不能写」的判定**委托唯一判据**
 `shared/psb-remote-workspace.ts` 的 `psbWorkspaceWritable(workspace, { requireAgentRuntime: false })`
-（`requireAgentRuntime:false`：那台机器没装某个 Harness 不阻断与它无关的写），lock 只负责在该占用
-时自动占用：
+（`requireAgentRuntime:false`：那台机器没装某个 Harness 不阻断与它无关的写）；闸门只在该占用时
+**且调用方显式允许**时占用：
 
 | 输入状态 | 结果 | 动作 |
 | --- | --- | --- |
 | 由自己占用 | `{ ok: true }` | 放行 |
-| 无人占用 | `{ ok: true }` | **自动 `occupyWorkspace`**（PSB 幂等）后放行 |
+| 无人占用 + `allowAutoOccupy:false`（缺省） | `{ ok:false, reason:'occupy-required' }` | **不占用**；映射 `PSB_WORKSPACE_NOT_OCCUPIED`，等用户确认 |
+| 无人占用 + `allowAutoOccupy:true`（仅显式用户动作） | `{ ok: true }` | 幂等 `occupyWorkspace` 后放行 |
 | 被他人占用 | `occupied-by-other` + `personName` | 拒绝，不尝试占用 |
 | 客户端离线 | `offline` | 拒绝（占用了也用不了） |
 | 工作区不可见 / 未就绪 | `workspace-unavailable`（`missing` / `state`） | 拒绝 |
@@ -1801,7 +1829,7 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
 读口：`ensure()` 不命中缓存读 **1 次工作区列表**；`ensureForSession()` 不命中缓存读 **2 次 HTTP**
 （先读会话行拿 `workspaceId`，再读列表拿占用 / 在线 / usable——PSB 没有单工作区读口，见 §13.3）。
 `GET /workspaces/:id` 在 Cindy 身份下恒 403（§3 与 §10 第 3 条）。调用方手上有新鲜工作区行时用
-`snapshot` 传入，省一次请求。
+`snapshot` 传入，省一次请求。**`allowAutoOccupy:false` 且空闲时 0 次占用请求**（只有读口那 1/2 次）。
 **发送路径固定 `requireAuthoritative: true`**（不命中任何缓存），其它调用方保留 `PSB_WORKSPACE_LOCK_TTL_MS`
 的乐观有效期，见 §13.3。
 
@@ -1813,7 +1841,9 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
    绕过路径。`psbClient.createSession` 内部**先读工作区再 POST**（共 2 次 HTTP）：读工作区失败时
    一个请求都不发，不会留下无人认领的孤儿会话（见 §15.6）。
 2. **启动串流**：`adminService.streamStart()` 在工作区级订阅（或旧 PSB 的过渡回退建会话）与起观看
-   端之前 `remote().ensureWorkspaceLocked(workspaceId)` → 失败不订阅、不建会话、不建立观看连接。
+   端之前 `remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false })` → 空闲时返回
+   `PSB_WORKSPACE_NOT_OCCUPIED`（渲染层确认后占用再重试本次启动），失败不订阅、不建会话、不建立
+   观看连接。
    订阅前还会按能力位**尽力**调用一次 `ensureWorkspaceAccess`（**可选增强、不是闸门**：403/404/
    超时都不阻断；只有 `open` 能力位前台等待，`unknown` / `failed` / `timeout` 是后台预热不阻塞，
    见 §11.8），顺序是「占用闸门 → 尽力拉起访问 → 订阅」。
@@ -1824,10 +1854,11 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
    （进 lazy-create/隧道）**之前**调用 `deps.preparePsbWorkspaceLock(sessionId)`，**无条件执行**
    （不在任何分支里：直发 / 队列 drain / 手机 / 自动重试 / 重建后都经过本事务）。`register.ts`
    的实现按会话行的 `remoteHostId` 定位 `psb:<id>`，再走
-   `PsbRemoteService.ensureWorkspaceLockedForSession(id, { requireAuthoritative: true })`：
+   `PsbRemoteService.ensureWorkspaceLockedForSession(id, { requireAuthoritative: true, allowAutoOccupy: false })`：
    **每条消息都读一次 PSB 会话行 + 工作区事实**（2 次 HTTP），
    - 仍由我占用 → 放行；
-   - 此刻无人占用（被交接回空闲）→ 自动占用成功后放行；
+   - 此刻无人占用（被交接回空闲）→ **不自动占用**，返回 `PSB_WORKSPACE_NOT_OCCUPIED`；渲染层弹
+     「需要占用这个工作区」确认框，用户确认 → 显式占用 → **自动重试同一次发送**（§13.6）；
    - 被他人占用 / 离线 / 未就绪 → 可行动 `PSB_*` 失败（带占用人名），本轮不发送；
    - 读不到 / 网络 / 鉴权失败 → 同样不发送（**禁止 fail-open**：「无法确认」不是「可以写」）。
    位置刻意放在 `SESSION_RUNNING` 之后：插话/排队被拒时仍报原来的原因，不被占用文案抢答。失败时
@@ -1851,15 +1882,18 @@ PSB 服务端对**工作区写操作**（新建会话 / 启动串流 / 发送消
   调用，且固定传 `requireAuthoritative: true`。
 - **权威读不是 mine 时清缓存**：`ensureForSession` 读到工作区未由我占用（无人占用 / 他人占用 /
   未就绪）会先删掉该工作区的乐观缓存，避免非权威调用方在 TTL 内继续拿「1.5s 前是我的」放行
-  （交接后仍以为锁还在）。读到 mine 或本次自动占用成功时按原方式更新缓存。
-- 失败一律不缓存：读不到 / 被他人占用 / 离线等失败后，下一条消息立刻重新读并重新判定。
+  （交接后仍以为锁还在）。读到 mine 或本次**显式允许**的占用成功时按原方式更新缓存。
+- 失败一律不缓存：读不到 / 被他人占用 / 离线 / **`occupy-required`** 等失败后，下一条消息立刻
+  重新读并重新判定（用户确认占用后由渲染层显式占用，不经闸门的 TTL）。
 - 本端占用/释放（`occupyWorkspace` / `releaseWorkspace`）会 `invalidate` 该工作区的乐观缓存。
 
 ### 13.4 失败码与文案
 
-`psbWorkspaceLockFailureError()` 把三种可行动失败映射成 `PSB_*` 码（`shared/psb-remote-workspace.ts`
-§8，`→PSB_WORKSPACE_OCCUPIED_BY_OTHER` / `PSB_CLIENT_OFFLINE` / `PSB_NOT_FOUND` 或
-`PSB_WORKSPACE_NOT_READY`）。被他人占用时 `message` **只放占用人名**（渲染层插值 `{{name}}`）。
+`psbWorkspaceLockFailureError()` 把**四种**可行动失败映射成 `PSB_*` 码（`shared/psb-remote-workspace.ts`
+§4b 单表，`→PSB_WORKSPACE_NOT_OCCUPIED` / `PSB_WORKSPACE_OCCUPIED_BY_OTHER` / `PSB_CLIENT_OFFLINE` /
+`PSB_NOT_FOUND` 或 `PSB_WORKSPACE_NOT_READY`）。`PSB_WORKSPACE_NOT_OCCUPIED` 与 PSB 的
+`403 WORKSPACE_NOT_OCCUPIED` 同码（PSB 原始码 → 本地失败码同名），PSB 上线后语义不变。被他人占用时
+`message` **只放占用人名**（渲染层插值 `{{name}}`）。
 网络 / 鉴权失败原样抛（`PSB_UNREACHABLE` / `PSB_AUTH_*` 等既有映射），发送路径据此**不发送**；
 `register.ts` 的闸门统一用 `psbIpcCodeForFailure(toPsbRemoteFailure(error))` 收敛成带码的
 `IpcError`（映射不到才落 `INTERNAL`），跨 IPC 保留命名空间码。
@@ -1877,6 +1911,12 @@ if，否则同一条失败会出现两套文案。会话页错误横幅的 PSB �
 `renderer/lib/makerChatStore.ts` 的 `decodeRemoteErrorMessage`（`[PSB_*]` →
 `remoteWorkspace.*`）：否则通用通道会让用户看到裸的 Electron 包装串
 （`Error invoking remote method …`）。
+
+**2026-11-27 新增两条可行动失败**（同一张单表，`remoteWorkspace.error.*` × 12 locale）：
+`remoteWorkspace.error.occupyRequired`（「这个工作区还没被你占用，需要先占用。」——覆盖
+`PSB_WORKSPACE_NOT_OCCUPIED`）与 `remoteWorkspace.error.agentSessionActive`（「这个工作区里还有
+任务正在输出，先结束或停止它，再释放占用。」——覆盖 `PSB_AGENT_SESSION_ACTIVE`）。两条都是
+可行动说明，**不新增「去 PSB」类降级提示**（用户明确反对用提示掩盖契约缺口）。
 
 **渲染层唯一文案实现（2026-11-26 独立审查归并）**：`renderer/features/remote-workspace/psbFailureText.ts`
 的 `psbFailureText(t, error)` 是唯一出口——输入可以是原始 IPC 错误、推送里的 `PsbRemoteFailure`
@@ -1904,7 +1944,7 @@ Cindy 只消费服务端结论、不自己跑 VCS；两代服务端形态**并�
   409 用 `psbFailureFromResponse` 把 `details.vcs` 挂到 `PsbRemoteFailure.vcs`。
   `message` 缺省时用 `vcs.messageZh` 兜底（PSB 的 `error.message` 常为空）。
 - **IPC 只能带 code+message**：`details.vcs` 的 `projects` / `actions` 跨不了 invoke 失败。因此
-  `main/remote-workspace/index.ts` 在占用 / 释放（含发送前自动占用与启动串流闸门）拿到 notice 后
+  `main/remote-workspace/index.ts` 在占用 / 释放（含发送前确认后占用与启动串流闸门）拿到 notice 后
   **先写有界缓存（≤32，LRU）再广播** `psb-remote:workspace-vcs-notice`；成功占用 / 释放 / 清理 /
   继续后广播 `notice:null` 撤掉提示。渲染层另有 `workspaceVcsNotice` 兜底读（推送与 invoke
   失败到达顺序不可依赖）。
@@ -1926,8 +1966,8 @@ Cindy 只消费服务端结论、不自己跑 VCS；两代服务端形态**并�
 #### 13.5.2 接入点与测试
 
 占用 / 释放入口全部经服务层收敛：工作区弹窗 / 草稿页工作区选择（`occupyWorkspace`）、管理页页头
-占用/释放、发送前自动占用（`workspaceLock` 的 occupy 端口）、启动串流与新建会话的
-`ensureWorkspaceLocked`。自动占用产生的 advisory 也广播（operation=`ensure`）。
+占用/释放、发送前用户确认后的显式占用（`workspaceLock` 的 occupy 端口，`allowAutoOccupy:true`）、
+启动串流与新建会话的 `ensureWorkspaceLocked`。占用产生的 advisory 也广播（operation=`ensure`）。
 
 定向测试：`apps/desktop/src/shared/__tests__/psbWorkspaceVcs.test.ts`（形状 / 白名单 / advisory
 读取）、`main/remote-workspace/__tests__/vcsNotice.test.ts`（路径 / body / 缓存安全边界 / 固定目标表
@@ -1980,6 +2020,38 @@ hydrate）、`dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx` 与
 **已知边界**：advisory 的「继续」是纯本地关闭，main 的缓存仍保留到下一次占用 / 释放 / 清理；
 其它窗口或重新挂载后再兜底读可能让同一条 advisory 再出现（这是「建议可忽略、但不假装已处理」的
 取舍，主窗口横幅本身不重复弹）。非 advisory（旧版 409）走 `continue` 清 main 缓存，不受此限。
+
+### 13.6 占用一律用户确认：渲染层确认 + 显式占用 + 重试同一次动作（2026-11-27 复测，实现事实）
+
+主进程三条隐式写路径（发送 / 启动串流 / 新建会话）在**工作区空闲**时不再替用户占用（§13.1），
+统一返回 `PSB_WORKSPACE_NOT_OCCUPIED`。渲染层的唯一实现在
+`renderer/features/remote-workspace/occupyRequired.ts`（文案复用 `remoteWorkspace.dialog.confirmOccupy.*`
+五键，`useConfirmDialog` 的模态队列 / 焦点陷阱 / 主题；确认框层高于选择弹窗的 z-index 修复不变）：
+
+| 入口 | 失败点 | 确认 + 占用 + 重试 |
+| --- | --- | --- |
+| 发送消息（composer / 插话） | `makerChatStore.sendMessageCore` / `steerMessage` 的 enqueue / steer reject | store 在 `.catch` 里识别码 → 清横幅 → 经宿主要求用户确认；确认并占用成功后**用同一份载荷重试一次**（同 `clientId`，失败发生在受理之前）；取消 → 不占用、不发送、失败落横幅、调用方恢复草稿 |
+| 启动串流（管理页） | `useAdminStreamSession.start` 的 `adminStreamStart` reject | 确认 → `occupyWorkspace` → 以 `resume` 重跑同一次 `start`（保留 `starting` 相位语义）；取消 → 不启动，横幅给 `remoteWorkspace.error.occupyRequired` |
+| 新建 / 懒建 PSB 会话（草稿页首条消息） | `draft/psbDraftSession.ensure` 的 `createSession` reject | 确认 → `occupyWorkspace` → 重试同一次建会话（**同一 `clientRequestId`**，PSB 侧仍去重）；取消 → 不建、不占用 |
+| 显式占用（选择流程确认后 / 页头「占用」按钮） | — | 保持**直接占用**（`psb-remote:occupy-workspace`），不弹第二道确认 |
+
+- **宿主**：`renderer/features/remote-workspace/PsbOccupyRequiredConfirmation.tsx`（App 主窗挂一次，
+  `ConfirmDialogProvider` 内）。复制模式：store 不认识 React，但注册的 resolver 让它能「等用户决定」
+  再自己重试；没有宿主（旧 preload / 副窗 / 单测）→ resolver 返回 `false`，失败照旧落横幅，
+  **不会静默占用**、也不假装成功。
+- **workspace 解析**：发送路径的 `workspaceId` 来自 main 的 `adminContext({ localSessionId })`
+  （渲染层不持有 workspaceId，`workspaceIdKnown:false` 的占位身份直接不给确认框）；管理页 / 草稿页
+  用页头 / 交接载荷里已有的工作区事实。
+- **失败不重试**：占用本身失败（被抢 / 离线 / 网络）→ 调用方**不得**重试发起的动作，按既有
+  `PSB_*` 文案展示（被抢时带占用人名）。确认框只弹一次（重试轮不再弹，避免循环）。
+- **PSB 2026-11-27 守卫契约对齐**：`403 WORKSPACE_NOT_OCCUPIED`（新建 / 继续 Agent 会话）与
+  Cindy 本地闸门**同码同形**（`PSB_WORKSPACE_NOT_OCCUPIED`），PSB 上线后无需改语义；
+  释放时 `409 AGENT_SESSION_ACTIVE` → `PSB_AGENT_SESSION_ACTIVE`，文案说明「先结束 / 停止会话再释放」，
+  **不**自动重试、**不**引导去 PSB 网页兜底。
+- 定向测试：`features/remote-workspace/__tests__/occupyRequired.test.ts`（识别 / 取消 0 次占用 /
+  确认 1 次 / 无宿主不假装成功）、`renderer/__tests__/remoteErrorDecode.test.ts`（发送重试同一次）、
+  `admin/__tests__/RemoteWorkspaceAdminPanel.test.tsx`（启动串流确认 + 重试、取消不启动）、
+  `draft/__tests__/psbDraftSession.test.ts`（懒建确认 + 同一去重键重试、取消不建）。
 
 ## 14. 独立审查阻断项修复（2026-11-26，实现事实）
 
@@ -2290,11 +2362,12 @@ resolveRemoteTransportCapabilities(remoteHostId): {
 
 **发送路径权威占用校验（2026-11-27 用户复测）**：`remote-workspace/__tests__/workspaceLock.test.ts`
 （整文件 **20 例**；新增权威路径四类：每次读会话行 / 缓存过 mine 但权威读 other → 拒绝且清缓存 /
-权威读 free → 自动占用 / 权威读失败 → 抛出且不缓存）、
-`maker-ipc/__tests__/makerSendTransaction.test.ts`（整文件 **322 例**；新增「连续两条各过一次
+权威读 free → **`occupy-required`（0 次占用请求）**、显式允许后才占用 / 权威读失败 → 抛出且不缓存）、
+`maker-ipc/__tests__/makerSendTransaction.test.ts`（整文件 **323 例**；新增「连续两条各过一次
 闸门」「权威读为他人占用 → 第二条不派发、不落库、`PSB_WORKSPACE_OCCUPIED_BY_OTHER`（带人名）」
-两个事务级用例）、`psbRemoteIpcWiring.guard.test.ts`（整文件 **12 例**；钉住发送闸门不再引用 10s
-快照 store、不再 fail-open）。**工作区选择状态机（同日，见 §9.8）**：
+「权威读为无人占用 → `PSB_WORKSPACE_NOT_OCCUPIED`（0 次占用）、用户确认占用后同一条才发出」
+三个事务级用例）、`psbRemoteIpcWiring.guard.test.ts`（整文件 **12 例**；钉住发送闸门不再引用 10s
+快照 store、不再 fail-open，且三个接入点都带 `allowAutoOccupy: false`）。**工作区选择状态机（同日，见 §9.8）**：
 `dialog/__tests__/RemoteWorkspacePickerDialog.test.tsx`（整文件 **17 例**：确认占用只占一次、取消
 不占用不选中、mine 直选不弹确认、他人占用 / 离线行原生 disabled、切换 / 关闭只归还一次、交接后
 不归还、listbox 方向键不占用）、`draft/__tests__/PsbWorkspacePicker.test.tsx`（整文件 **13 例**：
@@ -2314,4 +2387,5 @@ resolveRemoteTransportCapabilities(remoteHostId): {
 ⑤ 归档远程任务后工作区立即可被他人占用（同一工作区还有另一条活动远程任务时应**保持占用**）；
 ⑥ 退出应用后 PSB 工作区不再显示本地占用；⑦ 释放失败时常驻提示条能读到 main 账本并显式重试、
 重试失败换成「占用可能仍未解除」文案（UI 已实现、单测覆盖，真机未验证）。
+
 

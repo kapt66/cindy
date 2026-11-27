@@ -89,7 +89,7 @@ import { useProviderShareAgentDevices } from '@/features/provider-share/useProvi
 import { isProviderShareAgentDeviceId } from '../../../shared/providerShare';
 import { isSharedTaskPeer } from '@cindy/device-link';
 import type { PsbDraftSession } from '@/features/remote-workspace/draft/psbDraftSession';
-import { psbFailureText, psbWorkspaceDisplayName, vendorToPsbAgentKind } from '@/features/remote-workspace/dialog/psbDialogModel';
+import { psbFailureText, psbWorkspaceTargetDisplayName, vendorToPsbAgentKind } from '@/features/remote-workspace/dialog/psbDialogModel';
 import {
   RemoteWorkspacePickerDialog,
   type RemoteWorkspacePickerCreated,
@@ -1769,15 +1769,12 @@ export function NewMakerDraftRoute() {
     : effectiveRemoteHostId
       ? (effectiveWorkingDir?.split(/[\\/]/).filter(Boolean).pop() ?? effectiveRemoteHostId)
       : null;
-  // 渠道 = 远程工作区时，项目胶囊显示工作区标题；还没选工作区（刚选渠道）显示「选择工作区」。
-  // 远程工作区没有本地项目目录，不能走下面的 getProjectPickerDisplayName 回落。
+  // 渠道 = 远程工作区时，项目胶囊显示**工作区实例名 = 目录名**（`psbTarget.directoryName`，如
+  // `saga2_project-3`；与选择器行同一口径，模板名只作次要信息）；还没选工作区（刚选渠道）显示
+  // 「选择工作区」。远程工作区没有本地项目目录，不能走下面的 getProjectPickerDisplayName 回落。
   const createAgentModeLabel = isPsbChannelSelected
     ? (psbTarget
-        ? psbWorkspaceDisplayName({
-            clientName: psbTarget.clientName,
-            workspaceId: psbTarget.workspaceId,
-            workspaceTitle: psbTarget.workspaceTitle,
-          })
+        ? psbWorkspaceTargetDisplayName(psbTarget)
         : t('remoteWorkspace.draft.selectWorkspaceShort'))
     : remoteSessionLabel
       ? remoteSessionLabel

@@ -3,20 +3,22 @@
  *
  * 测试价值
  * - 生产入口与可观察结果：`createPsbWorkspaceLock(ports).ensure()` 是「开新会话 / 启动串流 /
- *   发送消息」三条写入路径共用的唯一锁定判据。用户可观察结果是：未被自己锁定 → 自动占用后
- *   继续；被别人占用 → 可行动失败（带人名）；离线 / 未就绪 / 不可见 → 对应原因；网络失败 → 报错。
+ *   发送消息」三条写入路径共用的唯一锁定判据。用户可观察结果是：未被自己锁定 → **不自动占用**，
+ *   返回 `occupy-required`（由渲染层弹确认框，用户确认后才显式占用）；被别人占用 → 可行动失败
+ *   （带人名）；离线 / 未就绪 / 不可见 → 对应原因；网络失败 → 报错。
  * - Bug／规则依据：PSB 服务端对工作区写操作做占用闸门（2026-11-26 口径），Cindy 必须在写入前
- *   自己锁定，否则只能在 PSB 拒绝后显示一句不可行动的失败。规则见
+ *   自己锁定，否则只能在 PSB 拒绝后显示一句不可行动的失败。**2026-11-27 用户人工复测**：任何
+ *   工作区占用都必须由用户通过弹窗确认，禁止默认 / 自动占用。规则见
  *   `docs/dev-rules/psb-remote-session-transport.md` §12 与
  *   `docs/product-rules/psb-remote-workspace-sessions.md`「写前锁定」。
- * - 现有覆盖缺口：`sessionRebind.test.ts` 只覆盖「工作区被别人占就不重建」的发送前重建分支，
- *   没有覆盖「未占用时自动占用」「失败不缓存」「失败 → PSB_* 文案码」，也没有覆盖发送路径的
- *   权威校验（不吃 1.5s 乐观缓存、权威读不是 mine 时清缓存、读失败不 fail-open）。
- * - 最小失败输入：① 列表里工作区 `occupancy.occupied=false`（应自动占用一次）；
- *   ② `occupy` 抛 `WORKSPACE_OCCUPIED_BY_OTHER`（被抢先）；③ `listWorkspaces` 抛网络错误；
- *   ④ 同一工作区 1.5s 内连续两次 ensure（应只有一次请求）。
+ * - 现有覆盖缺口：原用例只钉「未占用 → 自动占用」。现在必须同时钉「缺省不占用、不发 POST
+ *   /occupy、返回 occupy-required」「显式 allowAutoOccupy 才会占用」「发送路径权威读 free 时也
+ *   是 occupy-required」，以及失败 → `PSB_WORKSPACE_NOT_OCCUPIED` 文案码。
+ * - 最小失败输入：① 列表里工作区 `occupancy.occupied=false` 且不带选项（应 0 次占用请求）；
+ *   ② 同样输入带 `allowAutoOccupy:true`（应占用一次）；③ `occupy` 抛 `WORKSPACE_OCCUPIED_BY_OTHER`；
+ *   ④ `listWorkspaces` 抛网络错误；⑤ 同一工作区 1.5s 内连续两次 ensure（应只有一次请求）。
  * - tier：unit（进程内内存 fake，无网络 / 无 Electron）。
- * - 实测耗时：单独运行 1.74s（其中 14 条用例 6ms；其余为 vitest 启动与模块加载）。
+ * - 实测耗时：单独运行约 1.8s（用例本身毫秒级；其余为 vitest 启动与模块加载）。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -141,10 +143,23 @@ function psbFailure(code: string, message: string | null = null): PsbClientError
 }
 
 describe('占用闸门：状态机', () => {
-  it('未被占用 → 自动占用一次后放行；乐观有效期内不再请求', async () => {
+  it('未被占用（缺省）→ occupy-required，且**不发任何占用请求**（占用必须由用户确认）', async () => {
     const harness = createHarness();
 
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: true });
+    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: false, reason: 'occupy-required' });
+    // 用户还没确认：闸门不得替用户占用（2026-11-27 用户复测口径）。
+    expect(harness.counts).toEqual({ list: 1, occupy: 0, session: 0 });
+    // 失败不缓存：下一次仍按事实判定（不会因为上一次「待确认」就放行 / 也不再自动占用）。
+    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: false, reason: 'occupy-required' });
+    expect(harness.counts).toEqual({ list: 2, occupy: 0, session: 0 });
+  });
+
+  it('显式 allowAutoOccupy（用户已确认的占用 / 选择流程）→ 占用一次后放行；乐观有效期内不再请求', async () => {
+    const harness = createHarness();
+
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toEqual({
+      ok: true,
+    });
     expect(harness.counts).toEqual({ list: 1, occupy: 1, session: 0 });
 
     // 连续发送不为每条消息多打一次 PSB：TTL 内走缓存。
@@ -152,7 +167,9 @@ describe('占用闸门：状态机', () => {
     expect(harness.counts).toEqual({ list: 1, occupy: 1, session: 0 });
 
     harness.advance(PSB_WORKSPACE_LOCK_TTL_MS + 1);
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: true });
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toEqual({
+      ok: true,
+    });
     expect(harness.counts.list).toBe(2);
   });
 
@@ -198,31 +215,33 @@ describe('占用闸门：状态机', () => {
     });
   });
 
-  it('自动占用时被他人抢先 → 仍按 occupied-by-other 回报（人名来自 PSB 失败原文）', async () => {
+  it('显式占用时被他人抢先 → 仍按 occupied-by-other 回报（人名来自 PSB 失败原文）', async () => {
     const harness = createHarness({
       occupy: async () => {
         throw psbFailure('WORKSPACE_OCCUPIED_BY_OTHER', '王五');
       },
     });
 
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toEqual({
       ok: false,
       reason: 'occupied-by-other',
       personName: '王五',
     });
   });
 
-  it('失败不缓存：占用被释放后，下一次 ensure 立刻自动重新占用', async () => {
+  it('失败不缓存：占用被释放后，下一次显式 ensure 立刻重新占用', async () => {
     let workspaces = [occupiedByOther('张三')];
     const harness = createHarness({ workspaces: async () => workspaces });
 
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toMatchObject({
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toMatchObject({
       ok: false,
       reason: 'occupied-by-other',
     });
     // 对方释放（无人占用）：下一次必须重新判断，不能被上一次失败缓存挡掉。
     workspaces = [workspaceRow()];
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: true });
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toEqual({
+      ok: true,
+    });
     expect(harness.counts.occupy).toBe(1);
   });
 
@@ -287,8 +306,10 @@ describe('占用闸门：状态机', () => {
       ],
     });
     // 占用闸门服务建会话 / 启串流 / 发送三条写入口；串流与那台机器有没有某 Harness 无关，
-    // 所以这里按 requireAgentRuntime:false 放行并自动占用。
-    expect(await harness.lock.ensure(WORKSPACE_ID)).toEqual({ ok: true });
+    // 所以这里按 requireAgentRuntime:false 放行（用户确认后显式占用的那条路径）。
+    expect(await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true })).toEqual({
+      ok: true,
+    });
     expect(harness.counts.occupy).toBe(1);
   });
 
@@ -303,25 +324,32 @@ describe('占用闸门：状态机', () => {
 
   it('释放后失效缓存：下一次 ensure 重新确认', async () => {
     const harness = createHarness();
-    await harness.lock.ensure(WORKSPACE_ID);
+    await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true });
     expect(harness.counts.list).toBe(1);
 
     harness.lock.invalidate(WORKSPACE_ID);
-    await harness.lock.ensure(WORKSPACE_ID);
+    await harness.lock.ensure(WORKSPACE_ID, { allowAutoOccupy: true });
     expect(harness.counts.list).toBe(2);
   });
 });
 
 describe('占用闸门：发送前（按 PSB 会话）', () => {
-  it('首次读一次会话行（自带工作区快照）→ 未占用则自动占用；TTL 内再发送零请求', async () => {
+  it('首次读一次会话行（自带工作区快照）→ 未占用时 occupy-required，不自动占用；TTL 内再发送零请求', async () => {
     const harness = createHarness();
 
-    expect(await harness.lock.ensureForSession('psb-1')).toEqual({ ok: true });
-    // 会话行给了工作区快照，不需要再读工作区列表。
-    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 1 });
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({
+      ok: false,
+      reason: 'occupy-required',
+    });
+    // 会话行给了工作区快照，不需要再读工作区列表；**没有发任何占用请求**。
+    expect(harness.counts).toEqual({ list: 0, occupy: 0, session: 1 });
 
-    expect(await harness.lock.ensureForSession('psb-1')).toEqual({ ok: true });
-    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 1 });
+    // 失败不缓存：第二次仍读会话行（不是 TTL 放行，也不是自动占用）。
+    expect(await harness.lock.ensureForSession('psb-1')).toEqual({
+      ok: false,
+      reason: 'occupy-required',
+    });
+    expect(harness.counts).toEqual({ list: 0, occupy: 0, session: 2 });
   });
 
   it('会话行显示工作区已被他人占用 → occupied-by-other（人名来自快照），不尝试占用', async () => {
@@ -357,10 +385,12 @@ describe('占用闸门：发送前（按 PSB 会话）', () => {
  * - 生产入口与可观察结果：`createPsbWorkspaceLock(ports).ensureForSession(id, { requireAuthoritative: true })`
  *   是发送前闸门（`makerSendTransaction` → `register.preparePsbWorkspaceLock`）的唯一判定入口。
  *   用户可观察结果：会话创建后工作区被交接给别人时，**下一条消息**被拒（不发送、给可行动文案）；
- *   被交接回空闲时自动占用后照常发送；PSB 读不到时也是失败而不是「无法确认就继续」。
+ *   被交接回空闲时**也不自动占用**，返回 `PSB_WORKSPACE_NOT_OCCUPIED`（渲染层弹确认框，
+ *   用户确认后才占用并重试）；PSB 读不到时也是失败而不是「无法确认就继续」。
  * - Bug／规则依据：旧实现先在 `register` 用 10s 会话快照「在线 + ready + byMe」零请求放行、读不到
  *   fail-open；`ensureForSession` 又有 1.5s 乐观缓存——两条路径都可能让「别人的工作区」继续收到本端
- *   写入。用户口径（2026-11-27 人工复测）：每条消息发送前都必须确认当前仍由我占用。
+ *   写入。用户口径（2026-11-27 人工复测）：每条消息发送前都必须确认当前仍由我占用；**占用一律由
+ *   用户确认**（2026-11-27 第二次复测追加）。
  * - 现有覆盖缺口：原用例只覆盖「TTL 内零请求」这条**非权威**语义，没有任何用例钉「发送路径不吃
  *   缓存」「权威读不是 mine 时清缓存」。
  * - 最小失败输入：① 缓存过 mine、权威读改回 other；② 权威读抛 `PSB_UNREACHABLE`；③ 权威读 free。
@@ -413,7 +443,7 @@ describe('占用闸门：发送路径的权威校验（requireAuthoritative）',
     expect(harness.counts.session).toBe(3);
   });
 
-  it('权威读为无人占用（被交接回空闲）→ 自动占用后放行；下一次已是我则只读不占', async () => {
+  it('权威读为无人占用（被交接回空闲）→ occupy-required 且不占用；用户显式确认后才占用并放行', async () => {
     let workspace = workspaceRow();
     const harness = createHarness({
       session: async (psbSessionId) => sessionStatus(psbSessionId, workspace),
@@ -423,16 +453,24 @@ describe('占用闸门：发送路径的权威校验（requireAuthoritative）',
       },
     });
 
+    // 发送闸门（隐式写路径）：空闲也不替用户占用。
     expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
+      ok: false,
+      reason: 'occupy-required',
+    });
+    expect(harness.counts).toEqual({ list: 0, occupy: 0, session: 1 });
+
+    // 渲染层确认后走显式占用入口（这条路径允许 allowAutoOccupy）→ 之后发送闸门放行。
+    expect(await harness.lock.ensureForSession('psb-1', { allowAutoOccupy: true })).toEqual({
       ok: true,
     });
-    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 1 });
+    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 2 });
 
     expect(await harness.lock.ensureForSession('psb-1', { requireAuthoritative: true })).toEqual({
       ok: true,
     });
     // 仍然读一次权威事实，但已是我占用 → 不再 `occupy`。
-    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 2 });
+    expect(harness.counts).toEqual({ list: 0, occupy: 1, session: 3 });
   });
 
   it('权威读失败（网络 / 鉴权）→ 抛出，不 fail-open、也不留成功缓存', async () => {
@@ -455,6 +493,18 @@ describe('占用闸门：发送路径的权威校验（requireAuthoritative）',
 });
 
 describe('占用闸门：失败 → PSB_* 文案码', () => {
+  it('工作区空闲且不允许自动占用 → PSB_WORKSPACE_NOT_OCCUPIED（带「需要先占用」文案键）', () => {
+    const failure = psbWorkspaceLockFailureError({ ok: false, reason: 'occupy-required' }).failure;
+
+    expect(failure).toMatchObject({
+      code: 'WORKSPACE_NOT_OCCUPIED',
+      messageKey: 'remoteWorkspace.error.occupyRequired',
+      message: null,
+    });
+    // 跨 IPC 的码是用户 / 渲染层可观察的那一个：它决定弹确认框而不是显示普通失败。
+    expect(psbIpcCodeForFailure(failure)).toBe('PSB_WORKSPACE_NOT_OCCUPIED');
+  });
+
   it('三种可行动失败各自映射到不同的 IPC 码（下一步不同，不能糊成一个）', () => {
     expect(
       psbIpcCodeForFailure(

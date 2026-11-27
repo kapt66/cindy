@@ -7,7 +7,8 @@
  *   取消不占用不回调、确认后占用一次并回传工作区级载荷；**mine 行直接交接、不弹确认、
  *   不调用 occupy**；不可用行（他人占用 / 离线）禁用、原因进 tooltip、占用表达不重复三遍；
  *   占用失败**不选中**且错误带占用人名；「新建远程工作区」入口回调上层；上层传 `disabled`
- *   （发送 / 目录恢复在途）时行与新建入口都点不动；主标题是**工作区名称**（缺名才回退机器-短 id）。
+ *   （发送 / 目录恢复在途）时行与新建入口都点不动；主标题是**工作区目录名**（实例名；缺目录名
+ *   才回退标题 / 机器-短 id），模板名 · 机器名只进次要行。
  * - 与弹窗共用同一份实现后的边界：
  *   ① **listbox 键盘**：方向键只移动焦点（既不触发占用也不弹确认），Enter/Space 才激活；
  *   ② **忙不丢焦点**：占用在途的行改用 `aria-disabled`（不是原生 disabled），焦点留在行上；
@@ -37,7 +38,6 @@ import {
   uninstallPsbBridge,
 } from '../../__tests__/psbTestFixtures';
 import { resetWorkspaceVcsNoticeStoreForTest } from '../../vcs/vcsNoticeStore';
-import { psbWorkspaceDisplayName, shortPsbWorkspaceId } from '../../dialog/psbWorkspaceDisplay';
 import { PsbWorkspacePicker } from '../PsbWorkspacePicker';
 
 vi.mock('react-i18next', () => ({
@@ -100,7 +100,7 @@ describe('PsbWorkspacePicker', () => {
 
     fireEvent.click(row);
     const prompt = await screen.findByRole('alertdialog');
-    expect(within(prompt).getByText(`${CONFIRM_TITLE_KEY}#SAGA2 设计`)).toBeTruthy();
+    expect(within(prompt).getByText(`${CONFIRM_TITLE_KEY}#saga2_design`)).toBeTruthy();
     expect(bridge.occupyWorkspace).not.toHaveBeenCalled();
 
     fireEvent.click(within(prompt).getByRole('button', { name: CONFIRM_CONFIRM_KEY }));
@@ -272,49 +272,61 @@ describe('PsbWorkspacePicker', () => {
     expect(await screen.findByText('remoteWorkspace.dialog.workspaceListEmpty')).toBeTruthy();
   });
 
-  it('labels rows with the workspace name, keeping directory/machine as the single secondary line', async () => {
+  it('labels rows with the workspace directory name, keeping template · machine as the single secondary line', async () => {
     installPsbBridge({
       listWorkspaces: vi.fn(async () => ({
         workspaces: [
+          // 用户实机形状：`title` 与模板名同词（`saga2_project`），目录名才是这个实例自己的名字。
           makePsbWorkspace({
             id: '9c747178aabbccdd',
             title: 'saga2_project',
+            templateTitle: 'saga2_project',
+            directoryName: 'saga2_project-3',
             clientName: '打包机',
-            directoryName: 'saga2_project',
           }),
-          // 同一名称、另一台机器：主标题相同，靠次要行的机器名区分。
+          // 同一目录名、另一台机器：主标题相同，靠次要行的机器名区分。
           makePsbWorkspace({
             id: 'dd44ee55ff66',
             title: 'saga2_project',
+            templateTitle: 'saga2_project',
+            directoryName: 'saga2_project-3',
             clientName: '设计机-01',
-            directoryName: 'saga2_project',
           }),
-          // 名称被改过：次要行继续显示目录（前缀走 i18n key，不写死中文）。
+          // 旧数据没有目录名：主标题回退标题，模板名仍在次要行。
           makePsbWorkspace({
             id: 'aa11bb22cc33',
             title: '我的项目',
+            templateTitle: 'SAGA2 设计',
+            directoryName: null,
             clientName: '打包机',
-            directoryName: 'saga2_design',
           }),
         ],
       })),
     });
     renderPicker();
     const row = await screen.findByTestId('psb-picker-workspace-row-9c747178aabbccdd');
-    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project');
-    // 名称与目录同名：次要行退回机器名，名称只出现一次。
-    expect(row.textContent).toContain('打包机');
+    // 主标题 = 目录名（`title` 属性仍是完整 id，悬停可取）；模板名 · 机器名在次要行。
+    expect(row.querySelector('[title="9c747178aabbccdd"]')?.textContent).toBe('saga2_project-3');
+    expect(row.querySelector('[title="saga2_project · 打包机"]')?.textContent).toBe(
+      'saga2_project · 打包机',
+    );
+    // 目录名已是主标题：不再出现「目录：<同一个目录名>」。
     expect(row.textContent).not.toContain('remoteWorkspace.dialog.directorySecondary');
-    expect(row.textContent?.match(/saga2_project/g) ?? []).toHaveLength(1);
+    expect(row.textContent).not.toContain('目录：');
 
-    const sameName = screen.getByTestId('psb-picker-workspace-row-dd44ee55ff66');
-    expect(sameName.querySelector('[title="dd44ee55ff66"]')?.textContent).toBe('saga2_project');
-    expect(sameName.textContent).toContain('设计机-01');
+    const sameDirectory = screen.getByTestId('psb-picker-workspace-row-dd44ee55ff66');
+    expect(sameDirectory.querySelector('[title="dd44ee55ff66"]')?.textContent).toBe(
+      'saga2_project-3',
+    );
+    expect(sameDirectory.querySelector('[title="saga2_project · 设计机-01"]')?.textContent).toBe(
+      'saga2_project · 设计机-01',
+    );
 
-    const renamed = screen.getByTestId('psb-picker-workspace-row-aa11bb22cc33');
-    expect(renamed.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
-    expect(renamed.textContent).toContain('remoteWorkspace.dialog.directorySecondary#saga2_design');
-    expect(renamed.textContent).not.toContain('目录：');
+    const legacy = screen.getByTestId('psb-picker-workspace-row-aa11bb22cc33');
+    expect(legacy.querySelector('[title="aa11bb22cc33"]')?.textContent).toBe('我的项目');
+    expect(legacy.querySelector('[title="SAGA2 设计 · 打包机"]')?.textContent).toBe(
+      'SAGA2 设计 · 打包机',
+    );
   });
 
   it('listbox 方向键只移动焦点：不占用、不弹确认、不回调', async () => {
@@ -361,38 +373,5 @@ describe('PsbWorkspacePicker', () => {
       expect(bridge.releaseWorkspace).toHaveBeenCalledWith({ workspaceId: 'workspace-1' }),
     );
     expect(onSelect).not.toHaveBeenCalled();
-  });
-});
-
-describe('psbWorkspaceDisplayName', () => {
-  it('prefers the workspace name, falling back to client-短id only when the name is missing', () => {
-    expect(
-      psbWorkspaceDisplayName({
-        clientName: '打包机',
-        workspaceId: '9c747178aabbccdd',
-        workspaceTitle: '  saga2_project  ',
-      }),
-    ).toBe('saga2_project');
-    expect(
-      psbWorkspaceDisplayName({
-        clientName: '打包机',
-        workspaceId: '9c747178aabbccdd',
-        workspaceTitle: '   ',
-      }),
-    ).toBe('打包机-9c747178…');
-    expect(psbWorkspaceDisplayName({ clientName: '打包机', workspaceId: '9c747178aabbccdd' })).toBe(
-      '打包机-9c747178…',
-    );
-    expect(shortPsbWorkspaceId('9c747178')).toBe('9c747178');
-    expect(
-      psbWorkspaceDisplayName({
-        clientName: '  ',
-        workspaceId: '9c747178aabbccdd',
-        workspaceTitle: '',
-      }),
-    ).toBe('9c747178…');
-    expect(psbWorkspaceDisplayName({ clientName: '', workspaceId: '', workspaceTitle: '' })).toBe(
-      '',
-    );
   });
 });

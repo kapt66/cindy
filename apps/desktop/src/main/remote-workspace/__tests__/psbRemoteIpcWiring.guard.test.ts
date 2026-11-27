@@ -259,9 +259,12 @@ describe('PSB 远程工作区 IPC 接线', () => {
     expect(pushSource).toContain('broadcastToTrustedWindows(PSB_ADMIN_CHANNELS.STREAM_EVENT');
   });
 
-  it('写操作前的占用闸门接线齐备（新会话 / 启动串流 / 每次发送 / 重绑）', () => {
+  it('写操作前的占用闸门接线齐备（新会话 / 启动串流 / 每次发送 / 重绑）且一律不自动占用', () => {
     // PSB 服务端对工作区写操作校验占用（2026-11-26 口径）：Cindy 这三个入口都必须先 ensure，
     // 漏一处的后果是「用户在 PSB 侧被拒后只看到一句不可行动的失败」，且没有编译错误。
+    // 2026-11-27 用户复测：三个隐式入口一律 `allowAutoOccupy: false`（占用必须由用户确认），
+    // 空闲时返回 `PSB_WORKSPACE_NOT_OCCUPIED` 交给渲染层弹确认框；漏传这个开关就会退回
+    // 「静默替用户占用」，也没有编译错误（默认值恰好是允许自动占用时会这样）。
     const indexSource = readSource('src/main/remote-workspace/index.ts');
     const adminSource = readSource('src/main/remote-workspace/adminService.ts');
     const registerSource = readSource('src/main/maker-ipc/register.ts');
@@ -269,10 +272,12 @@ describe('PSB 远程工作区 IPC 接线', () => {
 
     // 1) 新会话：createSession 必须先 ensure，再打 PSB 的建会话请求（顺序也不能反）。
     const createStart = indexSource.indexOf('async createSession(input) {');
-    const createEnsure = indexSource.indexOf('await ensureWorkspaceLocked(input.workspaceId)');
+    const createEnsure = indexSource.indexOf(
+      'await ensureWorkspaceLocked(input.workspaceId, { allowAutoOccupy: false })',
+    );
     const createRequest = indexSource.indexOf('await api.createSession(input)');
     expect(createStart, 'index.ts 缺少 createSession').toBeGreaterThanOrEqual(0);
-    expect(createEnsure, 'createSession 未在创会话前 ensure 工作区锁定').toBeGreaterThan(
+    expect(createEnsure, 'createSession 未在创会话前 ensure 工作区锁定（或不自动占用）').toBeGreaterThan(
       createStart,
     );
     expect(createRequest, 'createSession 未真正调用 PSB').toBeGreaterThan(createEnsure);
@@ -282,7 +287,9 @@ describe('PSB 远程工作区 IPC 接线', () => {
     //    里执行（`streamStart` 只做校验、取代次并入队），锚点跟着实现走，但顺序契约不变。
     const streamStartAt = adminSource.indexOf('async function streamStart(');
     const lockedStartAt = adminSource.indexOf('async function startStreamLocked(');
-    const streamEnsure = adminSource.indexOf('await remote().ensureWorkspaceLocked(workspaceId)');
+    const streamEnsure = adminSource.indexOf(
+      'await remote().ensureWorkspaceLocked(workspaceId, { allowAutoOccupy: false })',
+    );
     const streamBind = adminSource.indexOf('await startStreamWithRecovery(workspaceId)');
     expect(streamStartAt, 'adminService 缺少 streamStart').toBeGreaterThanOrEqual(0);
     expect(lockedStartAt, 'adminService 缺少 startStreamLocked').toBeGreaterThanOrEqual(0);
@@ -291,7 +298,7 @@ describe('PSB 远程工作区 IPC 接线', () => {
     const streamStartBlock = adminSource.slice(streamStartAt, stopLockedAt);
     expect(streamStartBlock).toContain('runWorkspaceOperation(');
     expect(streamStartBlock).toContain('startStreamLocked(');
-    expect(streamEnsure, 'adminService 启动串流前未 ensure 工作区锁定').toBeGreaterThan(
+    expect(streamEnsure, 'adminService 启动串流前未 ensure 工作区锁定（或不自动占用）').toBeGreaterThan(
       lockedStartAt,
     );
     expect(streamBind).toBeGreaterThan(streamEnsure);
@@ -315,12 +322,14 @@ describe('PSB 远程工作区 IPC 接线', () => {
     // 4) 接线：register 里的发送前闸门与发送前重建都走同一个 PSB 服务（重建的建会话因此同样
     //    被 createSession 的闸门覆盖，不另开一条绕过路径）。发送闸门固定要权威校验：
     //    `requireAuthoritative: true` 是「每条消息都读 PSB」的唯一开关，缺了它会静默退回
-    //    乐观缓存放行（交接后仍以为锁还在）。
+    //    乐观缓存放行（交接后仍以为锁还在）；`allowAutoOccupy: false` 是「不替用户占用」的
+    //    唯一开关，缺了它会静默退回自动占用（用户复测的那条路径）。
     expect(registerSource, 'register 未接线发送前占用闸门').toContain(
       'preparePsbWorkspaceLock: async (sessionId) =>',
     );
     expect(registerSource).toContain('ensureWorkspaceLockedForSession(psbSessionId, {');
     expect(registerSource).toContain('requireAuthoritative: true');
+    expect(registerSource).toContain('allowAutoOccupy: false');
     expect(registerSource, '重绑建会话未走带闸门的 PSB 服务').toContain(
       'getPsbRemoteService().createSession(input)',
     );

@@ -9,8 +9,9 @@
  *
  * ## 结构
  *
- *   1. 顶部页头（**单行 ≤40px**）：左侧信息：**工作区名称最显眼**（`title`，13px + font-medium）→
- *      模板 · 机器（`templateTitle · clientName`，次要色）→ 占用；**页头不显示目录**。三块靠左紧凑、
+ *   1. 顶部页头（**单行 ≤40px**）：左侧信息：**工作区实例名最显眼**（目录名 `directoryName`，
+ *      缺失回退 `title`；13px + font-medium）→ 模板名 · 机器名（`templateTitle · clientName`，
+ *      次要色）→ 占用；**目录名就是主标题，页头不再单独显示目录段**。三块靠左紧凑、
  *      `min-w-0 + truncate`、`flex-nowrap`，长名称截断、绝不换行、不推高布局；右侧是通用操作按钮
  *      （占用 / 解除占用、在网页打开，`shrink-0` 靠右，不与信息行抢位）。
  *   2. 分类导航（分段控件）：`远程连接 / 版本控制 / 设置`，**左对齐紧凑排列**（inline 轨道、
@@ -63,6 +64,10 @@ import {
   psbAdminContextStaleCopyKind,
   type PsbWorkspaceAdminContext,
 } from '../../../../shared/psb-workspace-admin';
+import {
+  psbWorkspaceInstanceName,
+  psbWorkspaceTemplateMachineText,
+} from '../dialog/psbWorkspaceDisplay';
 import { formatWorkspaceOccupancy } from '../occupancyLabel';
 import {
   rememberWorkspaceVcsNoticeWorkspaceLabel,
@@ -132,16 +137,18 @@ function AdminEmptyState({
 /**
  * 顶部页头：**单行**（≤40px），左侧信息**靠左紧凑**排布，右侧通用操作靠右且 `shrink-0`。
  *
- * 用户 2026-11-26 口径（参考 PSB 网页工作区页）：**工作区名称最显眼**（`title`，`text-13` +
- * `font-medium`），其后依次是模板 · 机器（`templateTitle` + `clientName`，`text-11` 次要色），
- * 再是占用信息；**不再显示目录名**（目录仍留在上下文字段里给其它调用方，只是页头不展示）。
- * 信息组不用 `flex-1` / `justify-between` 撑开：固定 16px 间距依次紧挨；每段 `min-w-0 + truncate`，
- * 长名称截断、窄窗口只挤压信息，不换行、不推高布局、不压右侧按钮。
+ * 用户 2026-11-27 人工复测口径：**实例名 = 工作区目录名**（PSB `directoryName`，如
+ * `saga2_project-3`；模板名 `saga2_project` 只是模板，同一模板可以有多个工作区）。所以左侧信息
+ * 顺序是：**目录名**（`text-13` + `font-medium`，最显眼）→ **模板名 · 机器名**（`templateTitle` +
+ * `clientName` 去重拼接，`text-11` 次要色）→ 占用；目录名缺失（老数据 / PSB 还没回填）才回退
+ * `title`。目录名已是主标题，**不再单独显示目录段**。信息组不用 `flex-1` / `justify-between` 撑开：
+ * 固定 16px 间距依次紧挨；每段 `min-w-0 + truncate`，长名称截断、窄窗口只挤压信息，不换行、
+ * 不推高布局、不压右侧按钮。
  *
  * **stale（读不到工作区 / 工作区已不可见）口径（2026-11-26 真机事故）**：名称 / 模板 · 机器是
  * 固定信息，**仍照常显示**（它们来自本机快照）；占用是状态信息，未知时显示「无法获取」，
- * 不把快照里过期的占用人当成事实。历史会话没有快照时，名称退化成会话标题、模板 · 机器段
- * 退化成目录名 —— 有可展示的字段就展示，绝不整段留白。
+ * 不把快照里过期的占用人当成事实。历史会话没有快照时，名称退化成目录名（本机唯一还能确认
+ * 「哪个工作区」的字段），模板 · 机器拿不到就显示占位「—」——有可展示的字段就展示，绝不整段留白。
  */
 function WorkspaceHeader({
   context,
@@ -152,12 +159,21 @@ function WorkspaceHeader({
 }) {
   const { t } = useTranslation();
   const stale = context ? psbAdminContextIsStale(context) : false;
-  const name = context?.title.trim() || EMPTY_VALUE;
-  // 模板与机器合成一个次要信息段（模板为空时只剩机器；两者都空时显示占位）。
-  // stale 且模板 / 机器都没有（历史会话种子）时退回目录名：它是唯一还能确认「哪个工作区」的字段。
+  // 主标题 = 实例名（目录名优先，缺失回退标题）：与选择器 / 胶囊同一口径（`psbWorkspaceInstanceName`）。
+  const instanceName = context
+    ? psbWorkspaceInstanceName({
+        directoryName: context.directoryName,
+        workspaceTitle: context.title,
+      })
+    : '';
+  const name = instanceName || EMPTY_VALUE;
+  // 次要行 = 模板名 · 机器名（去重；模板为空时只剩机器）。目录名已是主标题，不再重复。
   const meta = context
-    ? [context.templateTitle?.trim(), context.clientName.trim()].filter(Boolean).join(' · ') ||
-      (stale && context.directoryName.trim() ? context.directoryName.trim() : EMPTY_VALUE)
+    ? (psbWorkspaceTemplateMachineText({
+        templateTitle: context.templateTitle,
+        clientName: context.clientName,
+        primaryName: instanceName,
+      }) ?? EMPTY_VALUE)
     : EMPTY_VALUE;
   // 占用展示与侧栏锁共用同一格式函数：有名字显示名字，自己占用追加「（你）」。
   // stale 时占用是「无法获取」——不能拿本机快照里过期的占用人去误导用户。
@@ -279,11 +295,24 @@ export function RemoteWorkspaceAdminPanel({
    * 按 `context.workspaceId` 过滤：换工作区后旧工作区的提示不会串到新工作区的页面上。
    */
   const vcsNotice = useWorkspaceVcsNotice(context?.workspaceId ?? null);
-  /** 工作区显示名进 store：全局横幅也要能写清「哪个工作区」（不为此多发请求）。 */
+  /**
+   * 工作区**实例名**（目录名优先，缺失回退标题）：页头 / 全局横幅共用同一口径，横幅也要能写清
+   * 「哪个工作区」（不为此多发请求）。目录名缺失只可能是老数据 / 本机还没快照过。
+   */
+  const workspaceName = useMemo(
+    () =>
+      context
+        ? psbWorkspaceInstanceName({
+            directoryName: context.directoryName,
+            workspaceTitle: context.title,
+          })
+        : '',
+    [context],
+  );
   useEffect(() => {
     if (!context) return;
-    rememberWorkspaceVcsNoticeWorkspaceLabel(context.workspaceId, context.title);
-  }, [context]);
+    rememberWorkspaceVcsNoticeWorkspaceLabel(context.workspaceId, workspaceName);
+  }, [context, workspaceName]);
 
   const options = useMemo(
     () =>
@@ -380,7 +409,7 @@ export function RemoteWorkspaceAdminPanel({
       >
         <WorkspaceVcsNoticeView
           workspaceId={vcsNotice.workspaceId}
-          workspaceLabel={context?.title ?? vcsNotice.workspaceLabel}
+          workspaceLabel={workspaceName || vcsNotice.workspaceLabel}
           notice={vcsNotice.notice}
           variant="inline"
           readOnly={vcsReadOnly}

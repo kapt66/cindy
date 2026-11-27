@@ -99,6 +99,13 @@ import {
 import { normalizeAutoTitle } from '@cindy/maker-shared/session-title';
 import { parseToolLoopErrorDetails } from '@cindy/maker-shared/tool-loop-error';
 import { psbBannerMessageKeyForIpcCode } from '../../shared/psb-remote-workspace';
+// 发送被「工作区还没被你占用」拒绝时，占用必须由用户确认（2026-11-27 用户复测口径）：
+// 确认与显式占用收在 features/remote-workspace/occupyRequired.ts，store 只负责在确认成功后
+// 重试同一次发送（复用本函数的既有 enqueue 通道，保持草稿 / 附件 / 队列语义）。
+import {
+  isPsbOccupyRequiredFailure,
+  requestPsbOccupyConfirmationForSession,
+} from '@/features/remote-workspace/occupyRequired';
 import type { ToolLoopErrorDetails } from '@cindy/maker-core';
 import type { AgentMeta, MessageRole, Message, MessageAutomationOrigin } from '@/lib/ccAgent.types';
 import { toMessageAutomationOrigin } from '@/lib/messageAutomationOrigin';
@@ -16255,10 +16262,21 @@ async function sendMessageCore(
     return true;
   }
 
-  const operation = beginInputProjectionOperation(sessionId);
-  return operation.api.input
-    .enqueue(sessionId, queued, { sendAtMs: Date.now() })
-    .then((projection) => {
+  /**
+   * 一次 enqueue 尝试（成功 = 输入被主端受理）。
+   *
+   * `retrying` 为 `false` 且失败是 `PSB_WORKSPACE_NOT_OCCUPIED`（工作区还没被用户占用）时：
+   * 弹「需要占用这个工作区」确认框，用户确认并**显式占用成功**后**重试同一次发送**
+   * （2026-11-27 用户复测：占用一律由用户确认；占用成功后自动重试发起的那次发送）。
+   * 失败发生在受理之前（主端占用闸门在落库/派发之前），所以重试用同一份 `queued` 载荷是安全的；
+   * 草稿 / 附件 / 队列语义不变。取消 → 不占用、不发送，失败照旧落到错误横幅，调用方恢复草稿。
+   */
+  const attemptEnqueue = async (retrying: boolean): Promise<boolean> => {
+    const operation = beginInputProjectionOperation(sessionId);
+    try {
+      const projection = await operation.api.input.enqueue(sessionId, queued, {
+        sendAtMs: Date.now(),
+      });
       if (opts?.authRetryPersistOnProjectionError) {
         setState(sessionId, (s) => ({
           ...s,
@@ -16282,8 +16300,21 @@ async function sendMessageCore(
       }
       if (!opts?.authRetryPersistOnProjectionError) recordGithubStarPromptSend(sessionId, queued.clientId, starPromptOwner);
       return true;
-    })
-    .catch((err) => {
+    } catch (err) {
+      if (!retrying && isPsbOccupyRequiredFailure(err)) {
+        // 确认期间先撤掉横幅：这不是最终失败，用户正在决定要不要占用这个工作区。
+        setState(sessionId, (s) => ({
+          ...s,
+          error: null,
+          usageLimitRecovery: null,
+          errorReason: null,
+          recoverableError: null,
+          errorRetryText: null,
+        }));
+        if (await requestPsbOccupyConfirmationForSession(sessionId)) {
+          return attemptEnqueue(true);
+        }
+      }
       // 远端 lazy-create/startSession 抛的 [REMOTE_*] 不可恢复错误走 IPC reject 落这里
       // (不经 stream error event reducer)。保留已知 code 的 wrapper，让 ErrorBanner
       // 选择可操作的 provider 指引；未知 code 仍由 helper 解码为通用本地化摘要。
@@ -16303,7 +16334,9 @@ async function sendMessageCore(
         errorRetryText: null,
       }));
       return false;
-    });
+    }
+  };
+  return attemptEnqueue(false);
 }
 
 function compactSession(
@@ -16637,9 +16670,13 @@ async function steerMessageCore(
   }
 
   const steerApi = remoteDeviceId ? makerApiForDevice(remoteDeviceId) : makerApiFor(sessionId);
-  return steerApi.input
-    .steer(sessionId, queued, { touchUserSend: true })
-    .then(async (ok) => {
+  /**
+   * 一次插话尝试。与普通发送同口径：工作区还没被用户占用时先弹确认框、用户确认并占用成功后
+   * **重试同一次插话**（2026-11-27 用户复测；占用闸门在受理之前拒绝，重发同一 `queued` 安全）。
+   */
+  const attemptSteer = async (retrying: boolean): Promise<boolean> => {
+    try {
+      const ok = await steerApi.input.steer(sessionId, queued, { touchUserSend: true });
       if (ok) {
         _disposedLiveErrorIntents.delete(sessionId);
         commitAutoTitle();
@@ -16673,8 +16710,20 @@ async function steerMessageCore(
       }
       rollbackOptimisticSteer();
       return false;
-    })
-    .catch((err) => {
+    } catch (err) {
+      if (!retrying && isPsbOccupyRequiredFailure(err)) {
+        // 确认期间先撤掉横幅：这不是最终失败，用户正在决定要不要占用这个工作区。
+        setState(sessionId, (s) => ({
+          ...s,
+          error: null,
+          usageLimitRecovery: null,
+          recoverableError: null,
+          errorRetryText: null,
+        }));
+        if (await requestPsbOccupyConfirmationForSession(sessionId)) {
+          return attemptSteer(true);
+        }
+      }
       // 远端 lazy-create/startSession 抛的 [REMOTE_*] 不可恢复错误走 IPC reject 落这里
       // (不经 stream error event reducer)。保留已知 code 的 wrapper，让 ErrorBanner
       // 选择可操作的 provider 指引；未知 code 仍由 helper 解码为通用本地化摘要。
@@ -16688,7 +16737,9 @@ async function steerMessageCore(
         errorRetryText: null,
       }));
       return false;
-    });
+    }
+  };
+  return attemptSteer(false);
 }
 
 /** 被拦消息重发在途集合(clientId):find 与撤气泡之间隔一个会话行 await,

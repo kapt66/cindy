@@ -520,7 +520,8 @@ export function usePsbWorkspaceSelection(
     releaseHeldSelection('selection cancelled before handoff');
   }, [abandonAttempt, cancelOccupy, releaseHeldSelection]);
 
-  const labels = useMemo(() => psbWorkspaceRowLabels(workspaces, t), [t, workspaces]);
+  // 行标签是纯 PSB 事实拼接（实例名 = 目录名；次要行 = 模板名 · 机器名），不经过翻译。
+  const labels = useMemo(() => psbWorkspaceRowLabels(workspaces), [workspaces]);
 
   return {
     workspaces,

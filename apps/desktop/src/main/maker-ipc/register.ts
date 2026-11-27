@@ -19411,7 +19411,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 或 1.5s 乐观缓存判断「还是我的」，也**不允许 fail-open**（读不到就继续发送）。每次发送都走
     // `requireAuthoritative` 的权威校验：读一次 PSB 会话行 + 一次工作区列表（2 次 HTTP），
     //   - 仍由我占用 → 放行；
-    //   - 此刻无人占用（被交接回空闲）→ 自动占用成功后放行；
+    //   - 此刻无人占用（被交接回空闲）→ **不自动占用**，返回 `PSB_WORKSPACE_NOT_OCCUPIED`，
+    //     渲染层弹「需要占用这个工作区」确认框 → 用户确认 → 显式占用 → 重试本次发送；
     //   - 被他人占用 / 离线 / 未就绪 → 可行动 `PSB_*` 失败，本轮不发送；
     //   - 读不到 / 网络 / 鉴权失败 → 同样不发送（无法确认 ≠ 可以写）。
     preparePsbWorkspaceLock: async (sessionId) => {
@@ -19422,6 +19423,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       try {
         await getPsbRemoteService().ensureWorkspaceLockedForSession(psbSessionId, {
           requireAuthoritative: true,
+          // 隐式写路径：占用必须由用户确认，闸门不得替用户占用。
+          allowAutoOccupy: false,
         });
       } catch (error) {
         // 跨 IPC 的 `ipcMain.handle` 失败只保留 message（`code` 字段会丢）：不在这一层把

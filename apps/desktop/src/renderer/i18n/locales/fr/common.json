@@ -22898,6 +22898,8 @@
       "unreachable": "Impossible de joindre PSB. Vérifiez votre réseau et réessayez.",
       "occupiedByOther": "« {{name}} » utilise cet espace de travail. Retirez le verrou sur le site PSB et réessayez.",
       "workspaceOccupied": "Une autre personne utilise cet espace de travail. Retirez le verrou sur le site PSB et réessayez.",
+      "occupyRequired": "Cet espace de travail n’est pas encore occupé par vous. Occupez-le d’abord.",
+      "agentSessionActive": "Une tâche s’exécute encore dans cet espace de travail. Terminez-la ou arrêtez-la avant de libérer l’espace.",
       "clientOffline": "Cet ordinateur est hors ligne. Réessayez plus tard.",
       "unknown": "L'action a échoué. Réessayez plus tard."
     },
