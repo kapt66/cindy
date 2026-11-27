@@ -1445,6 +1445,12 @@ GET …/access → 终态（none / stopped / failed）才 POST …/access/start�
      取消 → 不占用、不启动、不产常驻错误，状态收回「串流未启动」；
    - 布局里只保留**持久状态**：控制条上的串流未启动 / 正在启动桌面访问… / 已连接等待画面 /
      串流中、详情浮层字段与画面本身。
+   - **画面缩放（2026-11-27 用户复测）**：canvas 的 CSS 盒子固定为舞台大小
+     （`h-full w-full object-contain`），内容按比例缩放、留黑边；不使用「按帧像素的原生尺寸盒 +
+     `max-w/max-h`」——远端分辨率与屏幕/面板尺寸不一致时，原生盒会被舞台 `overflow-hidden`
+     裁掉或缩小显示，表现为「画面显示不全」。指针映射仍按 `object-contain` 的实际内容矩形
+     （`mapClientPointToRemote` 的 `fitContentIntoRect`）计算，黑边内的点夹到画面边缘，坐标不受
+     缩放影响。
 5. **回退与兼容**：旧 PSB（`access/start` 404/405/`UNIMPLEMENTED`）→ `unsupported` → 直接订阅并
    沿用既有 409 文案；旧装配端口没有 `ensureWorkspaceAccess` 时按旧路径订阅（生产装配一定有）。
 

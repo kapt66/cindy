@@ -571,7 +571,12 @@ export function RemoteWorkspaceAdminConnection({
           aria-hidden
           data-testid="remote-workspace-admin-stream-canvas"
           data-has-picture={phase === 'streaming' ? 'true' : 'false'}
-          className={cn('max-h-full max-w-full object-contain', phase !== 'streaming' && 'hidden')}
+          // 画面「铺满可用区域并按比例缩放」：`w-full h-full` 让 canvas 的 CSS 盒子等于舞台，
+          // `object-contain` 负责留黑边；不能用 `max-w/max-h` 的原生尺寸盒——远端分辨率不是
+          // 屏幕分辨率时，盒子会按帧尺寸落成（大于舞台就被 `overflow-hidden` 裁掉，小于舞台就
+          // 不放大），两端都表现为「显示不全」。指针映射仍按 `object-contain` 的实际内容矩形
+          // 计算（`fitContentIntoRect`），坐标不受黑边影响。
+          className={cn('h-full w-full object-contain', phase !== 'streaming' && 'hidden')}
         />
         {/* 串流信息 HUD：右上角浮层（半透明深色 chrome，复用 lightbox-toolbar 语义 token），
             不参与布局；全屏下同样显示。 */}
